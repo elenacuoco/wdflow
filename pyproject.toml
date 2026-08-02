@@ -33,8 +33,8 @@ data = ["gwpy>=3.0"]
 dev = ["pytest>=7"]
 
 [project.urls]
-"Homepage" = "https://gitlab.com/wdfpipe/wdflow"
-"Bug Tracker" = "https://gitlab.com/wdfpipe/wdflow/issues"
+"Homepage" = "https://github.com/elenacuoco/wdflow"
+"Bug Tracker" = "https://github.com/elenacuoco/wdflow/issues"
 
 [build-system]
 requires = ["hatchling"]

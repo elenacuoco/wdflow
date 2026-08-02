@@ -97,16 +97,12 @@ class wdfUnitDSWorker(object):
             self.par.dir = dir_chunk
             self.par.gps = gpsStart
             self.par.gpsStart = gpsStart
-            # `- self.par.len` is a deliberate safety margin, not a bug: the
-            # main loop below checks the *previous* read's start before
-            # issuing the next one, so the last read it makes can extend up
-            # to par.len past the checked bound. FrameIChannel doesn't always
-            # raise cleanly when asked to read past the last legitimately
-            # available data near a segment's true end -- it can surface much
-            # later instead, as a degenerate all-zero/short window (e.g. an
-            # empty-FFT crash in ParameterEstimationObserver). See wdflow's
-            # README for the resulting (real, characterized, not eliminated)
-            # par.len sensitivity in trigger statistics near the segment tail.
+            # Safety margin: the main loop below checks the *previous* read's
+            # start before issuing the next one, so its last read can extend
+            # up to par.len past the checked bound. FrameIChannel does not
+            # always raise cleanly when asked to read past the last available
+            # frame data, so this margin keeps every read within legitimately
+            # available data.
             self.par.gpsEnd = gpsEnd-self.par.len
 
             ######################
@@ -139,27 +135,18 @@ class wdfUnitDSWorker(object):
                 DW.Process(data_ds,dataw)
                
                 
-            # --- Fixed, len-independent lookahead window for whitening ---
+            # Fixed, len-independent lookahead window for whitening.
             # DoubleWhitening's backward pass needs a buffer of real *future*
             # data to settle its lattice-filter state before it can produce a
             # good backward-pass estimate for the current output chunk (see
             # DoubleWhitening::GetData in p4TSA). That lookahead ("ExtraSize")
-            # must be a FIXED size, NOT scaled with par.len -- otherwise
-            # increasing par.len (a pure I/O batching/perf knob) changes the
-            # whitened signal itself. This mirrors BandPassDownSampling's own
-            # padlen convention (fixed, decoupled from chunk size) -- except
-            # here the fixed size has to be large enough for THIS AR order to
-            # settle, not just 1 second: empirically, with ARorder=3000,
-            # dataw only becomes exactly len-independent (bit-for-bit, not
-            # just close) once ExtraSize reaches ~20 resampled-rate seconds;
-            # 1s (a natural first guess, mirroring BandPassDownSampling) was
-            # measurably insufficient (~55% of signal scale residual). This
-            # is a one-time cost per segment, not per chunk, so a generous
-            # default costs nothing.
-            #
-            # Default: 20 seconds of resampled-rate data. Set
+            # is a FIXED size, decoupled from par.len (an I/O batching/perf
+            # knob), mirroring BandPassDownSampling's own padlen convention.
+            # Default: 20 seconds of resampled-rate data, large enough for
+            # AR orders up to a few thousand to settle. Set
             # parameters.WhiteningExtraSize explicitly to override, or to 0
-            # to reproduce the pre-fix (len-dependent) behavior exactly.
+            # to make the lookahead scale with par.len instead (legacy
+            # behavior).
             extra_size = int(getattr(self.par, "WhiteningExtraSize", 20 * self.par.resampling))
             self.par.WhiteningExtraSize = extra_size
 

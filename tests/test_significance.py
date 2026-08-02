@@ -39,6 +39,28 @@ def test_background_distribution_and_fap():
     assert "far_per_day" in result
 
 
+def test_background_distribution_with_find_network_for_three_ifos():
+    h1_events, h1_bounds = _clustered_and_bounds("H1", burst_gps=1250.0, seed=1)
+    l1_events, l1_bounds = _clustered_and_bounds("L1", burst_gps=1250.002, seed=2)
+    v1_events, v1_bounds = _clustered_and_bounds("V1", burst_gps=1250.010, seed=7)
+    clustered = {"H1": h1_events, "L1": l1_events, "V1": v1_events}
+    bounds = {"H1": h1_bounds, "L1": l1_bounds, "V1": v1_bounds}
+
+    cf = CoincidenceFinder(timing_jitter_s=0.3)
+    real_candidates = cf.find_network(clustered, min_ifos=3)
+
+    be = BackgroundEstimator(cf, n_slides=50, min_shift_s=2.0, seed=0)
+    bg = be.background_distribution(clustered, bounds, finder_method="find_network", min_ifos=3)
+    if not bg.empty:
+        assert (bg["n_ifos"] == 3).all()
+
+    if len(real_candidates) > 0:
+        best = real_candidates.loc[real_candidates["network_snr"].idxmax()]
+        result = be.false_alarm_probability(best, bg, segment_duration_s=h1_bounds[1] - h1_bounds[0])
+        assert 0.0 <= result["fap"] <= 1.0
+        assert "far_per_day" in result
+
+
 def test_pool_backgrounds_tags_segment_id():
     import pandas as pd
     a = pd.DataFrame({"network_snr": [1.0, 2.0]})

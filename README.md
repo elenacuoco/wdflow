@@ -21,54 +21,47 @@ calls) -- same file/class/module names and shapes, no gratuitous renaming -- plu
 `wdf.analysis` layer (formerly a separate `wdfLib` package), merged in here as one namespace to
 install and import from.
 
-Functional changes from the legacy `wdf` package:
+Changes from the legacy `wdf` package:
 
-- **Fixed, `par.len`-independent AR-whitening lookahead.** `wdfUnitDSWorker.segmentProcess` used
-  to hardcode `DoubleWhitening`'s lookahead window (`ExtraSize=0`), which made the whitened signal
-  -- and therefore trigger counts and per-trigger statistics -- depend on `par.len` (the streaming
-  chunk size), a value that should only affect I/O batching/throughput. `WhiteningExtraSize`
-  (default: 20 resampled-rate seconds) fixes the lookahead at a size large enough for
-  `DoubleWhitening`'s backward pass to settle, independent of `par.len`. Set
-  `parameters.WhiteningExtraSize = 0` to reproduce the old behavior exactly.
+- **AR-whitening lookahead is fixed-size, independent of `par.len`.** `DoubleWhitening`'s backward
+  pass needs a lookahead buffer of real future data to settle before producing a good estimate for
+  the current chunk. This lookahead (`WhiteningExtraSize`, default 20 resampled-rate seconds) is
+  now a fixed size, decoupled from `par.len` (the streaming chunk size, an I/O batching/throughput
+  knob). Set `parameters.WhiteningExtraSize = 0` to reproduce the legacy behavior.
 
-- **`gpsEnd - par.len` segment-coverage margin: understood, kept as-is.** The main detection loop
-  checks the *previous* read's start before issuing the next, so its last read can extend up to
-  `par.len` past the checked bound; the `- par.len` margin exists to keep that last read within
-  legitimately available frame data. Attempted removing/shrinking this margin twice this session
-  (once outright, once via an adaptive shorter last chunk) -- both broke real usage (the first
-  crashed downstream on a degenerate all-zero window when `FrameIChannel` didn't raise cleanly
-  near a segment's true end; the second silently dropped ~2.4% of triggers on the golden-output
-  fixture via `DWhitening.SetOutputSize` interaction, not yet understood). Reverted both times.
-  Net effect: a larger `par.len` does still analyze up to `par.len` fewer seconds at a segment's
-  tail -- a real, currently-accepted tradeoff, not a bug to casually "fix" without a lot more
-  care than a config-level change deserves.
+- **The detection loop stops `par.len` seconds before the requested segment end** (unchanged from
+  the legacy package): it checks the previous read's start before issuing the next one, so its
+  last read can extend up to `par.len` past the checked bound, and `FrameIChannel` does not always
+  raise cleanly when asked to read past the last available frame data. This margin keeps the last
+  read within legitimately available data. A larger `par.len` therefore analyzes up to `par.len`
+  fewer seconds at a segment's tail.
 
-- **Remaining `par.len` sensitivity, characterized (not a bug to fix further)**: on a real 450s
-  H1 GW250114 segment (`ARorder=3000`), triggers matched by `gpsPeak` between `par.len=10` and
-  `par.len=150` agree exactly (`snrPeak`/`EnWDF` bit-identical) for ~88% of triggers; the
-  remaining ~12% -- concentrated in triggers whose statistic sits close to a threshold crossing
-  -- differ, sometimes sharply (including flipping to/from exactly 0). Root cause: processing the
-  same signal through a different number/size of `DWhitening.Process()` calls accumulates
-  floating-point roundoff differently (summation/filtering isn't perfectly associative), at a
-  level far below any physical significance -- but `WaveletThreshold`'s `dohonojohnston` mode
-  recomputes its threshold fresh per window from that window's own coefficient median, so a
-  trigger sitting right at that boundary can flip. This is an inherent sensitivity of any
-  hard/soft-threshold statistic to input near its decision boundary, not an identifiable
-  additional bug; total trigger counts agree to ~1% (912 vs 924 on the same test segment).
+- **Per-trigger statistics remain somewhat sensitive to `par.len`** even with the fixed whitening
+  lookahead above: `WaveletThreshold`'s `dohonojohnston` mode recomputes its detection threshold
+  fresh per window from that window's own coefficient median, so triggers whose statistic sits
+  close to that threshold can flip in or out of detection depending on floating-point roundoff
+  accumulated differently across different chunk sizes. This is an inherent sensitivity of any
+  hard/soft-threshold statistic to input near its decision boundary, not a data-corruption bug --
+  triggers well away from threshold are unaffected.
 
-- **Trigger SNR is now the wavelet-coefficient energy statistic**
-  (`wdf.processes.wavelet_energy.wavelet_energy_snr`), computed from each trigger's own (already
-  thresholded) wavelet coefficients against the Donoho-Johnstone universal threshold (Donoho &
-  Johnstone, 1994) on the AR-whitening noise scale, replacing the old
+- **Trigger SNR is the wavelet-coefficient energy statistic**
+  (`wdf.processes.wavelet_energy.wavelet_energy_snr`): each trigger's own (already thresholded)
+  wavelet coefficients, summed in energy above the Donoho-Johnstone universal threshold (Donoho &
+  Johnstone, 1994) on the AR-whitening noise scale. This replaces the legacy
   reconstructed-waveform-based `snrMean`/`snrPeak`. `EnWDF` (WDF's own internal per-window,
   per-basis, locally-normalized detection statistic -- the value `par.threshold` gates trigger
-  emission on) is still recorded per trigger for diagnostics, but is not the statistic
-  `wdf.analysis`'s clustering/coincidence/GNN code ranks or characterizes triggers by.
+  emission on) is still recorded per trigger for diagnostics, but `wdf.analysis`'s
+  clustering/coincidence/GNN code ranks and characterizes triggers by the energy statistic instead.
 
 - **Trigger output is Parquet, not CSV** (`wdf.observers.SingleEventPrintFileObserver`), written
   incrementally in row-group batches (`flush_every`, default 500 triggers) and finalized by a
   `close()` call at the end of `segmentProcess`. `wdf.analysis.io`'s loaders accept both
   `*.parquet` (default) and `*.csv` (for older runs), dispatching on file extension.
+
+- **The downstream analysis layer (formerly the separate `wdfLib` package) is merged in** as the
+  `wdf.analysis` subpackage: clustering, multi-detector coincidence (classical + GNN),
+  background/false-alarm-probability, and ROC analysis. It has no `pytsa` dependency and operates
+  on plain pandas DataFrames / saved trigger files, so it works standalone.
 
 Left behind for now (not used by `wdfUnitDSWorker`'s pipeline, not ported/audited):
 `AdaptiveWhitening`, `Coloring`, `createsegmentsMinMax`, `CreateSegments`, `DownSamplingLF`,

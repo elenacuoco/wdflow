@@ -60,9 +60,13 @@ def get_most_important_frequencies(signal, fs, alpha=.1):
     magnitudes = np.abs(signal_fft)
     # Find the frequency at maximum magnitude
     freqPeak = freqs[np.argmax(magnitudes)]
-    # Significance region
+    # Significance region. >= (not >): sig_mag is itself within [min(magnitudes),
+    # max(magnitudes)], so the bin(s) at the maximum always qualify -- with a
+    # strict >, a degenerate spectrum (e.g. every bin tied at the same
+    # magnitude, such as for an all-zero or single-sample signal) selects zero
+    # bins instead.
     sig_mag = np.percentile(magnitudes,100*(1-alpha))
-    sig_freqs = freqs[magnitudes>sig_mag]
+    sig_freqs = freqs[magnitudes>=sig_mag]
     # Calculate the mean, minimum, and maximum frequencies in the significance region
     freqMin = np.min(sig_freqs)
     freqMax = np.max(sig_freqs)

@@ -38,11 +38,11 @@ test:
     - wdf.analysis.clustering
 
 about:
-  home: https://gitlab.com/wdfpipe/wdflow
+  home: https://github.com/elenacuoco/wdflow
   license: GPL-3.0-or-later
   license_file: LICENSE
   summary: WDF (Wavelet Detection Filter) trigger-generation pipeline and downstream trigger analysis, packaged standalone.
-  dev_url: https://gitlab.com/wdfpipe/wdflow
+  dev_url: https://github.com/elenacuoco/wdflow
 
 extra:
   recipe-maintainers:

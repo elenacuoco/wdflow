@@ -40,7 +40,46 @@ def test_no_coincidence_when_far_apart():
 def test_unknown_ifo_pair_raises():
     cf = CoincidenceFinder()
     try:
-        cf.coincidence_window("H1", "V1")
+        cf.coincidence_window("H1", "K1")
         assert False, "expected KeyError for unknown baseline"
     except KeyError:
         pass
+
+
+def test_find_network_matches_find_for_two_ifos():
+    clustered = {
+        "H1": _clustered("H1", burst_gps=1100.000, seed=1),
+        "L1": _clustered("L1", burst_gps=1100.003, seed=2),
+    }
+    cf = CoincidenceFinder(timing_jitter_s=0.05)
+    pairwise = cf.find(clustered)
+    network = cf.find_network(clustered)
+    assert len(network) == len(pairwise)
+    assert set(network["n_ifos"]) == {2}
+
+
+def test_find_network_three_ifo_coincidence():
+    clustered = {
+        "H1": _clustered("H1", burst_gps=1100.000, seed=1),
+        "L1": _clustered("L1", burst_gps=1100.003, seed=2),
+        "V1": _clustered("V1", burst_gps=1100.010, seed=5),  # within H1-V1/L1-V1 windows
+    }
+    cf = CoincidenceFinder(timing_jitter_s=0.05)
+    network = cf.find_network(clustered)
+    near = network[(network["gps_candidate"] - 1100.0).abs() < 1.0]
+    assert len(near) >= 1
+    best = near.sort_values("network_snr", ascending=False).iloc[0]
+    assert best["n_ifos"] == 3
+    assert set(best["ifos_involved"].split(",")) == {"H1", "L1", "V1"}
+    assert best["network_snr"] > near["snr_H1"].iloc[0]  # combined > any single IFO
+
+
+def test_find_network_min_ifos_drops_pair_only_candidates():
+    clustered = {
+        "H1": _clustered("H1", burst_gps=1100.000, seed=1),
+        "L1": _clustered("L1", burst_gps=1100.003, seed=2),
+        "V1": _clustered("V1", burst_gps=1300.000, seed=6),  # far away, no coincidence
+    }
+    cf = CoincidenceFinder(timing_jitter_s=0.05)
+    triples_only = cf.find_network(clustered, min_ifos=3)
+    assert (triples_only["n_ifos"] == 3).all()

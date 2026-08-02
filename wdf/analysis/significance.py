@@ -44,6 +44,8 @@ class BackgroundEstimator:
         self,
         clustered: dict[str, pd.DataFrame],
         segment_bounds: dict[str, tuple[float, float]],
+        finder_method: str = "find",
+        **finder_kwargs,
     ) -> pd.DataFrame:
         """clustered: {ifo: clustered_events_df}. segment_bounds: {ifo:
         (gps_start, gps_end)} of the analyzed segment for that detector,
@@ -53,12 +55,15 @@ class BackgroundEstimator:
         reference; every other IFO's `gpsMax`/`gpsStart` are shifted by a
         random offset (modular wraparound within that IFO's segment,
         min_shift_s <= abs(shift) <= max_shift_s, sign random) drawn fresh per
-        slide, then CoincidenceFinder.find is rerun on the shifted copies.
+        slide, then `coincidence_finder.<finder_method>(shifted, **finder_kwargs)`
+        is rerun on the shifted copies -- `finder_method="find_network"` for a
+        3+ detector background (see `CoincidenceFinder.find_network`).
 
         Output: one row per (accidental) candidate found across all slides,
         with an added `slide_index` column. Slides producing no accidental
         coincidence contribute zero rows -- not padded with NaN.
         """
+        finder = getattr(self.coincidence_finder, finder_method)
         ifos = list(clustered.keys())
         if len(ifos) < 2:
             raise ValueError("need >= 2 detectors to build a coincidence background")
@@ -87,7 +92,7 @@ class BackgroundEstimator:
                         df[col] = gps_start + ((df[col] - gps_start + shift) % span)
                 shifted[ifo] = df
 
-            candidates = self.coincidence_finder.find(shifted)
+            candidates = finder(shifted, **finder_kwargs)
             if candidates.empty:
                 continue
             candidates = candidates.copy()
@@ -95,7 +100,7 @@ class BackgroundEstimator:
             rows.append(candidates)
 
         if not rows:
-            cols = list(self.coincidence_finder.find({}).columns) + ["slide_index"]
+            cols = list(finder({}, **finder_kwargs).columns) + ["slide_index"]
             return pd.DataFrame(columns=cols)
         return pd.concat(rows, ignore_index=True)
 

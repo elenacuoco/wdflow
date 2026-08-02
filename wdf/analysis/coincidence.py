@@ -12,17 +12,22 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-# Fixed light-travel-time baselines between LIGO/Virgo/KAGRA sites, seconds.
-# H1-L1 (~10.0 ms) matches the baseline TANDEM_4's plot_data_wdf_overlay
-# already quotes. Extend this table only when a 3rd IFO is actually
-# exercised -- not guessed ahead of need.
+# Fixed light-travel-time baselines between LIGO/Virgo sites, seconds --
+# geocentric great-circle distance between detector vertices / c.
 LIGHT_TRAVEL_TIME_S = {
-    frozenset(("H1", "L1")): 0.010,
+    frozenset(("H1", "L1")): 0.0100,
+    frozenset(("H1", "V1")): 0.0273,
+    frozenset(("L1", "V1")): 0.0264,
 }
 
 CANDIDATE_COLUMNS_BASE = [
     "candidate_id", "gps_candidate", "ifos_involved", "dt_s",
     "network_snr", "n_ifos", "n_candidate_matches",
+]
+
+NETWORK_CANDIDATE_COLUMNS_BASE = [
+    "candidate_id", "gps_candidate", "ifos_involved",
+    "network_snr", "n_ifos", "n_triggers_in_candidate",
 ]
 
 
@@ -118,5 +123,87 @@ class CoincidenceFinder:
         out = pd.DataFrame(candidates)
         if out.empty:
             return pd.DataFrame(columns=CANDIDATE_COLUMNS_BASE)
+        out.insert(0, "candidate_id", range(len(out)))
+        return out
+
+    def find_network(self, clustered: dict[str, pd.DataFrame], min_ifos: int = 2) -> pd.DataFrame:
+        """General N-detector coincidence: connected components of the graph
+        where two per-IFO clustered events are linked if they fall within
+        `coincidence_window` of each other, for every IFO pair with a known
+        `LIGHT_TRAVEL_TIME_S` baseline. Each connected component becomes one
+        candidate, spanning however many distinct IFOs its members touch --
+        the same density-chaining principle `TriggerClusterer` already uses
+        within a single detector, applied across detectors instead. With
+        exactly two detectors this reduces to the same matches `find` finds
+        for a genuine coincidence, but scales to three or more IFOs without
+        a per-network-size branch. Candidates spanning fewer than `min_ifos`
+        distinct detectors are dropped (e.g. a lone unmatched cluster).
+        """
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        nodes = [
+            (ifo, row)
+            for ifo, df in clustered.items()
+            if df is not None and not df.empty
+            for _, row in df.iterrows()
+        ]
+        n = len(nodes)
+        if n == 0:
+            return pd.DataFrame(columns=NETWORK_CANDIDATE_COLUMNS_BASE)
+
+        edge_i, edge_j = [], []
+        for i in range(n):
+            ifo_i, row_i = nodes[i]
+            for j in range(i + 1, n):
+                ifo_j, row_j = nodes[j]
+                if ifo_i == ifo_j:
+                    continue
+                try:
+                    window_s = self.coincidence_window(ifo_i, ifo_j)
+                except KeyError:
+                    continue
+                if abs(row_i["gpsMax"] - row_j["gpsMax"]) <= window_s:
+                    edge_i.append(i)
+                    edge_j.append(j)
+
+        adjacency = csr_matrix(
+            (np.ones(len(edge_i)), (edge_i, edge_j)), shape=(n, n),
+        )
+        n_components, labels = connected_components(adjacency, directed=False)
+
+        candidates = []
+        for comp_id in range(n_components):
+            members = [nodes[i] for i in range(n) if labels[i] == comp_id]
+            involved_ifos = sorted(set(ifo for ifo, _ in members))
+            if len(involved_ifos) < min_ifos:
+                continue
+            snrs = [float(row["snrMax"]) for _, row in members]
+            gps_candidate = float(
+                np.average([row["gpsMax"] for _, row in members], weights=snrs)
+            )
+            row_out = {
+                "gps_candidate": gps_candidate,
+                "ifos_involved": ",".join(involved_ifos),
+                "network_snr": self._network_snr(snrs),
+                "n_ifos": len(involved_ifos),
+                "n_triggers_in_candidate": len(members),
+            }
+            for ifo in involved_ifos:
+                # if two clusters from the same IFO end up chained into one
+                # component (e.g. via a third IFO), keep the louder one
+                loudest = max(
+                    (row for f, row in members if f == ifo),
+                    key=lambda row: row["snrMax"],
+                )
+                row_out[f"snr_{ifo}"] = float(loudest["snrMax"])
+                row_out[f"freq_{ifo}"] = float(loudest["freqMean"])
+                row_out[f"cluster_id_{ifo}"] = loudest["cluster_id"]
+            candidates.append(row_out)
+
+        out = pd.DataFrame(candidates)
+        if out.empty:
+            return pd.DataFrame(columns=NETWORK_CANDIDATE_COLUMNS_BASE)
+        out = out.sort_values("gps_candidate").reset_index(drop=True)
         out.insert(0, "candidate_id", range(len(out)))
         return out
