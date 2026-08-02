@@ -1,0 +1,48 @@
+[project]
+name = "wdflow"
+version = "0.2.0"
+authors = [
+  { name="Elena Cuoco", email="elena.cuoco@ego-gw.it" },
+]
+dependencies = [
+  'numpy',
+  'scipy',
+  'pandas>=2.0',
+  'scikit-learn>=1.2',
+  'matplotlib>=3.7',
+  'pyarrow',
+]
+description = "WDF (Wavelet Detection Filter): trigger-generation pipeline (`wdf.processes`/`wdf.observers`) and downstream trigger analysis (`wdf.analysis`: clustering, coincidence, GNN, ROC/FAP) in one package."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+# `wdf.processes`/`wdf.observers` (trigger generation) need the compiled C++
+# core; `wdf.analysis` (downstream analysis) does not and works standalone on
+# already-saved trigger files, so p4tsa stays an extra rather than a hard
+# dependency.
+pipeline = ["p4tsa", "coloredlogs"]
+gnn = ["torch>=2.1"]
+data = ["gwpy>=3.0"]
+dev = ["pytest>=7"]
+
+[project.urls]
+"Homepage" = "https://gitlab.com/wdfpipe/wdflow"
+"Bug Tracker" = "https://gitlab.com/wdfpipe/wdflow/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# distribution name is "wdflow"; the importable package is `wdf` (Phase 1 was
+# a minimal-diff port of the legacy `wdf` package -- see README) with the
+# former `wdfLib` analysis layer now merged in as the `wdf.analysis`
+# subpackage, so there is exactly one namespace to import from.
+packages = ["wdf"]

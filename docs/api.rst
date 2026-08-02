@@ -1,0 +1,116 @@
+API reference
+=============
+
+``wdflow`` has two layers: trigger generation (``wdf.config``, ``wdf.processes``,
+``wdf.observers``, ``wdf.structures`` -- needs the compiled ``pytsa``/p4TSA core) and downstream
+trigger analysis (``wdf.analysis`` -- clustering, multi-detector coincidence,
+background/false-alarm-probability, and ROC analysis; works standalone on already-saved trigger
+files, no ``pytsa`` required). Each module below is documented from its own docstrings.
+
+Trigger generation
+-------------------
+
+wdf.config.Parameters
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.config.Parameters
+   :members:
+
+wdf.processes.wdfUnitDSWorker
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.wdfUnitDSWorker
+   :members:
+
+wdf.processes.wdf
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.wdf
+   :members:
+
+wdf.processes.BandPassDownSampling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.BandPassDownSampling
+   :members:
+
+wdf.processes.DWhitening
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.DWhitening
+   :members:
+
+wdf.processes.Whitening
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.Whitening
+   :members:
+
+wdf.processes.wavelet_energy
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.wavelet_energy
+   :members:
+
+wdf.observers.ParameterEstimationObserver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.observers.ParameterEstimationObserver
+   :members:
+
+wdf.observers.SingleEventPrintFileObserver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.observers.SingleEventPrintFileObserver
+   :members:
+
+wdf.structures.eventPE
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.structures.eventPE
+   :members:
+
+Downstream analysis
+---------------------
+
+wdf.analysis.io
+~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.io
+   :members:
+
+wdf.analysis.clustering
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.clustering
+   :members:
+
+wdf.analysis.coincidence
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.coincidence
+   :members:
+
+wdf.analysis.significance
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.significance
+   :members:
+
+wdf.analysis.roc
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.roc
+   :members:
+
+wdf.analysis.gnn
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.gnn
+   :members:
+
+wdf.analysis.wavelets
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.wavelets
+   :members:

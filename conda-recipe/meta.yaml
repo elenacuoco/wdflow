@@ -1,0 +1,49 @@
+{% set name = "wdflow" %}
+{% set version = "0.2.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install . -vv --no-build-isolation --no-deps
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - hatchling
+
+  run:
+    - python >=3.10
+    - p4tsa
+    - coloredlogs
+    - numpy
+    - scipy
+    - pandas >=2.0
+    - scikit-learn >=1.2
+    - matplotlib >=3.7
+    - pyarrow
+
+test:
+  imports:
+    - wdf
+    - wdf.processes.wdfUnitDSWorker
+    - wdf.analysis
+    - wdf.analysis.clustering
+
+about:
+  home: https://gitlab.com/wdfpipe/wdflow
+  license: GPL-3.0-or-later
+  license_file: LICENSE
+  summary: WDF (Wavelet Detection Filter) trigger-generation pipeline and downstream trigger analysis, packaged standalone.
+  dev_url: https://gitlab.com/wdfpipe/wdflow
+
+extra:
+  recipe-maintainers:
+    - elenacuoco
