@@ -1,26 +1,27 @@
 """Graph-neural-network coincidence scorer, run ALONGSIDE (not replacing)
-CoincidenceFinder's classical time-window method -- the two are meant to be
-compared directly in the notebook, per explicit instruction, not to replace
-one another.
+CoincidenceFinder's classical time-window method: WDF's own detection stays
+single-detector and blind, cross-detector combination is a separate,
+comparable-but-independent step, and a learned combiner should be validated
+against the classical one directly rather than replacing it outright.
 
-Graphs here are tiny (per segment: tens of clustered events per detector, at
-most a few hundred candidate edges), so this deliberately avoids a full graph
-library (torch_geometric) in favor of a minimal hand-rolled message-passing
-layer in plain PyTorch -- one dependency (torch, via the `gnn` extra), not
-two.
+Built on `torch_geometric`: each segment's graph is tiny (tens of clustered
+events per detector, at most a few hundred candidate edges), but a pipeline
+running over thousands of segments needs many such small graphs trained/
+scored together, not one Python-level forward pass per segment. `torch_geometric`
+gives batched sparse message passing (`Batch.from_data_list`) for that, plus a
+maintained scatter/aggregation backend, instead of a hand-rolled per-graph loop.
 
-Training positives are real catalogued events in the analyzed segment;
+Training positives are real catalogued events in the analyzed segment(s);
 negatives are accidental/background cross-detector edges (including
 time-slide background from significance.BackgroundEstimator). With only a
-handful of real positive events even in one long continuous segment, `fit`
-here is explicitly a proof-of-concept calibration, not a production training
-run -- see the project notebook for the small-N caveat and the
-synthetic-injection extension (bilby/pycbc) noted as future work, not
-required for v1.
+handful of real positive events even across several long continuous segments,
+`fit` is still, numerically, closer to a proof-of-concept calibration than a
+large-scale production run -- a synthetic-injection extension (bilby/pycbc)
+to get a larger, better-balanced training set is noted as future work.
 
-Requires `pip install -e ".[gnn]"` (torch). Importing this module without
-torch installed raises ImportError with that instruction -- the rest of
-wdfLib works without torch.
+Requires `pip install -e ".[gnn]"` (torch + torch_geometric). Importing this
+module without them installed raises ImportError with that instruction -- the
+rest of wdfLib works without either.
 """
 from __future__ import annotations
 
@@ -32,9 +33,11 @@ import pandas as pd
 try:
     import torch
     import torch.nn as nn
+    from torch_geometric.data import Batch, Data
+    from torch_geometric.nn import MessagePassing
 except ImportError as _e:  # pragma: no cover
     raise ImportError(
-        "wdfLib.gnn requires torch. Install with: pip install -e '.[gnn]'"
+        "wdfLib.gnn requires torch and torch_geometric. Install with: pip install -e '.[gnn]'"
     ) from _e
 
 NODE_FEATURE_COLUMNS = ["snrMax", "freqMean", "freqMax", "duration", "n_triggers"]
@@ -45,6 +48,11 @@ class TriggerGraph:
     same-detector clusters (local-density context). Cross-IFO edges =
     candidate coincidence pairs across detectors (both true and accidental,
     deliberately, since the GNN needs negative examples to learn from).
+
+    Plain numpy/pandas container -- the public shape callers (this module's
+    own GNNCoincidenceScorer, but also notebooks) build/inspect directly.
+    `GNNCoincidenceScorer` converts it to a `torch_geometric.data.Data`
+    internally; nothing about this class depends on torch_geometric.
     """
 
     def __init__(
@@ -168,60 +176,97 @@ class TriggerGraphBuilder:
         )
 
 
-class _EdgeMLP(nn.Module):
-    def __init__(self, in_dim, hidden=16):
-        super().__init__()
-        self.net = nn.Sequential(nn.Linear(in_dim, hidden), nn.ReLU(), nn.Linear(hidden, hidden))
+class _CandidateData(Data):
+    """`Data` with a second, separate edge set (`cross_edge_index`/
+    `cross_edge_attr`) for the cross-IFO candidate edges being scored --
+    kept apart from `edge_index` (the intra-IFO message-passing edges)
+    since the two play different roles and shouldn't be convolved together.
+    `Batch.from_data_list` needs to know `cross_edge_index` holds node
+    indices too (so they get offset per-graph like `edge_index` does), which
+    is what `__inc__` below tells it.
+    """
 
-    def forward(self, x):
-        return self.net(x)
+    def __inc__(self, key, value, *args, **kwargs):
+        if key == "cross_edge_index":
+            return self.num_nodes
+        return super().__inc__(key, value, *args, **kwargs)
+
+    def __cat_dim__(self, key, value, *args, **kwargs):
+        if key == "cross_edge_index":
+            return 1
+        return super().__cat_dim__(key, value, *args, **kwargs)
+
+
+def _to_pyg_data(graph: TriggerGraph, labels: np.ndarray | None = None) -> _CandidateData:
+    data = _CandidateData(
+        x=torch.from_numpy(graph.node_features),
+        edge_index=torch.from_numpy(graph.intra_edges.T).long().reshape(2, -1),
+        edge_attr=torch.from_numpy(graph.intra_edge_features),
+        cross_edge_index=torch.from_numpy(graph.cross_edges.T).long().reshape(2, -1),
+        cross_edge_attr=torch.from_numpy(graph.cross_edge_features),
+        num_nodes=graph.node_features.shape[0],
+    )
+    if labels is not None:
+        data.y = torch.from_numpy(np.asarray(labels, dtype=np.float32))
+    return data
+
+
+class _IntraMessagePassing(MessagePassing):
+    """One round of intra-detector message passing: each cluster's embedding
+    absorbs its temporally-close same-detector neighbors (mean-aggregated,
+    matching `aggr="mean"`'s behavior of returning 0 for a node with no
+    incoming edges -- "no nearby context" is a real, informative state here,
+    not a missing value), i.e. 'is this cluster sitting in a noisy
+    neighborhood?'.
+    """
+
+    def __init__(self, hidden: int):
+        super().__init__(aggr="mean")
+        self.message_mlp = nn.Sequential(
+            nn.Linear(hidden + 1, hidden), nn.ReLU(), nn.Linear(hidden, hidden)
+        )
+        self.update_mlp = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.ReLU())
+
+    def forward(self, h, edge_index, edge_attr):
+        agg = self.propagate(edge_index, h=h, edge_attr=edge_attr)
+        return self.update_mlp(torch.cat([h, agg], dim=1))
+
+    def message(self, h_j, edge_attr):
+        return self.message_mlp(torch.cat([h_j, edge_attr], dim=1))
 
 
 class GNNCoincidenceScorer(nn.Module):
-    """One round of intra-detector message passing (each cluster's
-    embedding absorbs its temporally-close same-detector neighbors, i.e.
-    'is this cluster sitting in a noisy neighborhood?'), then an
+    """Intra-detector message passing (`_IntraMessagePassing`), then an
     edge-classification head scores cross-detector candidate edges."""
 
     def __init__(self, node_dim: int, hidden: int = 16, seed: int = 0, device: str | None = None):
         super().__init__()
         torch.manual_seed(seed)
-        # Graphs here are tiny (see module docstring), so a GPU rarely beats CPU once
-        # you count host<->device transfer overhead -- but if one's available, use it
-        # rather than second-guess every caller's hardware.
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.encoder = nn.Sequential(nn.Linear(node_dim, hidden), nn.ReLU())
-        self.message = _EdgeMLP(hidden + 1, hidden)  # neighbor embedding + dt
-        self.update = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.ReLU())
+        self.intra_mp = _IntraMessagePassing(hidden)
         self.edge_head = nn.Sequential(
             nn.Linear(hidden * 2 + 3, hidden), nn.ReLU(), nn.Linear(hidden, 1)
         )
         self.to(self.device)
 
-    def _propagate(self, graph: TriggerGraph) -> "torch.Tensor":
-        x = torch.from_numpy(graph.node_features).to(self.device)
+    def _edge_logits_from_data(self, data) -> "torch.Tensor":
+        """`data` may be a single `_CandidateData` or a `Batch` of several --
+        `edge_index`/`cross_edge_index` already carry per-graph node-index
+        offsets from `Batch.from_data_list`, so the same code path scores
+        one segment or many at once with no special-casing.
+        """
+        x = data.x.to(self.device)
         h = self.encoder(x)
-        n = h.shape[0]
-        agg = torch.zeros_like(h)
-        count = torch.zeros(n, 1, device=self.device)
-        if graph.intra_edges.size:
-            neighbor = torch.from_numpy(graph.intra_edges[:, 1]).long().to(self.device)
-            receiver = torch.from_numpy(graph.intra_edges[:, 0]).long().to(self.device)
-            edge_feat = torch.from_numpy(graph.intra_edge_features).to(self.device)
-            msg = self.message(torch.cat([h[neighbor], edge_feat], dim=1))
-            agg.index_add_(0, receiver, msg)
-            count.index_add_(0, receiver, torch.ones(len(receiver), 1, device=self.device))
-        agg = agg / count.clamp(min=1)
-        return self.update(torch.cat([h, agg], dim=1))
+        h = self.intra_mp(h, data.edge_index.to(self.device), data.edge_attr.to(self.device))
+        if data.cross_edge_index.numel() == 0:
+            return torch.zeros(0, device=self.device)
+        i, j = data.cross_edge_index[0].to(self.device), data.cross_edge_index[1].to(self.device)
+        ef = data.cross_edge_attr.to(self.device)
+        return self.edge_head(torch.cat([h[i], h[j], ef], dim=1)).squeeze(-1)
 
     def edge_logits(self, graph: TriggerGraph) -> "torch.Tensor":
-        h = self._propagate(graph)
-        if graph.cross_edges.size == 0:
-            return torch.zeros(0, device=self.device)
-        i = torch.from_numpy(graph.cross_edges[:, 0]).long().to(self.device)
-        j = torch.from_numpy(graph.cross_edges[:, 1]).long().to(self.device)
-        ef = torch.from_numpy(graph.cross_edge_features).to(self.device)
-        return self.edge_head(torch.cat([h[i], h[j], ef], dim=1)).squeeze(-1)
+        return self._edge_logits_from_data(_to_pyg_data(graph))
 
     def score(self, graph: TriggerGraph) -> pd.DataFrame:
         """Cross-IFO candidate table (TriggerGraph.candidate_table schema)
@@ -239,26 +284,37 @@ class GNNCoincidenceScorer(nn.Module):
         examples: list[tuple[TriggerGraph, np.ndarray]],
         epochs: int = 100,
         lr: float = 1e-2,
+        batch_size: int | None = None,
     ) -> list[float]:
-        """examples: (graph, labels) pairs, labels a 0/1 array aligned with
-        graph.cross_edges (1 = real astrophysical coincidence, 0 =
-        accidental/background). Returns the per-epoch loss history."""
+        """examples: (graph, labels) pairs, one per segment, labels a 0/1
+        array aligned with graph.cross_edges (1 = real astrophysical
+        coincidence, 0 = accidental/background).
+
+        `batch_size` groups segments into `torch_geometric` `Batch`es for a
+        single sparse forward/backward pass each, instead of one Python-level
+        call per segment -- the throughput path for training across many
+        segments at once. Default (None) puts every segment in one batch per
+        epoch (full-batch training), the common case when `examples` is the
+        whole training set for one run, not a huge out-of-core dataset.
+        Returns the per-epoch loss history.
+        """
+        datas = [_to_pyg_data(g, labels) for g, labels in examples if g.cross_edges.size]
+        if not datas:
+            return []
+        chunk_size = batch_size or len(datas)
+
         opt = torch.optim.Adam(self.parameters(), lr=lr)
         loss_fn = nn.BCEWithLogitsLoss()
         history = []
         for _ in range(epochs):
             opt.zero_grad()
-            total, n_batches = torch.tensor(0.0, device=self.device), 0
-            for graph, labels in examples:
-                if graph.cross_edges.size == 0:
-                    continue
-                logits = self.edge_logits(graph)
-                y = torch.from_numpy(labels.astype(np.float32)).to(self.device)
-                total = total + loss_fn(logits, y)
-                n_batches += 1
-            if n_batches == 0:
-                break
-            loss = total / n_batches
+            total, n_chunks = torch.tensor(0.0, device=self.device), 0
+            for start in range(0, len(datas), chunk_size):
+                batch = Batch.from_data_list(datas[start:start + chunk_size])
+                logits = self._edge_logits_from_data(batch)
+                total = total + loss_fn(logits, batch.y.to(self.device))
+                n_chunks += 1
+            loss = total / n_chunks
             loss.backward()
             opt.step()
             history.append(float(loss.item()))

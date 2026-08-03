@@ -35,9 +35,6 @@ def triggers_from_csvs(csv_paths: list[str], ifo: str) -> pd.DataFrame:
     """Concatenate WDF trigger files (`.parquet` or, for older runs, `.csv`)
     for one detector into one DataFrame, tagging every row with the `ifo` it
     came from.
-
-    Mirrors the glob+concat+ifo-tag pattern already used in
-    tandem-interact's TANDEM_4 notebook (`_run_wdf_worker`).
     """
     if not csv_paths:
         raise ValueError(f"no trigger file paths given for ifo={ifo!r}")
@@ -67,16 +64,15 @@ def clean_triggers(
 ) -> pd.DataFrame:
     """Drop WDF numerical-artifact triggers before clustering/coincidence.
 
-    Confirmed against real WDF output (GW250114 H1 trigger CSV): a small
-    number of raw triggers carry `snrPeak` values many orders of magnitude
-    above anything physical (e.g. ~1e21, vs. O(1-100) for real triggers) --
-    a WDF-internal numerical artifact, not a real high-SNR detection. Left
-    unfiltered, these dominate clustering/coincidence/ROC ranking and hide
-    genuine candidates. Mirrors the `snr_artefact_ceiling` guard already
-    used in tandem-interact's TANDEM_4 notebook (`clean_triggers`), plus an
-    edge guard dropping triggers within `edge_guard_s` of the analyzed
-    segment's start/end (WDF's own whitening/AR-estimation warm-up and
-    edge effects are least reliable there).
+    Confirmed against real WDF output on a real detector trigger set: a
+    small number of raw triggers carry `snrPeak` values many orders of
+    magnitude above anything physical (e.g. ~1e21, vs. O(1-100) for real
+    triggers) -- a WDF-internal numerical artifact, not a real high-SNR
+    detection. Left unfiltered, these dominate clustering/coincidence/ROC
+    ranking and hide genuine candidates. `snr_ceiling` guards against that,
+    plus an edge guard dropping triggers within `edge_guard_s` of the
+    analyzed segment's start/end (WDF's own whitening/AR-estimation warm-up
+    and edge effects are least reliable there).
     """
     out = df[df["snrPeak"] < snr_ceiling].copy()
     if edge_guard_s > 0 and not out.empty:

@@ -120,7 +120,6 @@ class ParameterEstimation(Observer, Observable):
             self.sampling = parameters.sampling
             
         self.Ncoeff = parameters.Ncoeff
-        self.sigma= parameters.sigma
 
     def update(self, event):
         """
@@ -147,16 +146,20 @@ class ParameterEstimation(Observer, Observable):
             Icoeff[i] = data.GetY(0, i)
         
 
-        # EnWDF is WDF's own internal detection statistic (the thresholded,
+        # EnWDF is WDF's own internal detection statistic: the thresholded,
         # per-window/per-basis RMS-over-local-sigma value that decided
-        # whether this trigger fired) -- kept for diagnostics, but snrMean/
-        # snrPeak below are the statistic used for ranking/characterizing
-        # triggers, since it is defined on a fixed, global noise scale
-        # (self.sigma) rather than a per-window local one.
+        # whether this trigger fired. snrMean/snrPeak recompute the same
+        # energy statistic here using event.mSigma -- the winning basis's
+        # own per-window sigma, exactly the value EnWDF was normalized by
+        # (see WDF2Classify::GetDataVector) -- instead of self.sigma (a
+        # single sigma frozen at Learn time from time-domain whitened
+        # residuals). Using self.sigma here used to silently drift out of
+        # sync with EnWDF's convention as real noise moved away from what
+        # Learn saw at t=0.
         EnWDF = event.mSNR
         tPeak, duration, freqMin, freqMean, freqMax, freqPeak = extract_meta_features(Icoeff, self.sampling)
 
-        snr = wavelet_energy_snr(coeff, self.sigma)["snr"]
+        snr = wavelet_energy_snr(coeff, event.mSigma)["snr"]
         snrMean = snrPeak = snr
 
         # the gps of the signal is identified by WDF as the t0 of analyzing window

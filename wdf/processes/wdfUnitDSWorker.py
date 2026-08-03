@@ -4,7 +4,7 @@ __credits__ = []
 __license__ = "GPL"
 __version__ = "1.0.0"
 __maintainer__ = "Elena Cuoco"
-__email__ = "elena.cuoco@ego-gw.it"
+__email__ = "elena.cuoco@unibo.it"
 __status__ = "Development"
 import time
 
@@ -25,6 +25,17 @@ import os
 
 class wdfUnitDSWorker(object):
     def __init__(self, parameters, fullPrint=1):
+        """
+        :type parameters: class Parameters object
+        :param parameters: run configuration (channel, sampling, window, downsampling,
+            AR whitening order, learn length, output paths, ...); copied onto a fresh
+            `Parameters` instance so per-worker mutations (e.g. `Ncoeff`, `resampling`,
+            `sigma`, set during `segmentProcess`) don't leak back into the caller's object.
+        :type fullPrint: int
+        :param fullPrint: verbosity passed through to `ParameterEstimation`/trigger
+            printing -- e.g. whether whitened-domain reconstruction columns (`rw*`) are
+            included in the output triggers.
+        """
         self.par = Parameters()
         self.par.copy(parameters)
         self.par.Ncoeff = parameters.window
@@ -35,6 +46,21 @@ class wdfUnitDSWorker(object):
         self.par.len=parameters.len
            
     def segmentProcess(self, segment, wavThresh=WaveletThreshold.dohonojohnston):
+        """Runs the full offline WDF pipeline over one contiguous GPS segment:
+        estimate (or load cached) AR-whitening parameters from a `learn`-second
+        warm-up read, then stream the rest of the segment through
+        downsampling -> double-whitening -> WDF trigger search, writing triggers to
+        `<outdir>/<run>/<itf>/<channel>_<gpsStart>/` as they're found.
+
+        :type segment: tuple[float, float]
+        :param segment: (gpsStart, gpsEnd) bounds of the segment to analyze.
+        :type wavThresh: pytsa.tsa.WaveletThreshold.WaveletThresholding
+        :param wavThresh: wavelet-coefficient thresholding rule passed to WDF's C++
+            engine (default `dohonojohnston`, the Donoho-Johnstone universal threshold).
+        :return: None -- triggers are written to disk (Parquet, or CSV for older runs),
+            not returned; a `ProcessEnded.check` marker file in the segment's output
+            directory means a prior run already completed it and this call is a no-op.
+        """
         gpsStart, gpsEnd = segment[0],segment[1]
         logging.info(
             "Analyzing segment: %s-%s for channel %s downsampled at %dHz"

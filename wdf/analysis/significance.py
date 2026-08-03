@@ -1,19 +1,17 @@
 """Time-slide background estimation and false-alarm-probability for
 CoincidenceFinder (or GNNCoincidenceScorer) candidates.
 
-Mirrors the shift-based null-distribution pattern already used in
-tandem-interact's tandemLib.characterization.timeslide_z / witness_coincidence
-(rng-driven time shift -> recompute statistic -> compare candidate against the
-resulting null distribution), but applied to cross-detector trigger
-coincidence instead of phase coherence -- the standard GW-search technique for
-estimating how often detectors would coincide by pure accident.
+Applies the standard GW-search shift-based null-distribution technique (a
+non-physical time shift decorrelates real coincident signals while leaving
+each detector's own noise statistics intact, so recomputing the coincidence
+statistic under many shifts estimates how often detectors would coincide by
+pure accident) to cross-detector trigger timing.
 
-CAVEAT (see also roc.py and the project notebook): with a single continuous
-GWOSC segment rather than months of real background, shifts within that one
-segment are not fully independent in the way day-scale slides are in
-production pipelines -- a single loud glitch can dominate many shifts. FAP/FAR
-here should be read as "within this analyzed segment", not a calibrated
-events/year rate.
+CAVEAT (see also roc.py): with a single continuous real-data segment rather
+than months of real background, shifts within that one segment are not fully
+independent in the way day-scale slides are in production pipelines -- a
+single loud glitch can dominate many shifts. FAP/FAR here should be read as
+"within this analyzed segment", not a calibrated events/year rate.
 """
 from __future__ import annotations
 
@@ -34,6 +32,22 @@ class BackgroundEstimator:
         max_shift_s: float | None = None,
         seed: int = 0,
     ):
+        """
+        :type coincidence_finder: CoincidenceFinder
+        :param coincidence_finder: the same finder (with the same settings) used
+            for the real, unshifted foreground candidates, so background and
+            foreground are directly comparable.
+        :type n_slides: int
+        :param n_slides: number of independent time shifts to draw.
+        :type min_shift_s: float
+        :param min_shift_s: minimum shift magnitude, seconds (keeps a shift from
+            landing close enough to zero that it barely decorrelates real signals).
+        :type max_shift_s: float | None
+        :param max_shift_s: maximum shift magnitude, seconds; default (None) uses
+            the shifted detector's own segment span minus `min_shift_s`.
+        :type seed: int
+        :param seed: RNG seed for reproducible shifts.
+        """
         self.coincidence_finder = coincidence_finder
         self.n_slides = n_slides
         self.min_shift_s = min_shift_s
@@ -62,6 +76,23 @@ class BackgroundEstimator:
         Output: one row per (accidental) candidate found across all slides,
         with an added `slide_index` column. Slides producing no accidental
         coincidence contribute zero rows -- not padded with NaN.
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: {ifo: TriggerClusterer.clustered_events output for that
+            detector}, the real (unshifted) per-IFO clustered events.
+        :type segment_bounds: dict[str, tuple[float, float]]
+        :param segment_bounds: {ifo: (gps_start, gps_end)} of the analyzed segment
+            for that detector.
+        :type finder_method: str
+        :param finder_method: name of the `CoincidenceFinder` method to call on each
+            slide's shifted candidates -- "find" (pairwise) or "find_network" (N-way).
+        :param finder_kwargs: forwarded to `finder_method` on every slide (e.g.
+            `min_ifos=3` for `find_network`).
+        :return: pandas.DataFrame -- one row per accidental candidate across all
+            slides, same columns as `finder_method`'s own output plus `slide_index`;
+            empty if no slide produced any accidental coincidence.
+        :raises ValueError: if `clustered` has fewer than 2 detectors, or if any
+            shiftable detector's segment is too short for `min_shift_s`/`max_shift_s`.
         """
         finder = getattr(self.coincidence_finder, finder_method)
         ifos = list(clustered.keys())

@@ -1,9 +1,11 @@
 """Classical time-window multi-detector coincidence between per-IFO clustered
 WDF events (TriggerClusterer.clustered_events output).
 
-No coincidence code of any kind exists in wdf/p4TSA -- TANDEM_4's
-`plot_glitchgram` overlays H1/L1 triggers visually but never actually tests
-whether they coincide. This module is the first real cross-detector test.
+No coincidence code of any kind exists in wdf/p4TSA itself -- WDF produces
+per-detector triggers only, with no cross-detector timing test built in.
+This module is that first real cross-detector test: visually overlaying two
+detectors' triggers is not the same as actually testing whether they
+coincide within a physically justified window.
 """
 from __future__ import annotations
 
@@ -42,6 +44,18 @@ class CoincidenceFinder:
         timing_jitter_s: float = 0.01,
         network_stat: str = "quadrature_sum",
     ):
+        """
+        :type ifo_pairs: list[tuple[str, str]] | None
+        :param ifo_pairs: detector pairs to test for `find` (default: every pairwise
+            combination of the IFOs present in the `clustered` dict passed to `find`).
+        :type timing_jitter_s: float
+        :param timing_jitter_s: margin added on top of light-travel-time in
+            `coincidence_window` (see that method for why).
+        :type network_stat: str
+        :param network_stat: how to combine per-detector `snrMax` into one candidate
+            `network_snr` -- one of "quadrature_sum", "min", "mean".
+        :raises ValueError: if `network_stat` is not one of the three above.
+        """
         if network_stat not in ("quadrature_sum", "min", "mean"):
             raise ValueError(f"unknown network_stat {network_stat!r}")
         self.ifo_pairs = ifo_pairs
@@ -52,9 +66,17 @@ class CoincidenceFinder:
         """window_s = light_travel_time(ifo_a, ifo_b) + 2 * timing_jitter_s.
 
         The jitter margin matters because WDF's own trigger peak is not a
-        matched-filter timing measurement (TANDEM_4's plot_data_wdf_overlay
-        flags this explicitly) -- light-travel-time alone would be too
-        tight a window.
+        matched-filter timing measurement -- it is the center of the
+        analysis window that fired, not a sub-sample-accurate arrival time --
+        so light-travel-time alone would be too tight a window.
+
+        :type ifo_a: str
+        :param ifo_a: first detector's name (e.g. "H1").
+        :type ifo_b: str
+        :param ifo_b: second detector's name (e.g. "L1").
+        :return: float -- coincidence window in seconds.
+        :raises KeyError: if no light-travel-time baseline is known for this
+            detector pair (see `LIGHT_TRAVEL_TIME_S`).
         """
         key = frozenset((ifo_a, ifo_b))
         try:
@@ -79,6 +101,14 @@ class CoincidenceFinder:
         detector). Output: one row per coincident candidate -- unmatched
         (single-detector-only) clusters are NOT included; they remain
         visible only in the per-IFO clustered_events DataFrames.
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: {ifo: TriggerClusterer.clustered_events output for that
+            detector}.
+        :return: pandas.DataFrame -- one row per pairwise coincidence candidate,
+            columns per `CANDIDATE_COLUMNS_BASE` plus per-IFO `snr_<ifo>`/
+            `freq_<ifo>`/`cluster_id_<ifo>` columns for each pair tested; empty
+            (with `CANDIDATE_COLUMNS_BASE` columns only) if nothing coincides.
         """
         ifos = list(clustered.keys())
         pairs = self.ifo_pairs or list(combinations(ifos, 2))
@@ -138,6 +168,18 @@ class CoincidenceFinder:
         for a genuine coincidence, but scales to three or more IFOs without
         a per-network-size branch. Candidates spanning fewer than `min_ifos`
         distinct detectors are dropped (e.g. a lone unmatched cluster).
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: {ifo: TriggerClusterer.clustered_events output for that
+            detector}.
+        :type min_ifos: int
+        :param min_ifos: minimum number of distinct detectors a connected
+            component must span to be kept as a candidate.
+        :return: pandas.DataFrame -- one row per connected-component candidate,
+            columns per `NETWORK_CANDIDATE_COLUMNS_BASE` plus per-involved-IFO
+            `snr_<ifo>`/`freq_<ifo>`/`cluster_id_<ifo>` columns, sorted by
+            `gps_candidate`; empty (with `NETWORK_CANDIDATE_COLUMNS_BASE` columns
+            only) if nothing qualifies.
         """
         from scipy.sparse import csr_matrix
         from scipy.sparse.csgraph import connected_components

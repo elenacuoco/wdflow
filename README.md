@@ -77,7 +77,7 @@ pip install -e ".[pipeline,gnn,data,dev]"
 
 - `pipeline` -- `p4tsa` (trigger generation).
 - `gnn` -- `torch` (`wdf.analysis.gnn`).
-- `data` -- `gwpy` (GWOSC data fetching, notebook use).
+- `data` -- `gwpy` (public GW strain data fetching, e.g. from GWOSC).
 - `dev` -- `pytest`.
 
 `p4tsa`/`pytsa` is not declared as a hard dependency; it's conda-installed / built from source in

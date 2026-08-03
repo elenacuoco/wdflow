@@ -3,13 +3,12 @@ or GNN `gnn_score`), built from known-event candidate scores (TRUE class)
 against time-slide background candidate scores (FALSE class, from
 significance.BackgroundEstimator).
 
-CAVEAT: with a single continuous GWOSC segment there are only a handful of
-known positives at most -- both the curve and its AUC carry large
+CAVEAT: with a single continuous real-data segment there are only a handful
+of known positives at most -- both the curve and its AUC carry large
 uncertainty at this sample size, and the "positive" events were themselves
 selected because other pipelines already confirmed them, so this measures
 whether the statistic ranks confirmed events above this segment's own
-accidental background, not sensitivity to a representative population. See
-the project notebook's ROC section for the full discussion.
+accidental background, not sensitivity to a representative population.
 """
 from __future__ import annotations
 

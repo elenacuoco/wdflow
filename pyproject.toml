@@ -2,7 +2,7 @@
 name = "wdflow"
 version = "0.2.0"
 authors = [
-  { name="Elena Cuoco", email="elena.cuoco@ego-gw.it" },
+  { name="Elena Cuoco", email="elena.cuoco@unibo.it" },
 ]
 dependencies = [
   'numpy',
@@ -28,7 +28,7 @@ classifiers = [
 # already-saved trigger files, so p4tsa stays an extra rather than a hard
 # dependency.
 pipeline = ["p4tsa", "coloredlogs"]
-gnn = ["torch>=2.1"]
+gnn = ["torch>=2.1", "torch_geometric>=2.5"]
 data = ["gwpy>=3.0"]
 dev = ["pytest>=7"]
 

@@ -100,6 +100,36 @@ def test_vectorized_build_matches_reference_loop():
         np.testing.assert_allclose(f, ref_map[tuple(e.tolist())], rtol=1e-5, atol=1e-5)
 
 
+def test_fit_batches_multiple_segments_together():
+    """batch_size=None (the default) should put every segment's graph into
+    one torch_geometric Batch per epoch -- exercises Batch.from_data_list
+    across graphs of different sizes (different node/edge counts), which is
+    exactly the multi-segment throughput path this module exists for.
+    """
+    examples = []
+    for seed, (n_h1, n_l1) in enumerate([(15, 15), (8, 12), (20, 5)]):
+        clustered = {
+            "H1": _synth_clustered("H1", n_h1, 1000.0 + seed * 200, seed * 2),
+            "L1": _synth_clustered("L1", n_l1, 1000.0 + seed * 200, seed * 2 + 1),
+        }
+        graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered)
+        rng = np.random.default_rng(seed)
+        labels = (rng.uniform(0, 1, len(graph.cross_edges)) > 0.8).astype(float)
+        examples.append((graph, labels))
+
+    model = GNNCoincidenceScorer(node_dim=examples[0][0].node_features.shape[1], hidden=8, seed=0)
+    history_full_batch = model.fit(examples, epochs=20, lr=1e-2)
+    assert len(history_full_batch) > 0
+    assert history_full_batch[-1] <= history_full_batch[0]
+
+    # batch_size=1 (one segment per chunk, gradients accumulated/averaged
+    # across chunks each epoch) should also train without error -- checks
+    # the chunking path, not just the single-Batch-per-epoch default.
+    model2 = GNNCoincidenceScorer(node_dim=examples[0][0].node_features.shape[1], hidden=8, seed=0)
+    history_chunked = model2.fit(examples, epochs=20, lr=1e-2, batch_size=1)
+    assert len(history_chunked) > 0
+
+
 def test_scorer_device_selection():
     clustered = {"H1": _synth_clustered("H1", 5, 1000.0, 1), "L1": _synth_clustered("L1", 5, 1000.0, 2)}
     graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered)

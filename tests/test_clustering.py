@@ -60,6 +60,33 @@ def test_clean_triggers_drops_artifacts():
     assert len(cleaned) == len(df) - 1
 
 
+def test_clustered_events_cluster_id_joins_back_to_fit_predict_output():
+    """Regression test for a real bug: clustered_events() used to emit
+    cluster_id as a string ("0", "n956") while fit_predict()'s own raw
+    output keeps it int64 (0, -1) -- any join between the two silently
+    matched zero rows, always, for every cluster including real
+    multi-trigger ones.
+    """
+    df = synth_raw_triggers("H1", n_background=30, gps0=1000.0, span_s=100.0,
+                             seed=9, burst_gps=1050.0, burst_n=8, burst_snr=15.0)
+    tc = TriggerClusterer(time_eps_s=0.5, freq_eps_hz=50.0, min_samples=2)
+    labeled = tc.fit_predict(df)
+    events = tc.clustered_events(labeled)
+
+    real_clusters = events[~events["is_noise"]]
+    assert len(real_clusters) > 0, "fixture should produce at least one real (non-noise) cluster"
+    for _, row in real_clusters.iterrows():
+        members = labeled[labeled["cluster_id"] == row["cluster_id"]]
+        assert len(members) == row["n_triggers"]
+
+    noise_rows = events[events["is_noise"]]
+    assert len(noise_rows) > 0, "fixture should produce at least one noise singleton"
+    for _, row in noise_rows.iterrows():
+        assert row["n_triggers"] == 1
+        source = labeled.iloc[row["trigger_index"]]
+        assert source["cluster_id"] == -1
+
+
 def test_clustered_events_when_every_trigger_is_noise():
     # regression test: pandas' default "str" dtype breaks boolean-mask assignment
     # (group_key[noise_mask] = [...]) specifically when the mask selects every row

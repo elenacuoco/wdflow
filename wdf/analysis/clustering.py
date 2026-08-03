@@ -17,7 +17,7 @@ from sklearn.cluster import DBSCAN
 CLUSTER_COL = "cluster_id"
 
 CLUSTERED_EVENT_COLUMNS = [
-    "cluster_id", "ifo", "gpsStart", "gpsMax", "snrMean", "snrMax",
+    "cluster_id", "is_noise", "trigger_index", "ifo", "gpsStart", "gpsMax", "snrMean", "snrMax",
     "freqMean", "freqMax", "freqMin", "duration", "wave",
     "n_triggers", "gps_span_s",
 ]
@@ -44,6 +44,30 @@ class TriggerClusterer:
         freq_col: str = "freqPeak",
         snr_col: str = "snrPeak",
     ):
+        """
+        :type method: str
+        :param method: "dbscan" (sklearn `DBSCAN`) or "greedy" (sklearn-free
+            peak-merge baseline/cross-check, see `_greedy_labels`).
+        :type time_eps_s: float
+        :param time_eps_s: time-axis clustering radius, seconds.
+        :type freq_eps_hz: float
+        :param freq_eps_hz: frequency-axis clustering radius, Hz.
+        :type min_samples: int
+        :param min_samples: minimum members for a group to count as a real cluster
+            rather than noise/singletons (same semantics as `sklearn.cluster.DBSCAN`'s
+            `min_samples`, applied identically in the greedy method too).
+        :type snr_weight: float
+        :param snr_weight: if > 0, adds `snr_weight * log10(snr_col)` as a third
+            clustering feature alongside time/frequency (0 disables it).
+        :type time_col: str
+        :param time_col: trigger column used as the time-axis clustering feature.
+        :type freq_col: str
+        :param freq_col: trigger column used as the frequency-axis clustering feature.
+        :type snr_col: str
+        :param snr_col: trigger column used to rank cluster members (peak selection
+            in `clustered_events`) and as the optional SNR clustering feature.
+        :raises ValueError: if `method` is not "dbscan" or "greedy".
+        """
         if method not in ("dbscan", "greedy"):
             raise ValueError(f"method must be 'dbscan' or 'greedy', got {method!r}")
         self.method = method
@@ -62,6 +86,12 @@ class TriggerClusterer:
         Output: the same DataFrame with an added integer `cluster_id` column.
         DBSCAN noise points (`-1`) are kept, not dropped, so isolated
         sub-threshold raw triggers stay visible downstream as singletons.
+
+        :type triggers: pandas.DataFrame
+        :param triggers: raw per-window triggers for exactly one detector.
+        :return: pandas.DataFrame -- `triggers` (row order/index reset) with an added
+            int `cluster_id` column (`-1` = noise/singleton, `>= 0` = a real cluster).
+        :raises ValueError: if `triggers` contains more than one distinct `ifo` value.
         """
         if triggers.empty:
             out = triggers.copy()
@@ -93,10 +123,11 @@ class TriggerClusterer:
         return labels
 
     def _greedy_labels(self, df: pd.DataFrame) -> np.ndarray:
-        """2-D generalization of tandemLib.characterization.find_glitches's
-        1-D peak-merge-within-min_sep_s: merge a trigger into an existing
-        open cluster if it is within [time_eps_s, freq_eps_hz] of that
-        cluster's most recent member; sklearn-free baseline/cross-check.
+        """Greedy peak-merge clustering, generalized to 2-D (time and
+        frequency, vs. a 1-D time-only merge): merge a trigger into an
+        existing open cluster if it is within [time_eps_s, freq_eps_hz] of
+        that cluster's most recent member; sklearn-free baseline/cross-check
+        against `_dbscan_labels` above.
         """
         order = np.argsort(df[self.time_col].to_numpy())
         labels = np.full(len(df), -1, dtype=int)
@@ -138,26 +169,42 @@ class TriggerClusterer:
         (`cluster_id == -1`) are each kept as their own singleton "cluster"
         rather than dropped, so sub-threshold isolated candidates remain
         visible to CoincidenceFinder.
+
+        `cluster_id` here is the same int64 fit_predict uses (`-1` for
+        noise, not a string escape) -- `labeled[labeled.cluster_id ==
+        row.cluster_id]` recovers a real cluster's exact member triggers by
+        matching directly against fit_predict's own output. It can't do that
+        for noise rows on its own, since every noise trigger in
+        fit_predict's output shares the same `-1`: use `trigger_index`
+        (fit_predict output's row position) to recover a specific noise
+        row's one source trigger instead, e.g.
+        `labeled.iloc[[row.trigger_index]]`. `is_noise` (`cluster_id == -1`)
+        is provided as a readability convenience for that branch.
         """
         if labeled_triggers.empty:
             return pd.DataFrame(columns=CLUSTERED_EVENT_COLUMNS)
 
         df = labeled_triggers.reset_index(drop=True).copy()
         noise_mask = df[CLUSTER_COL] == -1
-        # object (not pandas' default "str") dtype array: pandas >=3's StringArray
-        # boolean-mask-assignment raises "only integer scalar arrays can be
-        # converted to a scalar index" when the mask selects most/all rows.
+        # Internal-only grouping key, unique per row for noise triggers (so
+        # groupby doesn't collapse every noise point into one row) -- not
+        # the same thing as the *output* cluster_id below, which stays the
+        # real int64 label (or -1) fit_predict produced.
         group_key = df[CLUSTER_COL].astype(str).to_numpy(dtype=object)
         group_key[noise_mask.to_numpy()] = [f"n{i}" for i in df.index[noise_mask]]
         df["_group"] = group_key
+        df["_row_index"] = df.index
 
         rows = []
         for gid, g in df.groupby("_group", sort=False):
             peak = g.loc[g[self.snr_col].idxmax()]
             n = len(g)
             gps_span_s = float(g[self.time_col].max() - g[self.time_col].min())
+            is_noise = bool(g[CLUSTER_COL].iloc[0] == -1)
             rows.append(dict(
-                cluster_id=gid,
+                cluster_id=int(g[CLUSTER_COL].iloc[0]),
+                is_noise=is_noise,
+                trigger_index=int(g["_row_index"].iloc[0]) if is_noise else -1,
                 ifo=g["ifo"].iloc[0] if "ifo" in g.columns else None,
                 gpsStart=float(g["gps"].min()) if "gps" in g.columns else float(g[self.time_col].min()),
                 gpsMax=float(peak[self.time_col]),

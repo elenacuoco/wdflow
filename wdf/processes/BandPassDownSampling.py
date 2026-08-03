@@ -8,6 +8,12 @@ import numpy as np
 from scipy.signal import sosfilt, sosfiltfilt, butter
 
 def SV_to_array(seqView):
+    """Copies a pytsa SeqView's single channel into a plain numpy array.
+
+    :type seqView: pytsa.tsa.SeqView_double_t
+    :param seqView: sequence view to read from (channel 0 only).
+    :return: numpy.ndarray -- 1-D array of length `seqView.GetSize()`.
+    """
     y = np.zeros(seqView.GetSize())
     for i in range(seqView.GetSize()):
         y[i] = seqView.GetY(0, i)
@@ -73,7 +79,20 @@ class BandPassDownSampling(object):
 
     def Process(self, data):
         """
-        The method for the downsampling the data
+        The method for the downsampling the data.
+
+        On the first call after `estimation=True` construction, applies a
+        zero-phase (forward-backward, `sosfiltfilt`) band-pass + decimate in one
+        shot and clears the estimation flag. On every subsequent call, runs a
+        streaming forward-then-backward `sosfilt` pass instead (carrying filter
+        state and a `padlen`-sized prefix/lookahead buffer across calls), so
+        consecutive chunks stay continuous without needing the whole segment in
+        memory at once.
+
+        :type data: pytsa.tsa.SeqView_double_t
+        :param data: input data chunk at the original sampling rate.
+        :return: pytsa.tsa.SeqView_double_t -- band-passed, decimated data at
+            `self.resampling` Hz.
         """
         ##
         DSdata = data.GetSize()
