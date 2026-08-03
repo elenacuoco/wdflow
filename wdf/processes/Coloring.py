@@ -2,6 +2,7 @@ __author__ = "Elena Cuoco"
 __project__ = "wdf"
 
 from pytsa.tsa import ARMAFilter, ArBurgEstimator
+from wdf.processes.ar_lv_io import load_ar_burg
 
 
 class Coloring(object):
@@ -23,9 +24,10 @@ class Coloring(object):
         and builds the corresponding recoloring ARMA filter.
 
         :type ARfile: basestring
-        :param ARfile: file with the AutoRegressive coefficients
+        :param ARfile: file with the AutoRegressive coefficients (HDF5 -- see
+            wdf.processes.ar_lv_io -- not p4TSA's old XML Save/Load)
         """
-        self.ADE.Load(ARfile, "txt")
+        load_ar_burg(ARfile, self.ADE)
         arorder = self.ARorder + 1
         self.ARMAflt = ARMAFilter(arorder, 1, self.ADE.GetAR(0))
         self.ARMAflt.SetARFilter(0, 1.0)

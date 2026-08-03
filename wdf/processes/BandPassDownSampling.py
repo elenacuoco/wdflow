@@ -25,14 +25,16 @@ class BandPassDownSampling(object):
     The downsampling class base on scipy and numpy library. First implemente a band pass sos filter , and late decimate the data
     """
 
-    def __init__(self, Parameters, order=5, low_freq_hp=4., padlen=None,estimation=False):
+    def __init__(self, Parameters, order=None, low_freq_hp=4., padlen=None,estimation=False):
         """
         The constructor
 
         :type Parameters: dict
         :param Parameters: The dictionary containing list of parameters
         :type order: int
-        :order : the filter order
+        :order : the filter order; if None (the default), taken from
+            `Parameters.FilterOrder`, falling back to 5 if that is unset. Pass a
+            number to override the configured value.
         :type padlen:int
         :padlen:  the lenght of workspace for backward filter. It must be <= the lenght of the input data but more that 1 sampling frame to cut th transient effect
         """
@@ -51,14 +53,26 @@ class BandPassDownSampling(object):
 
         self.nyquist_frequency = 0.5 * self.sampling
         self.cutoff_frequency = 0.98 * (self.nyquist_frequency / self.ResamplingFactor)
-        self.low_freq_hp=low_freq_hp 
-        # Set the default filter order if not specified
+        # Parameters.LowFrequencyCut (the run's configured highpass edge, e.g.
+        # CFG.wdf_LowFrequencyCut) was never actually wired in here -- this
+        # class always used the low_freq_hp=4. default regardless of what a
+        # caller configured, silently leaving more sub-cutoff (seismic-band)
+        # power in the band-passed data than intended. Confirmed against real
+        # GW170817 H1/L1 triggers: ~95% of H1's post-clean_triggers events had
+        # their winning wavelet coefficient in the coarsest [0, 2] Hz band --
+        # well below the notebook's own configured 10 Hz cutoff.
+        self.low_freq_hp = getattr(Parameters, "LowFrequencyCut", low_freq_hp)
+        # Parameters.FilterOrder had exactly the same problem as LowFrequencyCut
+        # above: a run's configured value was written into the config (and saved
+        # into parametersUsed.json), but nothing in the package ever read it --
+        # the band-pass was always built at the order=5 signature default. That
+        # matters here because the high-pass corner sits on the steep part of the
+        # seismic wall (the raw strain PSD climbs ~1e7 between 100 Hz and 10 Hz),
+        # so the roll-off rate directly sets how much sub-cutoff power survives
+        # into the AR-whitening stage.
         if order is None:
-            self.order = 4
-        else:
-            self.order = order
-            
-         
+            order = getattr(Parameters, "FilterOrder", None)
+        self.order = 5 if order is None else int(order)
 
          # Apply a low-pass filter to the data to prevent aliasing
         self.sos = butter(self.order,[self.low_freq_hp, self.cutoff_frequency], fs=self.sampling, btype='bandpass', output='sos')

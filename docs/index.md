@@ -7,4 +7,5 @@
 :hidden:
 
 api
+design/event-candidates
 ```

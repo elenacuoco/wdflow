@@ -19,10 +19,10 @@ extensions = [
 ]
 
 # wdf.processes/wdf.observers need the compiled p4TSA/pytsa core, and
-# wdf.analysis.gnn imports torch at module level; RTD's build environment
-# doesn't need either actually installed to document the API -- autodoc just
-# needs the imports to not fail.
-autodoc_mock_imports = ["pytsa", "torch"]
+# wdf.analysis.gnn imports torch/torch_geometric at module level; RTD's build
+# environment doesn't need any of these actually installed to document the
+# API -- autodoc just needs the imports to not fail.
+autodoc_mock_imports = ["pytsa", "torch", "torch_geometric"]
 
 autodoc_default_options = {
     "members": True,

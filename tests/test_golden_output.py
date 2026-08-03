@@ -15,15 +15,18 @@ GOLDEN_CSV = os.path.join(FIXTURES_DIR, "golden_triggers.csv")
 COMPARE_COLUMNS = ["gps", "gpsPeak", "duration", "EnWDF", "snrMean", "snrPeak",
                    "freqMin", "freqMean", "freqMax", "freqPeak", "wave"]
 
-# WDF2Classify's candidate basis set: the orthonormal GSL family only (Haar +
-# every Daubechies/Daubechies-centered order it supports). The biorthogonal
-# B-spline family (Bspline*/BsplineC*) is excluded -- see WDF2Classify.cpp's
-# GetDataVector for why (it isn't L2-energy-preserving, so a pooled-median
-# sigma estimate lets it win basis selection spuriously even on pure noise).
+# WDF2Classify's candidate basis set (2026-08-03, trimmed to 10 -- see
+# WDF2Classify.cpp's kCandidateBases for the full rationale): Haar,
+# Daubechies-centered at every other order (4/8/12/16/20 -- plain Daub and
+# the skipped centered orders are near-duplicates of these, dropped),
+# Symlet 4/8, Coiflet 1/2. All orthonormal. The biorthogonal B-spline family
+# (Bspline*/BsplineC*) and a plain (non-wavelet-packet) DCT both remain
+# excluded -- see WDF2Classify.cpp for why.
 ORTHONORMAL_WAVES = {
     "Haar",
-    "Daub4", "Daub6", "Daub8", "Daub10", "Daub12", "Daub14", "Daub16", "Daub18", "Daub20",
-    "DaubC4", "DaubC6", "DaubC8", "DaubC10", "DaubC12", "DaubC14", "DaubC16", "DaubC18", "DaubC20",
+    "DaubC4", "DaubC8", "DaubC12", "DaubC16", "DaubC20",
+    "Sym4", "Sym8",
+    "Coif1", "Coif2",
 }
 
 
@@ -56,3 +59,27 @@ def test_no_biorthogonal_wave_wins_on_pure_noise(tmp_outdir):
     result = run_segment_process(tmp_outdir)
     seen = set(result["wave"].unique())
     assert seen <= ORTHONORMAL_WAVES, f"unexpected/non-orthonormal wave(s): {seen - ORTHONORMAL_WAVES}"
+
+
+def test_no_end_of_segment_zero_padding_artifact(tmp_outdir):
+    """Regression guard for the end-of-segment margin bug (found 2026-08-03 on
+    real GW170817 data): with only one par.len of safety margin, the main
+    detection loop in wdfUnitDSWorker.segmentProcess could issue a final read
+    reaching a full par.len past the segment's true end. FrameIChannel didn't
+    raise for that -- it silently returned the read with its tail
+    zero-padded, which BandPassDownSampling/DWhitening's forward-backward,
+    lookahead-dependent filtering turned into a large, near-constant
+    whitened artifact, which WDF2Classify then flagged as a spurious
+    astronomically-high-EnWDF trigger (this pure-noise fixture's own old
+    golden output had one, up to this fix). On pure Gaussian noise, EnWDF
+    should never be more than a handful of noise-sigma above threshold --
+    catching this directly (rather than only via the exact-value golden
+    diff above) so a future regression doesn't get silently re-pinned into
+    a new golden fixture.
+    """
+    result = run_segment_process(tmp_outdir)
+    assert result["EnWDF"].max() < 50.0, (
+        f"EnWDF max={result['EnWDF'].max():.3g} on pure noise -- suspiciously high, "
+        "likely the end-of-segment zero-padding artifact (see wdfUnitDSWorker's "
+        "self.par.gpsEnd margin)"
+    )

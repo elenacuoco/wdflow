@@ -11,6 +11,7 @@ dependencies = [
   'scikit-learn>=1.2',
   'matplotlib>=3.7',
   'pyarrow',
+  'h5py',
 ]
 description = "WDF (Wavelet Detection Filter): trigger-generation pipeline (`wdf.processes`/`wdf.observers`) and downstream trigger analysis (`wdf.analysis`: clustering, coincidence, GNN, ROC/FAP) in one package."
 readme = "README.md"

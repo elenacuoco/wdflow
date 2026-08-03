@@ -228,21 +228,24 @@ PIXEL_CLUSTERED_EVENT_COLUMNS = [
 ]
 
 
-def collect_significant_pixels(triggers: pd.DataFrame, fs: float, sigma: float) -> pd.DataFrame:
-    """Per-trigger wavelet-coefficient tiles (`wdfLib.wavelets.wavelet_coeff_tiles`),
-    kept only if `|coefficient| >= ` the Donoho-Johnstone universal threshold
-    (`wdfLib.wavelets.donoho_johnstone_threshold(sigma, n_coeff)`) -- a
-    general, transient-shape-agnostic statistical cutoff (not an arbitrary
-    top-N%), the same principle WDF's own C++ thresholding already defaults
-    to. One row per kept pixel, in absolute GPS time (`t_lo`/`t_hi` =
-    `trig["gps"]` + the tile's window-relative bounds), ready for
-    `WaveletPixelClusterer`.
+def collect_significant_pixels(triggers: pd.DataFrame, fs: float) -> pd.DataFrame:
+    """Time-frequency tiles of the non-zero wavelet coefficients, in absolute GPS.
 
-    Requires `wt0..wtN` columns on `triggers` (`fullPrint >= 1`). `sigma` is
-    the AR-whitening residual noise std (`parameters.sigma`), constant for a
-    whole detector/segment.
+    Each trigger's `wt*` coefficients are mapped to their tiles via
+    `wavelet_coeff_tiles` and shifted to absolute time by the trigger's `gps`.
+    `wt*` is expected in the form `WaveletThreshold` emits, where coefficients
+    that did not pass thresholding are exactly 0, so keeping the non-zero ones
+    selects exactly the tiles that survived it.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers carrying `gps` and `wt0..wtN` columns
+        (`fullPrint >= 1`); triggers without `wt*` columns are skipped.
+    :type fs: float
+    :param fs: sampling rate the coefficients were computed at, Hz.
+    :return: pandas.DataFrame -- one row per tile with `PIXEL_COLUMNS`:
+        `trigger_index`, `ifo`, `t_lo`, `t_hi`, `f_lo`, `f_hi`, `energy`.
     """
-    from wdf.analysis.wavelets import donoho_johnstone_threshold, wavelet_coeff_tiles
+    from wdf.analysis.wavelets import wavelet_coeff_tiles
 
     rows = []
     for idx, trig in triggers.iterrows():
@@ -251,11 +254,10 @@ def collect_significant_pixels(triggers: pd.DataFrame, fs: float, sigma: float) 
         if not wt_cols:
             continue
         wt = trig[wt_cols].to_numpy(dtype=float)
-        thresh = donoho_johnstone_threshold(sigma, len(wt))
         tiles = wavelet_coeff_tiles(wt, fs)
         gps0 = trig["gps"]
         for t_lo, t_hi, f_lo, f_hi, mag in tiles:
-            if mag < thresh:
+            if mag == 0.0:
                 continue
             rows.append(dict(
                 trigger_index=idx, ifo=trig.get("ifo"),
@@ -280,14 +282,13 @@ class WaveletPixelClusterer:
     or overlap, and their time spans are within `time_tol_s` of each other.
     """
 
-    def __init__(self, time_tol_s: float, sigma: float):
+    def __init__(self, time_tol_s: float):
         self.time_tol_s = time_tol_s
-        self.sigma = sigma
 
     def fit(self, triggers: pd.DataFrame, fs: float) -> pd.DataFrame:
         """Returns `collect_significant_pixels`'s output with an added
         `cluster_id` column (connected-component label per pixel)."""
-        pixels = collect_significant_pixels(triggers, fs, self.sigma)
+        pixels = collect_significant_pixels(triggers, fs)
         pixels = pixels.reset_index(drop=True)
         labels = self._connected_components(pixels) if len(pixels) else np.array([], dtype=int)
         pixels["cluster_id"] = labels

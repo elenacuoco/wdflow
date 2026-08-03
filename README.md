@@ -82,6 +82,10 @@ pip install -e ".[pipeline,gnn,data,dev]"
 
 `p4tsa`/`pytsa` is not declared as a hard dependency; it's conda-installed / built from source in
 the environments this package targets, same convention as `wdf` and `wdf-detection-pipeline`.
+**`pip install pytsa` is not this dependency** -- there's an unrelated, same-named package on PyPI
+(a Python decorator library). The `pytsa` this package actually needs only ever comes from building
+[p4TSA](https://github.com/elenacuoco/p4TSA) itself (conda recipe or `pip install .` from a
+checkout of that repo) -- see its README for install instructions.
 
 ## Status
 

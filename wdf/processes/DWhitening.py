@@ -8,7 +8,8 @@ __project__ = "pytsa"
 
 from pytsa.tsa import DoubleWhitening
 from pytsa.tsa import SeqView_double_t as SV
-from pytsa.tsa import LatticeView 
+from pytsa.tsa import LatticeView
+from wdf.processes.ar_lv_io import load_lattice_view
 
 class DWhitening(object):
     
@@ -30,21 +31,16 @@ class DWhitening(object):
     
     def ParametersLoad(self, LVfile):
         """
-        This method loads the calculated AR and LV parameter from the file
-
-       
+        This method loads the calculated LV parameter from the file
+        (HDF5 -- see wdf.processes.ar_lv_io -- not p4TSA's old XML Save/Load).
 
         :type LVfile: basestring
         :param LVfile: file for Lattice View parameters
 
-        :return: Autoregressive and Lattice View
+        :return: Lattice View
         """
-       
-        self.LV.Load(LVfile, "txt")
-        ## not clear, but absolutly neeeded for initialitiate Dwhitening class
-        self.LV.Load(LVfile)
-       
-        return   self.LV  
+        load_lattice_view(LVfile, self.LV)
+        return self.LV
 
     def Process(self, data, dataw):
         """Synchronous double-whitening: blocks until `OutputSize` whitened

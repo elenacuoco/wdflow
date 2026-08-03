@@ -70,27 +70,49 @@ def test_donoho_johnstone_threshold_matches_closed_form():
     assert donoho_johnstone_threshold(sigma, 4 * n) > donoho_johnstone_threshold(sigma, n)
 
 
-def test_wavelet_energy_snr_only_counts_above_threshold_coefficients():
+def test_wavelet_energy_snr_counts_every_surviving_coefficient():
+    """`wt` reaches Python already thresholded by p4TSA's WaveletThreshold
+    (sub-threshold coefficients are exactly 0), so the energy sum must take
+    every non-zero coefficient -- including small ones, which in the default
+    soft mode are legitimate survivors shrunk by the threshold.
+    """
     sigma = 1.0
-    wt = np.full(NCOEFF, 1e-9)  # negligible "noise" everywhere
     thresh = donoho_johnstone_threshold(sigma, NCOEFF)
-    wt[10] = thresh * 3  # well above threshold
-    wt[20] = thresh * 0.5  # below threshold -- must not contribute
+    wt = np.zeros(NCOEFF)          # C++ zeroed everything sub-threshold
+    wt[10] = thresh * 3            # a loud survivor
+    wt[20] = thresh * 1e-3         # a soft-shrunk survivor: tiny but real
 
     result = wavelet_energy_snr(wt, sigma)
-    assert result["n_above_threshold"] == 1
-    assert result["energy"] == pytest.approx((thresh * 3) ** 2, rel=1e-6)
+    assert result["n_nonzero"] == 2
+    expected = (thresh * 3) ** 2 + (thresh * 1e-3) ** 2
+    assert result["energy"] == pytest.approx(expected, rel=1e-6)
     assert result["snr"] == pytest.approx(np.sqrt(result["energy"]) / sigma, rel=1e-6)
+
+
+def test_wavelet_energy_snr_does_not_reapply_the_threshold():
+    """Regression guard: re-applying Donoho-Johnstone here discarded 69-90% of
+    each real trigger's energy (measured on GW250114) and left most triggers at
+    snr == 0, because soft thresholding upstream shrinks survivors below it.
+    """
+    sigma = 1.0
+    thresh = donoho_johnstone_threshold(sigma, NCOEFF)
+    wt = np.zeros(NCOEFF)
+    wt[[5, 6, 7]] = thresh * 0.1   # all survivors, all below a second DJ cut
+
+    result = wavelet_energy_snr(wt, sigma)
+    assert result["n_nonzero"] == 3
+    assert result["energy"] > 0
+    assert result["snr"] > 0
 
 
 def test_wavelet_energy_snr_energy_is_additive_across_coefficients():
     sigma = 1.0
     thresh = donoho_johnstone_threshold(sigma, NCOEFF)
-    wt = np.full(NCOEFF, 1e-9)
+    wt = np.zeros(NCOEFF)
     wt[[10, 20, 30]] = thresh * np.array([2.0, 3.0, 4.0])
 
     result = wavelet_energy_snr(wt, sigma)
-    assert result["n_above_threshold"] == 3
+    assert result["n_nonzero"] == 3
     expected_energy = sum((thresh * m) ** 2 for m in (2.0, 3.0, 4.0))
     assert result["energy"] == pytest.approx(expected_energy, rel=1e-6)
 

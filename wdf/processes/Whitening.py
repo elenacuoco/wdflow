@@ -2,6 +2,7 @@ __author__ = "Elena Cuoco"
 __project__ = "pytsa"
 
 from pytsa.tsa import ArBurgEstimator,LatticeView,LatticeFilter
+from wdf.processes.ar_lv_io import save_ar_burg, load_ar_burg, save_lattice_view, load_lattice_view
 
 
 class Whitening(object):
@@ -54,6 +55,7 @@ class Whitening(object):
     def ParametersSave(self, ARfile, LVfile):
         """
         This method saves the calculated AR and LV parameter to the file
+        (HDF5 -- see wdf.processes.ar_lv_io -- not p4TSA's old XML Save/Load).
 
         :type ARfile: basestring
         :param ARfile: file for AutoRegressive parameters
@@ -62,13 +64,14 @@ class Whitening(object):
         :param LVfile: file for Lattice View parameters
 
         """
-        self.ADE.Save(ARfile, "txt")
-        self.LV.Save(LVfile, "txt")
-        return 
+        save_ar_burg(ARfile, self.ADE)
+        save_lattice_view(LVfile, self.LV)
+        return
 
     def ParametersLoad(self, ARfile, LVfile):
         """
         This method loads the calculated AR and LV parameter from the file
+        (HDF5 -- see wdf.processes.ar_lv_io -- not p4TSA's old XML Save/Load).
 
         :type ARfile: basestring
         :param ARfile: file for AutoRegressive parameters
@@ -78,13 +81,13 @@ class Whitening(object):
 
         :return: Autoregressive and Lattice View
         """
-        self.ADE.Load(ARfile, "txt")
-        self.LV.Load(LVfile, "txt")
+        load_ar_burg(ARfile, self.ADE)
+        load_lattice_view(LVfile, self.LV)
         self.ADE.GetLatticeView(self.LV)
         ## not clear, but absolutly neeeded for initialitiate Dwhitening class
-        self.LV.Load(LVfile)
+        load_lattice_view(LVfile, self.LV)
         self.LF.init(self.LV)
-        return 
+        return
 
 
         

@@ -15,21 +15,24 @@ def donoho_johnstone_threshold(sigma: float, n_coeff: int) -> float:
 
 
 def wavelet_energy_snr(wt, sigma: float) -> dict:
-    """Energy-based SNR from wavelet coefficients `wt`: keeps coefficients
-    above `donoho_johnstone_threshold(sigma, len(wt))` and sums their energy.
+    """Integrated wavelet-domain energy and the SNR it implies on a noise scale.
 
-    - `energy`: sum of surviving coefficients' `|wt|^2`.
-    - `snr`: `sqrt(energy) / sigma`.
-    - `n_above_threshold`: how many of `len(wt)` coefficients survived.
-    - `threshold`: the threshold value used.
+    Sums the energy of every coefficient. `wt` is expected in the form
+    `WaveletThreshold` emits: coefficients that did not pass thresholding are
+    exactly 0, and under soft thresholding the survivors are shrunk by the
+    threshold, so the zeros already carry the significance decision.
+
+    :type wt: numpy.ndarray
+    :param wt: thresholded wavelet coefficients of one analysis window.
+    :type sigma: float
+    :param sigma: noise scale the SNR is expressed in.
+    :return: dict -- `energy` (sum of `|wt|^2`), `snr` (`sqrt(energy)/sigma`,
+        `nan` when `sigma <= 0`), `n_nonzero` (count of non-zero coefficients).
     """
     wt = np.asarray(wt, dtype=float)
-    threshold = donoho_johnstone_threshold(sigma, len(wt))
-    mask = np.abs(wt) >= threshold
-    energy = float(np.sum(wt[mask] ** 2))
+    energy = float(np.sum(wt ** 2))
     return dict(
         energy=energy,
         snr=float(np.sqrt(energy) / sigma) if sigma > 0 else float("nan"),
-        n_above_threshold=int(mask.sum()),
-        threshold=float(threshold),
+        n_nonzero=int(np.count_nonzero(wt)),
     )

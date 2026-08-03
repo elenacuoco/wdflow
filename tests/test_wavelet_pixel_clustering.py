@@ -7,12 +7,13 @@ from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds, donoho_jo
 
 NCOEFF = 16
 FS = 16.0  # -> window = NCOEFF/FS = 1.0s, J = log2(16) = 4 levels
-SIGMA = 1.0  # DJ threshold at N=16 -> sigma*sqrt(2*ln16) ~= 2.35: well below the "loud"
-             # magnitude (10.0) and well above the "noise" magnitude (1e-6) used below.
 
 
 def _trigger_row(gps, wt_index, magnitude, ifo="H1", ncoeff=NCOEFF):
-    wt = np.full(ncoeff, 1e-6)  # near-zero "noise" everywhere else
+    """One trigger row with a single non-zero coefficient, matching the
+    thresholded form WaveletThreshold emits (sub-threshold coefficients are 0).
+    """
+    wt = np.zeros(ncoeff)
     wt[wt_index] = magnitude
     row = {f"wt{i}": wt[i] for i in range(ncoeff)}
     row["gps"] = gps
@@ -20,14 +21,21 @@ def _trigger_row(gps, wt_index, magnitude, ifo="H1", ncoeff=NCOEFF):
     return row
 
 
-def test_collect_significant_pixels_keeps_only_above_dj_threshold():
+def test_collect_significant_pixels_keeps_the_surviving_coefficients():
     df = pd.DataFrame([_trigger_row(0.0, wt_index=8, magnitude=10.0)])
-    pixels = collect_significant_pixels(df, FS, sigma=SIGMA)
-    thresh = donoho_johnstone_threshold(SIGMA, NCOEFF)
-    assert thresh < 10.0 and thresh > 1e-6  # sanity on the test's own setup
-    # only the one loud coefficient should survive; the near-zero "noise" ones shouldn't
+    pixels = collect_significant_pixels(df, FS)
     assert len(pixels) == 1
     assert pixels["energy"].iloc[0] == pytest.approx(100.0)
+
+
+def test_collect_significant_pixels_keeps_arbitrarily_small_coefficients():
+    """A non-zero coefficient is kept whatever its magnitude: soft thresholding
+    shrinks survivors, so a legitimate one can be far below any threshold."""
+    tiny = donoho_johnstone_threshold(1.0, NCOEFF) * 1e-3
+    df = pd.DataFrame([_trigger_row(0.0, wt_index=8, magnitude=tiny)])
+    pixels = collect_significant_pixels(df, FS)
+    assert len(pixels) == 1
+    assert pixels["energy"].iloc[0] == pytest.approx(tiny ** 2)
 
 
 def test_overlapping_pixels_from_different_triggers_cluster_together():
@@ -36,7 +44,7 @@ def test_overlapping_pixels_from_different_triggers_cluster_together():
         _trigger_row(0.00, wt_index=8, magnitude=10.0),
         _trigger_row(0.05, wt_index=8, magnitude=10.0),  # tile t=[0.05,0.175) overlaps the first
     ])
-    clusterer = WaveletPixelClusterer(time_tol_s=0.0, sigma=SIGMA)
+    clusterer = WaveletPixelClusterer(time_tol_s=0.0)
     pixels = clusterer.fit(df, FS)
     assert len(pixels) == 2
     assert pixels["cluster_id"].nunique() == 1
@@ -47,7 +55,7 @@ def test_distant_pixels_do_not_cluster():
         _trigger_row(0.0, wt_index=8, magnitude=10.0),
         _trigger_row(10.0, wt_index=8, magnitude=10.0),  # far away in time
     ])
-    clusterer = WaveletPixelClusterer(time_tol_s=0.05, sigma=SIGMA)
+    clusterer = WaveletPixelClusterer(time_tol_s=0.05)
     pixels = clusterer.fit(df, FS)
     assert pixels["cluster_id"].nunique() == 2
 
@@ -58,7 +66,7 @@ def test_different_frequency_bands_do_not_cluster_even_if_close_in_time():
         _trigger_row(0.0, wt_index=8, magnitude=10.0),
         _trigger_row(0.0, wt_index=1, magnitude=10.0),
     ])
-    clusterer = WaveletPixelClusterer(time_tol_s=1.0, sigma=SIGMA)
+    clusterer = WaveletPixelClusterer(time_tol_s=1.0)
     pixels = clusterer.fit(df, FS)
     assert pixels["cluster_id"].nunique() == 2
 
@@ -69,10 +77,10 @@ def test_time_tol_s_bridges_a_gap():
         _trigger_row(0.0, wt_index=8, magnitude=10.0),
         _trigger_row(0.2, wt_index=8, magnitude=10.0),
     ])
-    too_tight = WaveletPixelClusterer(time_tol_s=0.01, sigma=SIGMA)
+    too_tight = WaveletPixelClusterer(time_tol_s=0.01)
     assert too_tight.fit(df, FS)["cluster_id"].nunique() == 2
 
-    loose_enough = WaveletPixelClusterer(time_tol_s=0.10, sigma=SIGMA)
+    loose_enough = WaveletPixelClusterer(time_tol_s=0.10)
     assert loose_enough.fit(df, FS)["cluster_id"].nunique() == 1
 
 
@@ -81,7 +89,7 @@ def test_clustered_events_aggregates_energy_and_span():
         _trigger_row(0.00, wt_index=8, magnitude=3.0),
         _trigger_row(0.05, wt_index=8, magnitude=4.0),
     ])
-    clusterer = WaveletPixelClusterer(time_tol_s=0.0, sigma=SIGMA)
+    clusterer = WaveletPixelClusterer(time_tol_s=0.0)
     pixels = clusterer.fit(df, FS)
     events = clusterer.clustered_events(pixels)
 
@@ -97,7 +105,7 @@ def test_clustered_events_aggregates_energy_and_span():
 
 def test_no_wt_columns_gives_empty_pixels():
     df = pd.DataFrame([{"gps": 0.0, "ifo": "H1", "snrPeak": 1.0}])
-    pixels = collect_significant_pixels(df, FS, sigma=SIGMA)
+    pixels = collect_significant_pixels(df, FS)
     assert pixels.empty
 
 

@@ -75,12 +75,14 @@ class wdfUnitDSWorker(object):
         if not os.path.isfile(dir_chunk + "ProcessEnded.check"):
             # self.parameter for whitening and its estimation self.parameters
             whiten = Whitening(self.par.ARorder)
-            self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s.txt" % (
+            # .h5 (not .txt): Whitening.ParametersSave/Load now use HDF5
+            # (wdf.processes.ar_lv_io), not p4TSA's old XML Save/Load.
+            self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s.h5" % (
                 self.par.ARorder,
                 self.par.resampling,
                 self.par.channel,
             )
-            self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s.txt" % (
+            self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s.h5" % (
                 self.par.ARorder,
                 self.par.resampling,
                 self.par.channel,
@@ -123,13 +125,25 @@ class wdfUnitDSWorker(object):
             self.par.dir = dir_chunk
             self.par.gps = gpsStart
             self.par.gpsStart = gpsStart
-            # Safety margin: the main loop below checks the *previous* read's
-            # start before issuing the next one, so its last read can extend
-            # up to par.len past the checked bound. FrameIChannel does not
-            # always raise cleanly when asked to read past the last available
-            # frame data, so this margin keeps every read within legitimately
-            # available data.
-            self.par.gpsEnd = gpsEnd-self.par.len
+            # Safety margin: the main loop below checks read k-1's start
+            # (S) against self.par.gpsEnd before issuing read k -- but read k
+            # itself spans [S + len, S + 2*len), not [S, S + len). Worst case
+            # S == self.par.gpsEnd, so read k's end can reach
+            # self.par.gpsEnd + 2*len: a single par.len margin under-covers
+            # this by a full par.len. Confirmed on real data (2026-08-03):
+            # with only one par.len of margin, the last triggered read
+            # requested data ~130-150s past the segment's true end;
+            # FrameIChannel did not raise, it silently returned that read
+            # with its tail zero-padded (std/nunique/wt* all consistent with
+            # a real, mostly-zero buffer, not an exception) -- and
+            # BandPassDownSampling/DWhitening's forward-backward, lookahead-
+            # dependent filtering turned that zero tail into a large,
+            # near-constant whitened artifact for most of the chunk, which
+            # WDF2Classify then flagged as a spurious high-EnWDF trigger.
+            # Two par.len of margin keeps every read within legitimately
+            # available data regardless of where read k-1's start falls
+            # relative to the boundary.
+            self.par.gpsEnd = gpsEnd - 2 * self.par.len
 
             ######################
             # self.parameter for sequence of data and the resampling

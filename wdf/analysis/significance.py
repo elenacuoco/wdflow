@@ -158,6 +158,61 @@ class BackgroundEstimator:
             result["far_per_day"] = fap / (segment_duration_s / 86400.0)
         return result
 
+    def rank_candidates(
+        self,
+        candidates: pd.DataFrame,
+        background: pd.DataFrame,
+        score_col: str = "network_snr",
+        segment_duration_s: float | None = None,
+    ) -> pd.DataFrame:
+        """Vectorized `false_alarm_probability` over every row of `candidates`
+        at once (a sorted-background-array + `searchsorted` lookup instead of
+        a per-row `(background[score_col] >= score).sum()` scan), for the
+        common case of ranking a whole candidate list rather than checking
+        one candidate picked by some other means (e.g. GPS proximity to a
+        known event).
+
+        :type candidates: pandas.DataFrame
+        :param candidates: candidate table (e.g. `CoincidenceFinder.find`/
+            `find_network`'s output), one row per candidate.
+        :type background: pandas.DataFrame
+        :param background: `background_distribution`'s output -- the accidental
+            background this same list should be ranked against.
+        :type score_col: str
+        :param score_col: column in both `candidates` and `background` used as the
+            detection statistic.
+        :type segment_duration_s: float | None
+        :param segment_duration_s: if given, also reports `far_per_day` (with the
+            same single-segment caveat as `false_alarm_probability`).
+        :return: pandas.DataFrame -- `candidates` with `fap`/`n_background_ge`/
+            `n_slides` columns added (plus `far_per_day` if `segment_duration_s` is
+            given), sorted by `fap` ascending (most significant first). Empty input
+            returns an empty DataFrame with those columns added.
+        """
+        out = candidates.copy()
+        if out.empty:
+            for col in ("fap", "n_background_ge", "n_slides"):
+                out[col] = pd.Series(dtype=float if col == "fap" else int)
+            if segment_duration_s is not None:
+                out["far_per_day"] = pd.Series(dtype=float)
+            return out
+
+        bg_sorted = np.sort(background[score_col].to_numpy(dtype=float))
+        scores = out[score_col].to_numpy(dtype=float)
+        # n_ge = count of background scores >= score, via searchsorted on the
+        # ascending-sorted background array: 'left' finds the first index
+        # with bg_sorted[idx] >= score, so len(bg_sorted) - idx is exactly
+        # that count.
+        idx = np.searchsorted(bg_sorted, scores, side="left")
+        n_ge = len(bg_sorted) - idx
+
+        out["n_background_ge"] = n_ge
+        out["n_slides"] = self.n_slides
+        out["fap"] = (1 + n_ge) / (1 + self.n_slides)
+        if segment_duration_s is not None:
+            out["far_per_day"] = out["fap"] / (segment_duration_s / 86400.0)
+        return out.sort_values("fap", kind="stable").reset_index(drop=True)
+
 
 def pool_backgrounds(backgrounds: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Pool background_distribution outputs from multiple segments into one

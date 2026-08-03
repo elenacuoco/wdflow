@@ -131,9 +131,9 @@ class CoincidenceFinder:
                 row_b = df_b.iloc[best_idx]
                 snr_a, snr_b = float(row_a["snrMax"]), float(row_b["snrMax"])
                 network_snr = self._network_snr([snr_a, snr_b])
-                weights = np.array([snr_a, snr_b])
                 gps_candidate = float(
-                    np.average([row_a["gpsMax"], row_b["gpsMax"]], weights=weights)
+                    np.average([row_a["gpsMax"], row_b["gpsMax"]],
+                               weights=[snr_a, snr_b])
                 )
                 candidates.append({
                     "gps_candidate": gps_candidate,

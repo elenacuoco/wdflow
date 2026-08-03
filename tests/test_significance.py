@@ -61,6 +61,45 @@ def test_background_distribution_with_find_network_for_three_ifos():
         assert "far_per_day" in result
 
 
+def test_rank_candidates_matches_per_row_fap_and_sorts_by_significance():
+    h1_events, h1_bounds = _clustered_and_bounds("H1", burst_gps=1250.0, seed=1)
+    l1_events, l1_bounds = _clustered_and_bounds("L1", burst_gps=1250.002, seed=2)
+    clustered = {"H1": h1_events, "L1": l1_events}
+    bounds = {"H1": h1_bounds, "L1": l1_bounds}
+
+    cf = CoincidenceFinder(timing_jitter_s=0.3)
+    real_candidates = cf.find(clustered)
+    assert len(real_candidates) > 0
+
+    be = BackgroundEstimator(cf, n_slides=50, min_shift_s=2.0, seed=0)
+    bg = be.background_distribution(clustered, bounds)
+
+    dur = h1_bounds[1] - h1_bounds[0]
+    ranked = be.rank_candidates(real_candidates, bg, segment_duration_s=dur)
+
+    # every row should match the per-row loop exactly
+    for _, row in real_candidates.iterrows():
+        expected = be.false_alarm_probability(row, bg, segment_duration_s=dur)
+        got = ranked.loc[ranked["candidate_id"] == row["candidate_id"]].iloc[0]
+        assert got["fap"] == expected["fap"]
+        assert got["n_background_ge"] == expected["n_background_ge"]
+        assert got["far_per_day"] == expected["far_per_day"]
+
+    assert (ranked["fap"].diff().dropna() >= 0).all()  # sorted ascending (most significant first)
+    assert len(ranked) == len(real_candidates)
+
+
+def test_rank_candidates_empty_input():
+    cf = CoincidenceFinder()
+    be = BackgroundEstimator(cf, n_slides=10)
+    import pandas as pd
+    empty = pd.DataFrame(columns=["candidate_id", "network_snr"])
+    bg = pd.DataFrame({"network_snr": [1.0, 2.0]})
+    ranked = be.rank_candidates(empty, bg)
+    assert ranked.empty
+    assert {"fap", "n_background_ge", "n_slides"} <= set(ranked.columns)
+
+
 def test_pool_backgrounds_tags_segment_id():
     import pandas as pd
     a = pd.DataFrame({"network_snr": [1.0, 2.0]})

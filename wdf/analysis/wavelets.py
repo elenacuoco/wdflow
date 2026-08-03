@@ -104,26 +104,28 @@ def donoho_johnstone_threshold(sigma: float, n_coeff: int) -> float:
 
 
 def wavelet_energy_snr(wt: np.ndarray, sigma: float) -> dict:
-    """Energy-based, SNR-like statistic computed directly from the raw
-    wavelet coefficients `wt*`, thresholded with `donoho_johnstone_threshold`.
+    """Integrated wavelet-domain energy and the SNR it implies on a noise scale.
 
-    - `energy`: sum of surviving (above-threshold) coefficients' `|wt|^2` --
-      an integrated energy over the window, not a single peak sample.
-    - `snr`: `sqrt(energy) / sigma` -- an amplitude-scale statistic (same
-      "sqrt of energy" normalization coherent WaveBurst's own `rho`/`eta_c`
-      detection statistic uses, `eta_c ~ sqrt(E_c)`), so it stays roughly on
-      a "how many noise-sigma" scale instead of a squared-power scale.
-    - `n_above_threshold`: how many of `len(wt)` coefficients survived.
-    - `threshold`: the threshold value used.
+    Sums the energy of every coefficient, giving an integrated statistic over
+    the window rather than a single peak sample. The `sqrt(energy)/sigma`
+    normalization keeps the result on an amplitude ("how many noise sigma")
+    scale rather than a squared-power one. `wt` is expected in the form
+    `WaveletThreshold` emits: coefficients that did not pass thresholding are
+    exactly 0, and under soft thresholding the survivors are shrunk by the
+    threshold, so the zeros already carry the significance decision.
+
+    :type wt: numpy.ndarray
+    :param wt: thresholded wavelet coefficients of one analysis window.
+    :type sigma: float
+    :param sigma: noise scale the SNR is expressed in.
+    :return: dict -- `energy` (sum of `|wt|^2`), `snr` (`sqrt(energy)/sigma`,
+        `nan` when `sigma <= 0`), `n_nonzero` (count of non-zero coefficients).
     """
-    threshold = donoho_johnstone_threshold(sigma, len(wt))
-    mask = np.abs(wt) >= threshold
-    energy = float(np.sum(np.asarray(wt)[mask] ** 2))
+    energy = float(np.sum(np.asarray(wt) ** 2))
     return dict(
         energy=energy,
         snr=float(np.sqrt(energy) / sigma) if sigma > 0 else float("nan"),
-        n_above_threshold=int(mask.sum()),
-        threshold=float(threshold),
+        n_nonzero=int(np.count_nonzero(wt)),
     )
 
 
