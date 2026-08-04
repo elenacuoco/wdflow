@@ -24,7 +24,7 @@ GROUND_TRUTH_COLUMNS = [
 ]
 
 
-def optimal_snr(strain, sample_rate=2048, low_frequency_cutoff=15.0,
+def optimal_snr(strain, sample_rate=2048, low_frequency_cutoff=5.0,
                 psd_name=DEFAULT_PSD):
     """Optimal matched-filter signal-to-noise ratio of a signal against a PSD.
 
@@ -87,7 +87,7 @@ def project_cbc(hp, hc, ra, dec, polarization, gps, detectors=("H1", "L1")):
 
 
 def draw_injections(n_cbc=250, n_glitch=750, duration=28800.0, start_gps=0.0,
-                    edge_pad=64.0, snr_range=(4.0, 50.0), seed=0,
+                    edge_pad=500.0, snr_range=(4.0, 50.0), seed=0,
                     sample_rate=2048, detectors=("H1", "L1")):
     """Draw injection parameters and non-overlapping times.
 
@@ -103,7 +103,9 @@ def draw_injections(n_cbc=250, n_glitch=750, duration=28800.0, start_gps=0.0,
     :type start_gps: float
     :param start_gps: GPS time of the first sample of the data.
     :type edge_pad: float
-    :param edge_pad: span left free at each end, seconds.
+    :param edge_pad: span left free of injections at each end, seconds. A search
+        estimating its noise model from the start of the data needs that stretch
+        to be signal-free.
     :type snr_range: tuple
     :param snr_range: (low, high) bounds of the target SNR distribution.
     :type seed: int
@@ -140,12 +142,15 @@ def draw_injections(n_cbc=250, n_glitch=750, duration=28800.0, start_gps=0.0,
 def generate_dataset(outdir, duration=28800.0, start_gps=1400000000.0,
                      sample_rate=2048, n_cbc=250, n_glitch=750,
                      snr_range=(4.0, 50.0), seed=0, detectors=("H1", "L1"),
-                     low_frequency_cutoff=15.0, psd_name=DEFAULT_PSD,
-                     channel_suffix="MOCK-STRAIN", write_background=True):
+                     edge_pad=500.0, low_frequency_cutoff=5.0, psd_name=DEFAULT_PSD,
+                     channel_suffix="MOCK-STRAIN", write_background=True,
+                     frame_length=1024.0):
     """Generate and write a mock data set.
 
-    Writes, per detector, `<ifo>-MOCK-FOREGROUND.gwf` and (optionally)
-    `<ifo>-MOCK-BACKGROUND.gwf`, plus `injections.parquet` describing every
+    Writes, per detector, the foreground frames `<ifo>-MOCK-FOREGROUND/` with
+    their `<ifo>-MOCK-FOREGROUND.ffl` index and (optionally) the injection-free
+    `<ifo>-MOCK-BACKGROUND/` with `<ifo>-MOCK-BACKGROUND.ffl`, plus
+    `injections.parquet` describing every
     injection.
 
     :type outdir: str
@@ -166,21 +171,29 @@ def generate_dataset(outdir, duration=28800.0, start_gps=1400000000.0,
     :param seed: seed fixing noise and injections.
     :type detectors: tuple
     :param detectors: detector names.
+    :type edge_pad: float
+    :param edge_pad: span left free of injections at each end, seconds.
     :type low_frequency_cutoff: float
-    :param low_frequency_cutoff: lower limit of noise generation and SNR, Hz.
+    :param low_frequency_cutoff: lower limit of noise generation, band limiting and the
+        SNR integral, Hz. Generating below the band the search analyses leaves the
+        edge of the generated spectrum outside it, where the search band-pass
+        removes it.
     :type psd_name: str
     :param psd_name: name of any analytic PSD provided by `pycbc.psd`.
     :type channel_suffix: str
     :param channel_suffix: channel name after the `<ifo>:` prefix.
     :type write_background: bool
     :param write_background: also write the injection-free frames.
+    :type frame_length: float
+    :param frame_length: seconds of data per GWF frame file.
     :return: pandas.DataFrame -- the ground-truth table, also written to disk.
     """
     from gwpy.timeseries import TimeSeries as GwpyTimeSeries
 
     os.makedirs(outdir, exist_ok=True)
     injections = draw_injections(n_cbc=n_cbc, n_glitch=n_glitch, duration=duration,
-                                 start_gps=start_gps, snr_range=snr_range, seed=seed,
+                                 start_gps=start_gps, edge_pad=edge_pad,
+                                 snr_range=snr_range, seed=seed,
                                  sample_rate=sample_rate, detectors=detectors)
 
     noise = {}
@@ -193,8 +206,8 @@ def generate_dataset(outdir, duration=28800.0, start_gps=1400000000.0,
 
     if write_background:
         for ifo in detectors:
-            _write_frame(GwpyTimeSeries, noise[ifo], start_gps, sample_rate, ifo,
-                         channel_suffix, os.path.join(outdir, f"{ifo}-MOCK-BACKGROUND.gwf"))
+            _write_frames(GwpyTimeSeries, noise[ifo], start_gps, sample_rate, ifo,
+                          channel_suffix, outdir, "MOCK-BACKGROUND", frame_length)
 
     strain = {ifo: noise[ifo].copy() for ifo in detectors}
     rows = []
@@ -203,8 +216,8 @@ def generate_dataset(outdir, duration=28800.0, start_gps=1400000000.0,
                                 low_frequency_cutoff, psd_name))
 
     for ifo in detectors:
-        _write_frame(GwpyTimeSeries, strain[ifo], start_gps, sample_rate, ifo,
-                     channel_suffix, os.path.join(outdir, f"{ifo}-MOCK-FOREGROUND.gwf"))
+        _write_frames(GwpyTimeSeries, strain[ifo], start_gps, sample_rate, ifo,
+                      channel_suffix, outdir, "MOCK-FOREGROUND", frame_length)
 
     table = pd.DataFrame(rows).reindex(columns=GROUND_TRUTH_COLUMNS)
     table.to_parquet(os.path.join(outdir, "injections.parquet"), index=False)
@@ -274,6 +287,31 @@ def _cbc_duration(mass1, mass2, f_lower):
         return 2.18 * (1.21 / chirp) ** (5.0 / 3.0) * (100.0 / f_lower) ** (8.0 / 3.0) + 2.0
 
 
+def band_limit(strain, sample_rate=2048, low_frequency_cutoff=5.0, order=8):
+    """High-pass a signal to the band the noise occupies, with zero phase.
+
+    Glitch generators produce shapes with power down to zero frequency, where a
+    coloured-noise realisation defined above `low_frequency_cutoff` has none.
+    Injecting them unfiltered puts signal where there is no noise. Filtering is
+    zero-phase so the injection stays at the time the ground truth records.
+
+    :type strain: numpy.ndarray
+    :param strain: signal samples.
+    :type sample_rate: int
+    :param sample_rate: sampling rate, Hz.
+    :type low_frequency_cutoff: float
+    :param low_frequency_cutoff: high-pass corner, Hz.
+    :type order: int
+    :param order: Butterworth filter order.
+    :return: numpy.ndarray -- the high-passed signal.
+    """
+    from scipy.signal import butter, sosfiltfilt
+
+    sos = butter(order, low_frequency_cutoff, btype="highpass", fs=sample_rate, output="sos")
+    padlen = min(3 * (2 * order + 1), len(strain) - 1)
+    return sosfiltfilt(sos, strain, padlen=max(padlen, 0))
+
+
 def _glitch_strain(spec, sample_rate):
     """Unit-amplitude samples of one glitch."""
     if spec["subclass"] == "gaussian":
@@ -297,7 +335,8 @@ def _inject_one(spec, strain, start_gps, sample_rate, detectors,
                subclass=spec["subclass"], gps=spec["gps"], duration=spec["duration"])
 
     if spec["category"] == "glitch":
-        samples = _glitch_strain(spec, sample_rate)
+        samples = band_limit(_glitch_strain(spec, sample_rate), sample_rate,
+                             low_frequency_cutoff)
         snr0 = optimal_snr(samples, sample_rate, low_frequency_cutoff, psd_name)
         scale = spec["target_snr"] / snr0 if snr0 > 0 else 0.0
         ifo = spec["detector"]
@@ -335,10 +374,52 @@ def _add(target, samples, t_start, start_gps, sample_rate):
         target[lo:hi] += samples[lo - i0:hi - i0]
 
 
-def _write_frame(gwpy_timeseries, data, start_gps, sample_rate, ifo,
-                 channel_suffix, path):
-    """Write one detector's samples to a GWF frame file."""
-    series = gwpy_timeseries(data, t0=start_gps, sample_rate=sample_rate,
-                             channel=f"{ifo}:{channel_suffix}",
-                             name=f"{ifo}:{channel_suffix}")
-    series.write(path, format="gwf")
+def _write_frames(gwpy_timeseries, data, start_gps, sample_rate, ifo,
+                  channel_suffix, outdir, tag, frame_length=1024.0):
+    """Write one detector's samples as a series of GWF frame files and the FFL
+    index that lists them.
+
+    Frames are named `<ifo>-<tag>-<gps>-<length>.gwf` and written into
+    `<outdir>/<ifo>-<tag>/`; the FFL is `<outdir>/<ifo>-<tag>.ffl`, one line per
+    frame holding path, GPS start, length and two zero fields. A trailing span
+    shorter than `frame_length` is written as a final, shorter frame.
+
+    :type gwpy_timeseries: type
+    :param gwpy_timeseries: the `gwpy.timeseries.TimeSeries` class.
+    :type data: numpy.ndarray
+    :param data: the detector's samples.
+    :type start_gps: float
+    :param start_gps: GPS time of the first sample.
+    :type sample_rate: int
+    :param sample_rate: samples per second.
+    :type ifo: str
+    :param ifo: detector prefix, e.g. `H1`.
+    :type channel_suffix: str
+    :param channel_suffix: channel name after the `<ifo>:` prefix.
+    :type outdir: str
+    :param outdir: directory to write the frame directory and FFL into.
+    :type tag: str
+    :param tag: frame type, e.g. `MOCK-FOREGROUND`.
+    :type frame_length: float
+    :param frame_length: seconds of data per frame file.
+    :return: str -- path of the FFL file written.
+    """
+    framedir = os.path.join(outdir, f"{ifo}-{tag}")
+    os.makedirs(framedir, exist_ok=True)
+    per_frame = int(frame_length * sample_rate)
+    lines = []
+    for first in range(0, len(data), per_frame):
+        chunk = data[first:first + per_frame]
+        gps = start_gps + first / sample_rate
+        length = len(chunk) / sample_rate
+        path = os.path.join(framedir, f"{ifo}-{tag}-{int(gps)}-{int(length)}.gwf")
+        series = gwpy_timeseries(chunk, t0=gps, sample_rate=sample_rate,
+                                 channel=f"{ifo}:{channel_suffix}",
+                                 name=f"{ifo}:{channel_suffix}")
+        series.write(path, format="gwf")
+        lines.append(f"{os.path.abspath(path)} {gps:.0f} {length:.0f} 0 0")
+
+    ffl = os.path.join(outdir, f"{ifo}-{tag}.ffl")
+    with open(ffl, "w") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return ffl

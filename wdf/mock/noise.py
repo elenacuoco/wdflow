@@ -23,7 +23,7 @@ def analytic_psd(length, delta_f, low_frequency_cutoff, psd_name=DEFAULT_PSD):
 
 
 def coloured_noise(start_time, end_time, seed=0, sample_rate=2048,
-                   low_frequency_cutoff=10.0, psd_name=DEFAULT_PSD,
+                   low_frequency_cutoff=5.0, psd_name=DEFAULT_PSD,
                    filter_duration=128):
     """Gaussian noise coloured by an analytic PSD, reproducible from `seed`.
 

@@ -4,7 +4,6 @@ import numpy as np
 from pytsa.tsa import  WaveletTransform
 from wdf.observers.observable import Observable
 from wdf.observers.observer import Observer
-from wdf.processes.wavelet_energy import wavelet_energy_snr
 from wdf.structures.array2SeqView import array2SeqView
 from wdf.structures.eventPE import eventPE
  
@@ -60,13 +59,9 @@ def get_most_important_frequencies(signal, fs, alpha=.1):
     magnitudes = np.abs(signal_fft)
     # Find the frequency at maximum magnitude
     freqPeak = freqs[np.argmax(magnitudes)]
-    # Significance region. >= (not >): sig_mag is itself within [min(magnitudes),
-    # max(magnitudes)], so the bin(s) at the maximum always qualify -- with a
-    # strict >, a degenerate spectrum (e.g. every bin tied at the same
-    # magnitude, such as for an all-zero or single-sample signal) selects zero
-    # bins instead.
+    # Significance region
     sig_mag = np.percentile(magnitudes,100*(1-alpha))
-    sig_freqs = freqs[magnitudes>=sig_mag]
+    sig_freqs = freqs[magnitudes>sig_mag]
     # Calculate the mean, minimum, and maximum frequencies in the significance region
     freqMin = np.min(sig_freqs)
     freqMax = np.max(sig_freqs)
@@ -75,28 +70,28 @@ def get_most_important_frequencies(signal, fs, alpha=.1):
     return freqMean, freqMin, freqMax, freqPeak 
  
 
-def extract_meta_features(sigIn, fs):
-    """Timing/frequency features of the reconstructed (inverse-transformed)
-    trigger waveform `sigIn`: time and duration of its most relevant part
-    around its peak amplitude, and the frequency band containing its
-    strongest FFT content. Does not include an SNR estimate -- see
-    `wdf.processes.wavelet_energy.wavelet_energy_snr` for that, computed
-    directly from the wavelet-domain coefficients instead.
-    """
-    # tPeak: The time at which the signal has its maximum absolute value.
-    tPeak = np.argmax(np.abs(sigIn)) / fs
+def extract_meta_features(sigIn, fs,sigma):
 
+    # tPeak: The time at which the signal has its maximum absolute value. 
+    tPeak = np.argmax(np.abs(sigIn)) / fs
+    
     # Calculate the duration of the signal in seconds
     duration = estimate_duration(sigIn, fs)
 
-
+    
     # freqMean: The mean frequency of the signal.
     # freqMin: The minimum frequency of the signal.
     #freqMax: The maximum frequency of the signal.
     freqMean, freqMin, freqMax, freqPeak =  get_most_important_frequencies(sigIn, fs, alpha=.1)
 
-    return  tPeak, duration, freqMin, freqMean, freqMax, freqPeak
+    #snrMean: The mean signal-to-noise ratio of the signal 
+    snrMean = np.sqrt(np.mean(sigIn**2))/sigma 
 
+    #snrPeak: The signal-to-noise ratio of the signal at the maximum signal value.
+    snrPeak = np.max(np.abs(sigIn))/sigma 
+
+    return  tPeak, duration, freqMin, freqMean, freqMax, freqPeak, snrMean, snrPeak
+ 
 
 class ParameterEstimation(Observer, Observable):
 
@@ -120,6 +115,7 @@ class ParameterEstimation(Observer, Observable):
             self.sampling = parameters.sampling
             
         self.Ncoeff = parameters.Ncoeff
+        self.sigma= parameters.sigma
 
     def update(self, event):
         """
@@ -146,22 +142,10 @@ class ParameterEstimation(Observer, Observable):
             Icoeff[i] = data.GetY(0, i)
         
 
-        # EnWDF is WDF's own internal detection statistic: the thresholded,
-        # per-window/per-basis RMS-over-local-sigma value that decided
-        # whether this trigger fired. snrMean/snrPeak recompute the same
-        # energy statistic here using event.mSigma -- the winning basis's
-        # own per-window sigma, exactly the value EnWDF was normalized by
-        # (see WDF2Classify::GetDataVector) -- instead of self.sigma (a
-        # single sigma frozen at Learn time from time-domain whitened
-        # residuals). Using self.sigma here used to silently drift out of
-        # sync with EnWDF's convention as real noise moved away from what
-        # Learn saw at t=0.
         EnWDF = event.mSNR
-        tPeak, duration, freqMin, freqMean, freqMax, freqPeak = extract_meta_features(Icoeff, self.sampling)
-
-        snr = wavelet_energy_snr(coeff, event.mSigma)["snr"]
-        snrMean = snrPeak = snr
-
+        tPeak, duration, freqMin, freqMean, freqMax, freqPeak, snrMean, snrPeak = extract_meta_features(Icoeff, self.sampling, event.mSigma
+        )
+        
         # the gps of the signal is identified by WDF as the t0 of analyzing window
         gps=t0
         

@@ -45,7 +45,7 @@ class wdf(Observable):
         :param data: An pytsa.SeqViewDouble object storing data to be processed
 
         """
-        # to be multiplied by central frequency
+       
         self.wdf2classify(data, self.parameters.sigma)
 
     def FindEvents(self):
@@ -54,7 +54,7 @@ class wdf(Observable):
 
         :return: trigger
         """
-        # to be multiplied by central frequency
+        
         self.wdf2classify(self.trigger)
         return self.trigger
 

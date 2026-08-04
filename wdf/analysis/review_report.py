@@ -64,7 +64,7 @@ def build_review_report(outdir, recovery, trigger_summary=None, coincidence_matc
 
     md_path = os.path.join(outdir, f"{basename}.md")
     with open(md_path, "w") as fh:
-        fh.write(_markdown(title, stamp, headline, by_class, trigger_summary))
+        fh.write(_markdown(title, stamp, headline, by_class, trigger_summary, figures))
 
     return {"html": html_path, "markdown": md_path}
 
@@ -248,11 +248,13 @@ def _markdown_table(frame):
     return "\n".join(out)
 
 
-def _markdown(title, stamp, headline, by_class, trigger_summary):
-    """Assemble the Markdown summary."""
+def _markdown(title, stamp, headline, by_class, trigger_summary, figures=()):
+    """Assemble the Markdown summary, with figures inlined as data URIs."""
     lines = [f"# {title}", "", f"*generated {stamp}*", "", "## Headline", ""]
     lines += [f"- **{label}**: {value}" for label, value in headline]
     lines += ["", "## Recovery by class", "", _markdown_table(by_class)]
     if trigger_summary is not None:
         lines += ["", "## Triggers and clusters", "", _markdown_table(trigger_summary)]
+    for caption, uri in figures:
+        lines += ["", f"## {caption}", "", f"![{caption}]({uri})"]
     return "\n".join(lines) + "\n"

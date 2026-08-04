@@ -5,13 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 
-
-def donoho_johnstone_threshold(sigma: float, n_coeff: int) -> float:
-    """The universal wavelet-denoising threshold (Donoho & Johnstone, 1994):
-    `sigma * sqrt(2 * ln(n_coeff))`. Depends only on the noise scale and the
-    number of coefficients, not on any assumption about signal shape.
-    """
-    return sigma * np.sqrt(2.0 * np.log(n_coeff))
+ 
 
 
 def wavelet_energy_snr(wt, sigma: float) -> dict:
