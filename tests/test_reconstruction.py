@@ -1,0 +1,80 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from pytsa.tsa import WaveletTransform
+from wdf.analysis.reconstruction import combined_snr, inverse_transform, stitch
+from wdf.structures.array2SeqView import array2SeqView
+
+FS = 2048.0
+WINDOW, OVERLAP = 512, 128
+STEP = WINDOW - OVERLAP
+WAVE = "DaubC12"
+SIGMA = 1.0
+
+
+def forward(samples, wave=WAVE):
+    """Wavelet coefficients of one window."""
+    view = array2SeqView(0.0, FS, len(samples))
+    view = view.Fill(0.0, np.asarray(samples, dtype=float).copy())
+    WaveletTransform(len(samples), getattr(WaveletTransform, wave)).Forward(view)
+    return np.array([view.GetY(0, i) for i in range(len(samples))])
+
+
+def triggers_from(signal, gps0=1000.0, wave=WAVE):
+    """One trigger per analysis window covering `signal`, as WDF would emit."""
+    rows = []
+    for first in range(0, len(signal) - WINDOW + 1, STEP):
+        coefficients = forward(signal[first:first + WINDOW], wave)
+        row = dict(gps=gps0 + first / FS, gpsPeak=gps0 + first / FS,
+                   wave=wave, sigma=SIGMA,
+                   EnWDF=float(np.linalg.norm(coefficients) / SIGMA))
+        row.update({f"wt{i}": c for i, c in enumerate(coefficients)})
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def test_inverse_transform_round_trips():
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(WINDOW)
+    assert inverse_transform(forward(x), WAVE) == pytest.approx(x, rel=1e-3, abs=1e-6)
+
+
+def test_stitching_recovers_the_signal_it_was_cut_from():
+    """The step regions tile the span, so the pieces reassemble the original."""
+    rng = np.random.default_rng(1)
+    signal = rng.standard_normal(WINDOW + 4 * STEP)
+
+    gps_start, stitched = stitch(triggers_from(signal), FS, WINDOW, OVERLAP)
+
+    assert gps_start == pytest.approx(1000.0)
+    assert stitched[:len(signal)] == pytest.approx(signal[:len(stitched)], rel=1e-3, abs=1e-6)
+
+
+def test_combined_snr_of_a_long_signal_exceeds_its_loudest_window():
+    """A signal spread over many windows carries more than any one of them."""
+    t = np.arange(WINDOW + 8 * STEP) / FS
+    chirp = np.sin(2 * np.pi * (40.0 * t + 30.0 * t ** 2))
+
+    result = combined_snr(triggers_from(chirp), FS, WINDOW, OVERLAP)
+
+    assert result["windows"] > 1
+    assert result["snr"] > result["loudest_window"]
+    assert result["snr"] == pytest.approx(np.linalg.norm(chirp) / SIGMA, rel=0.02)
+
+
+def test_a_single_window_signal_gains_nothing():
+    """Stitching must not inflate a burst that already fits in one window."""
+    t = (np.arange(WINDOW) - WINDOW / 2) / FS
+    burst = np.exp(-((t / 0.005) ** 2) / 2.0) * np.cos(2 * np.pi * 200.0 * t)
+
+    triggers = triggers_from(np.concatenate([burst, np.zeros(2 * STEP)]))
+    result = combined_snr(triggers, FS, WINDOW, OVERLAP)
+
+    assert result["snr"] == pytest.approx(result["loudest_window"], rel=0.05)
+
+
+def test_stitch_needs_coefficients():
+    triggers = pd.DataFrame([dict(gps=1000.0, wave=WAVE, sigma=SIGMA, EnWDF=1.0)])
+    with pytest.raises(ValueError, match="wt"):
+        stitch(triggers, FS, WINDOW, OVERLAP)
