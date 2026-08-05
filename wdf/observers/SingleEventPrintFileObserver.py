@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 from wdf.observers.observer import Observer
 
 META_COLUMNS = [
-    "gps", "gpsPeak", "duration", "EnWDF", "snrMean", "snrPeak",
+    "gps", "gpsPeak", "duration", "EnWDF", "sigma", "snrMean", "snrPeak",
     "freqMin", "freqMean", "freqMax", "freqPeak", "wave",
 ]
 

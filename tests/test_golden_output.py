@@ -12,8 +12,8 @@ import pytest
 from conftest import FIXTURES_DIR, run_segment_process
 
 GOLDEN_CSV = os.path.join(FIXTURES_DIR, "golden_triggers.csv")
-COMPARE_COLUMNS = ["gps", "gpsPeak", "duration", "EnWDF", "snrMean", "snrPeak",
-                   "freqMin", "freqMean", "freqMax", "freqPeak", "wave"]
+COMPARE_COLUMNS = ["gps", "gpsPeak", "duration", "EnWDF", "sigma", "snrMean",
+                   "snrPeak", "freqMin", "freqMean", "freqMax", "freqPeak", "wave"]
 
 # WDF2Classify's candidate basis set (2026-08-03, trimmed to 10 -- see
 # WDF2Classify.cpp's kCandidateBases for the full rationale): Haar,

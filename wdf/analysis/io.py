@@ -81,7 +81,72 @@ def clean_triggers(
     return out.reset_index(drop=True)
 
 
-def apply_wavelet_energy_snr(df: pd.DataFrame, sigma: float) -> pd.DataFrame:
+def add_wavelet_energy_diagnostics(
+    df,
+    sigma_column="sigma",
+):
+    """
+    Add diagnostics computed from wt* without replacing EnWDF,
+    snrMean or snrPeak.
+
+    When the noise scale is available, enwdf_from_coeff can be compared
+    directly with the EnWDF produced by WDF2Classify.
+    """
+    import numpy as np
+
+    wt_cols = sorted(
+        (
+            column
+            for column in df.columns
+            if column.startswith("wt")
+            and column[2:].isdigit()
+        ),
+        key=lambda column: int(column[2:]),
+    )
+
+    if not wt_cols:
+        raise ValueError(
+            "No wt* columns: rerun WDF with fullPrint >= 1"
+        )
+
+    out = df.copy()
+    coefficients = out[wt_cols].to_numpy(dtype=float)
+
+    coefficients = np.where(
+        np.isfinite(coefficients),
+        coefficients,
+        0.0,
+    )
+
+    sum_w2 = np.sum(coefficients * coefficients, axis=1)
+
+    out["wavelet_l2"] = np.sqrt(sum_w2)
+    out["wavelet_energy"] = sum_w2
+    out["nActiveCoeff"] = np.count_nonzero(
+        coefficients,
+        axis=1,
+    )
+
+    if sigma_column in out.columns:
+        sigma = out[sigma_column].to_numpy(dtype=float)
+
+        valid = (
+            np.isfinite(sigma)
+            & (sigma > np.finfo(float).tiny)
+        )
+
+        reconstructed = np.full(len(out), np.nan)
+        reconstructed[valid] = (
+            out.loc[valid, "wavelet_l2"].to_numpy()
+            / sigma[valid]
+        )
+
+        out["EnWDF_from_coeff"] = reconstructed
+        out["EnWDF_residual"] = (
+            out["EnWDF_from_coeff"] - out["EnWDF"]
+        )
+
+    return out 
     """Replaces `snrPeak`/`snrMean` with `wdfLib.wavelets.wavelet_energy_snr`'s
     energy-based statistic, computed directly from each trigger's own `wt*`
     columns. This is the SNR value wdfLib's downstream clustering,

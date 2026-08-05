@@ -54,8 +54,10 @@ class BandPassDownSampling(object):
         self.nyquist_frequency = 0.5 * self.sampling
         self.cutoff_frequency = 0.98 * (self.nyquist_frequency / self.ResamplingFactor)
          
-        self.low_freq_hp = getattr(Parameters, "LowFrequencyCut", low_freq_hp)
-        
+        if low_freq_hp is None:
+            low_freq_hp = getattr(Parameters, "LowFrequencyCut", None)
+        self.low_freq_hp = 4.0 if low_freq_hp is None else float(low_freq_hp)
+
         if order is None:
             order = getattr(Parameters, "FilterOrder", None)
         self.order = 5 if order is None else int(order)

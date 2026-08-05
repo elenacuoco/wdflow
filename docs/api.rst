@@ -34,6 +34,12 @@ wdf.processes.BandPassDownSampling
 .. automodule:: wdf.processes.BandPassDownSampling
    :members:
 
+wdf.processes.zero_phase_whitening
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.zero_phase_whitening
+   :members:
+
 wdf.processes.DWhitening
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

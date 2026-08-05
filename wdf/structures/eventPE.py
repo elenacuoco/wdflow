@@ -28,18 +28,21 @@ class eventPE(object):
     This class stands for the encapsulation of the trigger data into one object
     """
 
-    def __init__(self, gps, gpsPeak, duration, EnWDF, snrMean, snrPeak, freqMin, freqMean, freqMax, freqPeak, wave, coeff, Icoeff):
+    def __init__(self, gps, gpsPeak, duration, EnWDF, sigma, snrMean, snrPeak, freqMin, freqMean, freqMax, freqPeak, wave, coeff, Icoeff):
         """
         This class stands for the encapsulation of the trigger data into one object
 
         :type gps: float
         :param gps: GPS time of the trigger denoting the first gps of analyzing window
-        
+
         :type gpsPeak: float
         :param gps: GPS time of the trigger denoting the moment it appeared at maximum SNR
 
         :type EnWDF: float
         :param EnWDF: The Signal to Noise Ratio of the trigger statistics of WDF
+
+        :type sigma: float
+        :param sigma: The noise scale WDF divided by to obtain EnWDF, in the units of the analysed data
 
         :type snrMean: float
         :param snrMean: The estimated mean Signal to Noise Ratio of the trigger
@@ -74,6 +77,7 @@ class eventPE(object):
         self.gps = gps
         self.gpsPeak = gpsPeak
         self.EnWDF = EnWDF
+        self.sigma = sigma
         self.snrMean = snrMean
         self.snrPeak = snrPeak
         self.freqMean = freqMean
@@ -88,18 +92,21 @@ class eventPE(object):
         for i in range(len(Icoeff)):
             setattr(self, "rw" + str(i), Icoeff[i])
  
-    def update(self, gps, gpsPeak, duration, EnWDF, snrMean, snrPeak, freqMin, freqMean, freqMax, freqPeak, wave, coeff, Icoeff):
+    def update(self, gps, gpsPeak, duration, EnWDF, sigma, snrMean, snrPeak, freqMin, freqMean, freqMax, freqPeak, wave, coeff, Icoeff):
         """
         This method updates the eventPE object with new parameters
-        
+
         :type gps: float
         :param gps: GPS time of the trigger denoting the first gps of analyzing window
-        
+
         :type gpsPeak: float
         :param gps: GPS time of the trigger denoting the moment it appeared at maximum SNR
 
         :type EnWDF: float
         :param EnWDF: The Signal to Noise Ratio of the trigger statistics of WDF
+
+        :type sigma: float
+        :param sigma: The noise scale WDF divided by to obtain EnWDF, in the units of the analysed data
 
         :type snrMean: float
         :param snrMean: The estimated mean Signal to Noise Ratio of the trigger
@@ -134,6 +141,7 @@ class eventPE(object):
         self.gps = gps
         self.gpsPeak = gpsPeak
         self.EnWDF = EnWDF
+        self.sigma = sigma
         self.snrMean = snrMean
         self.snrPeak = snrPeak
         self.freqMean = freqMean
@@ -164,9 +172,12 @@ class eventPE(object):
         :type EnWDF: float
         :param EnWDF: The Signal to Noise Ratio of the trigger statistics of WDF
 
+        :type sigma: float
+        :param sigma: The noise scale WDF divided by to obtain EnWDF, in the units of the analysed data
+
         :type snrMean: float
         :param snrMean: The estimated mean Signal to Noise Ratio of the trigger
-        
+
         :type snrPeak: float
         :param snrPeak: The estimated Signal to Noise Ratio of the trigger at its peak
 
@@ -175,10 +186,10 @@ class eventPE(object):
 
         :type freqMax: float
         :param freqMax: The maximum frequency of the trigger
-        
+
         :type freqMean: float
         :param freqMean: The mean frequency of the trigger
-        
+
         :type freqPeak: float
         :param freqPeak: The frequency at the peak of the trigger
 
@@ -194,10 +205,11 @@ class eventPE(object):
         :type Icoeff: list
         :param Icoeff: The list containing raw wavelet coefficients of the trigger
         """
-        
+
         self.gps = ev.gps
         self.gpsPeak = ev.gpsPeak
         self.EnWDF = ev.EnWDF
+        self.sigma = ev.sigma
         self.snrMean = ev.snrMean
         self.snrPeak = ev.snrPeak
         self.freqMean = ev.freqMean

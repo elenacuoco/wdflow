@@ -8,6 +8,8 @@ __email__ = "elena.cuoco@unibo.it"
 __status__ = "Development"
 import time
 
+import numpy as np
+
 from pytsa.tsa import *
 from pytsa.tsa import WaveletThreshold
 from pytsa.tsa import SeqView_double_t as SV
@@ -15,11 +17,17 @@ from pytsa.tsa import SeqView_double_t as SV
 
 from wdf.observers.ParameterEstimationObserver import ParameterEstimation 
 from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
+
 from wdf.processes.BandPassDownSampling import BandPassDownSampling
 from wdf.config.Parameters import Parameters 
 from wdf.processes.wdf import wdf
-from wdf.processes.Whitening import Whitening 
-from wdf.processes.DWhitening import DWhitening
+from wdf.processes.Whitening import Whitening
+from wdf.processes.zero_phase_whitening import (
+    DEFAULT_SQRT_ORDER,
+    ZeroPhaseWhitening,
+)
+
+DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0 
 import logging
 import os
 
@@ -49,7 +57,7 @@ class wdfUnitDSWorker(object):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
         warm-up read, then stream the rest of the segment through
-        downsampling -> double-whitening -> WDF trigger search, writing triggers to
+        downsampling -> zero-phase whitening -> WDF trigger search, writing triggers to
         `<outdir>/<run>/<itf>/<channel>_<gpsStart>/` as they're found.
 
         :type segment: tuple[float, float]
@@ -60,6 +68,14 @@ class wdfUnitDSWorker(object):
         :return: None -- triggers are written to disk (Parquet, or CSV for older runs),
             not returned; a `ProcessEnded.check` marker file in the segment's output
             directory means a prior run already completed it and this call is a no-op.
+
+        AR parameters are estimated from `Parameters.learn` seconds of data taken
+        `Parameters.AREstimationOffset` seconds after the segment start (default
+        `DEFAULT_AR_ESTIMATION_OFFSET_S`). The offset skips the beginning of a
+        segment, where noise following lock acquisition can still be settling and
+        would bias the noise model; set it to 0 for data known to be in science
+        mode throughout. When the segment is too short to hold both the offset and
+        the estimation window, the window is taken from the segment end instead.
         """
         gpsStart, gpsEnd = segment[0],segment[1]
         logging.info(
@@ -94,13 +110,10 @@ class wdfUnitDSWorker(object):
                  
             else:
                 logging.info("Start AR parameter estimation")
-                ######## read data for AR estimation###############
-                # self.parameter for sequence of data.
-                # Add a 100.0 seconds delay to not include too much after lock noise in
-                # the estimation, not needed if working in DataScience segments
-                #
-                if gpsEnd - gpsStart >= self.learn + 100.0:
-                    gpsE = gpsStart + 100.0
+                offset = getattr(self.par, "AREstimationOffset",
+                                 DEFAULT_AR_ESTIMATION_OFFSET_S)
+                if gpsEnd - gpsStart >= self.learn + offset:
+                    gpsE = gpsStart + offset
                 else:
                     gpsE = gpsEnd - self.learn
                 
@@ -119,30 +132,21 @@ class wdfUnitDSWorker(object):
             # sigma for the noise
             self.par.sigma = whiten.GetSigma()
             logging.info("Estimated sigma= %s" % self.par.sigma)
+
+            # Coefficients of the square-root model the zero-phase whitening
+            # runs in both directions (see wdf.processes.zero_phase_whitening).
+            sqrt_order = int(getattr(self.par, "SqrtWhiteningOrder",
+                                     DEFAULT_SQRT_ORDER))
+            self.par.SqrtWhiteningOrder = sqrt_order
+            ar = np.array([whiten.ADE.GetAR(j)
+                           for j in range(self.par.ARorder + 1)])
             
             # update the self.parameters to be saved in local json file
             self.par.ID = ID
             self.par.dir = dir_chunk
             self.par.gps = gpsStart
             self.par.gpsStart = gpsStart
-            # Safety margin: the main loop below checks read k-1's start
-            # (S) against self.par.gpsEnd before issuing read k -- but read k
-            # itself spans [S + len, S + 2*len), not [S, S + len). Worst case
-            # S == self.par.gpsEnd, so read k's end can reach
-            # self.par.gpsEnd + 2*len: a single par.len margin under-covers
-            # this by a full par.len. Confirmed on real data (2026-08-03):
-            # with only one par.len of margin, the last triggered read
-            # requested data ~130-150s past the segment's true end;
-            # FrameIChannel did not raise, it silently returned that read
-            # with its tail zero-padded (std/nunique/wt* all consistent with
-            # a real, mostly-zero buffer, not an exception) -- and
-            # BandPassDownSampling/DWhitening's forward-backward, lookahead-
-            # dependent filtering turned that zero tail into a large,
-            # near-constant whitened artifact for most of the chunk, which
-            # WDF2Classify then flagged as a spurious high-EnWDF trigger.
-            # Two par.len of margin keeps every read within legitimately
-            # available data regardless of where read k-1's start falls
-            # relative to the boundary.
+            
             self.par.gpsEnd = gpsEnd - 2 * self.par.len
 
             ######################
@@ -156,7 +160,10 @@ class wdfUnitDSWorker(object):
             data_ds = SV()
             dataw = SV()
             Noutdata = int(self.par.resampling)
-            DW=DWhitening(whiten.LV, Noutdata,0)
+            whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order)
+            self.par.sigmaWhitened = whitening.sigma
+            logging.info("Zero-phase whitening, square-root order %s, "
+                         "latency %s samples" % (sqrt_order, whitening.latency))
             for i in range(100):
                 try:
                     streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
@@ -172,7 +179,7 @@ class wdfUnitDSWorker(object):
             for i in range(self.par.preWhite):
                 streaming.GetData(data)
                 data_ds=ds.Process(data) 
-                DW.Process(data_ds,dataw)
+                whitening.Process(data_ds,dataw)
                
                 
             # Fixed, len-independent lookahead window for whitening.
@@ -198,7 +205,7 @@ class wdfUnitDSWorker(object):
                 # so the ExtraSize surplus must be pre-loaded exactly once,
                 # here, using extra reads at the still-active warm-up 1.0s
                 # dLength (SetDataLength(self.par.len) hasn't been called
-                # yet). DW.Input() is SetData-only (no GetData/Output), so it
+                # yet). whitening.Input() is SetData-only (no GetData/Output), so it
                 # does not require or consume an output chunk. extra_size is
                 # in resampled-rate samples; each 1.0s native read yields
                 # self.par.resampling resampled samples.
@@ -206,14 +213,16 @@ class wdfUnitDSWorker(object):
                 for _ in range(extra_native_seconds):
                     streaming.GetData(data)
                     data_ds = ds.Process(data)
-                    DW.Input(data_ds)
+                    whitening.Input(data_ds)
 
             #Set new size for the function in the loop
             streaming.SetDataLength(self.par.len)
 
             self.par.NoutData= int(self.par.resampling*self.par.len)
-            DW.SetOutputSize(self.par.NoutData, extra_size)
+            whitening.SetOutputSize(self.par.NoutData, extra_size)
 
+
+            
 
             # WDF process
             WDF = wdf(self.par, wavThresh)
@@ -235,7 +244,7 @@ class wdfUnitDSWorker(object):
             while data.GetStart() <=self.par.gpsEnd:
                 streaming.GetData(data)
                 data_ds=ds.Process(data)
-                DW.Process(data_ds, dataw)
+                whitening.Process(data_ds, dataw)
                 WDF.SetData(dataw)
                 WDF.Process()
 

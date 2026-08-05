@@ -15,11 +15,14 @@ def test_normal_signal_returns_ordered_band():
     assert freqMin <= freqPeak <= freqMax
 
 
-def test_all_zero_signal_does_not_raise():
+def test_all_zero_signal_collapses_the_band():
+    """A signal with no energy occupies no band, rather than the whole of it."""
     signal = np.zeros(N)
     freqMean, freqMin, freqMax, freqPeak = get_most_important_frequencies(signal, FS)
     assert freqMin == pytest.approx(0.0)
-    assert freqMax == pytest.approx(FS / 2)
+    assert freqMax == pytest.approx(0.0)
+    assert freqMean == pytest.approx(0.0)
+    assert freqPeak == pytest.approx(0.0)
 
 
 def test_single_nonzero_sample_does_not_raise():

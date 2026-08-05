@@ -8,4 +8,5 @@
 
 api
 design/event-candidates
+design/whitening
 ```
