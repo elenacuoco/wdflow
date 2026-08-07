@@ -24,14 +24,23 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# `wdf.processes`/`wdf.observers` (trigger generation) need the compiled C++
-# core; `wdf.analysis` (downstream analysis) does not and works standalone on
-# already-saved trigger files, so p4tsa stays an extra rather than a hard
-# dependency.
-pipeline = ["p4tsa", "coloredlogs"]
+# `wdf.processes`/`wdf.observers` (trigger generation) need p4TSA's compiled
+# core, imported as `pytsa`. It is deliberately NOT listed here: p4TSA has no
+# PyPI distribution (FrameL has no wheel), and the unrelated `pytsa` project on
+# PyPI is a Python decorator library, so a declared dependency would either fail
+# to resolve or resolve to the wrong package. Build it from
+# https://github.com/elenacuoco/p4TSA -- see README.
+# `wdf.analysis` (downstream analysis) needs none of this and works standalone
+# on already-saved trigger files.
+pipeline = ["coloredlogs"]
 gnn = ["torch>=2.1", "torch_geometric>=2.5"]
 data = ["gwpy>=3.0"]
 dev = ["pytest>=7"]
+tutorials = ["jupyter", "nbclient", "ipykernel"]
+mock = ["pycbc"]
+docs = ["sphinx>=7", "sphinx-rtd-theme>=2", "myst-nb>=1"]
+# Everything except the compiled core, which cannot come from an index.
+all = ["wdflow[pipeline,gnn,data,dev,tutorials,mock,docs]"]
 
 [project.urls]
 "Homepage" = "https://github.com/elenacuoco/wdflow"

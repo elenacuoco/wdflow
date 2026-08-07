@@ -117,7 +117,7 @@ def combined_snr(triggers, fs, window, overlap, sigma_column="sigma"):
     :param overlap: overlap between consecutive windows, samples.
     :type sigma_column: str
     :param sigma_column: column holding each trigger's noise scale.
-    :return: dict with the combined signal-to-noise ratio, the loudest single
+    :return: dict -- `EnWDF` of the whole reconstruction, the loudest single
         window it was built from, the stitched span in seconds, and the number
         of windows that contributed.
     """
@@ -128,7 +128,8 @@ def combined_snr(triggers, fs, window, overlap, sigma_column="sigma"):
         raise ValueError("noise scale must be positive")
 
     return dict(
-        snr=float(np.linalg.norm(stitched) / sigma),
+        EnWDF=float(np.linalg.norm(stitched) / sigma),
+        sigma=sigma,
         loudest_window=float(triggers.EnWDF.max()),
         span_s=len(stitched) / float(fs),
         windows=int(len(triggers)),

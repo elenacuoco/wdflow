@@ -29,10 +29,9 @@ def centred(samples, snr=TARGET_SNR):
     return x
 
 
-def features(x, sigma=SIGMA):
+def features(x, sigma=SIGMA, wt=None):
     """Meta features on the convention the observer uses: EnWDF = ||x|| / sigma."""
-    return extract_meta_features(x, fs=FS, sigma=sigma,
-                                 EnWDF=np.linalg.norm(x) / sigma, f_low=0.0)
+    return extract_meta_features(x, fs=FS, sigma=sigma, wt=wt, f_low=0.0)
 
 
 @pytest.mark.parametrize("f0", [150.0, 250.0, 400.0])

@@ -13,11 +13,11 @@ def test_burst_forms_one_dominant_cluster():
     labeled = tc.fit_predict(df)
     events = tc.clustered_events(labeled)
 
-    near_burst = events[(events["gpsMax"] - 1050.0).abs() < 1.0]
+    near_burst = events[(events["gpsPeak"] - 1050.0).abs() < 1.0]
     assert len(near_burst) >= 1
     top = near_burst.sort_values("n_triggers", ascending=False).iloc[0]
     assert top["n_triggers"] >= 5
-    assert top["snrMax"] > 10.0
+    assert top["EnWDF"] > 10.0
 
 
 def test_noise_points_kept_as_singletons():

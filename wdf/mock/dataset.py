@@ -73,11 +73,19 @@ def optimal_snr(
     low_frequency_cutoff=5.0,
     high_frequency_cutoff=None,
     psd_name=DEFAULT_PSD,
+    psd=None,
 ):
     """Return the optimal matched-filter SNR of a deterministic signal.
 
-    The SNR is evaluated against the same analytic PSD used to generate the
-    mock noise and only in the requested analysis band.
+    The SNR is evaluated in the requested analysis band against ``psd`` when one
+    is supplied, and otherwise against the analytic model named by ``psd_name``.
+    Data whose noise was not generated from that model -- a real detector
+    segment, say -- must supply its own measured spectrum, or the recorded SNR
+    describes a different detector than the one the signal was injected into.
+
+    :type psd: pycbc.types.FrequencySeries or None
+    :param psd: measured noise spectrum, resampled onto the required frequency
+        grid if its resolution differs.
     """
     from pycbc.filter import sigma
     from pycbc.types import TimeSeries
@@ -108,12 +116,12 @@ def optimal_snr(
     delta_t = 1.0 / sample_rate
     delta_f = sample_rate / nfft
     series = TimeSeries(padded, delta_t=delta_t)
-    psd = analytic_psd(
-        nfft // 2 + 1,
-        delta_f,
-        f_low,
-        psd_name,
-    )
+    if psd is None:
+        psd = analytic_psd(nfft // 2 + 1, delta_f, f_low, psd_name)
+    else:
+        from pycbc.psd import interpolate
+        psd = interpolate(psd, delta_f)
+        psd = psd[: nfft // 2 + 1]
 
     value = sigma(
         series,
@@ -483,6 +491,7 @@ def _inject_one(
     low_frequency_cutoff,
     high_frequency_cutoff,
     psd_name,
+    psd=None,
 ):
     """Inject one signal in place and return its complete truth-table row."""
     row = {column: np.nan for column in GROUND_TRUTH_COLUMNS}
@@ -521,6 +530,7 @@ def _inject_one(
             low_frequency_cutoff=low_frequency_cutoff,
             high_frequency_cutoff=high_frequency_cutoff,
             psd_name=psd_name,
+            psd=psd if psd is None else psd.get(spec["detector"], None),
         )
         if snr0 <= 0.0:
             raise RuntimeError(f"Zero SNR for glitch {spec['injection_id']}")

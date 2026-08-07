@@ -85,6 +85,18 @@ wdf.analysis.io
 .. automodule:: wdf.analysis.io
    :members:
 
+wdf.analysis.output_schema
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.output_schema
+   :members:
+
+wdf.analysis.cluster_coefficients
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.cluster_coefficients
+   :members:
+
 wdf.analysis.clustering
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -103,6 +115,12 @@ wdf.analysis.significance
 .. automodule:: wdf.analysis.significance
    :members:
 
+wdf.analysis.evaluation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.evaluation
+   :members:
+
 wdf.analysis.roc
 ~~~~~~~~~~~~~~~~~~
 
@@ -119,4 +137,48 @@ wdf.analysis.wavelets
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.wavelets
+   :members:
+
+wdf.analysis.reconstruction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.reconstruction
+   :members:
+
+wdf.analysis.robust_events
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.robust_events
+   :members:
+
+wdf.analysis.injections
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.injections
+   :members:
+
+wdf.analysis.report
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.report
+   :members:
+
+wdf.analysis.review_report
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.review_report
+   :members:
+
+Simulated data
+---------------
+wdf.mock.waveforms
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.mock.waveforms
+   :members:
+
+wdf.mock.dataset
+~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.mock.dataset
    :members:

@@ -91,22 +91,22 @@ def test_cbc_injections_are_coincident_and_glitches_are_not(tmp_path):
     assert len(cbc) > 0
     dt = (cbc["gps_H1"] - cbc["gps_L1"]).abs()
     assert (dt <= LIGHT_TRAVEL_H1L1 + 1e-6).all()
-    assert cbc[["snr_H1", "snr_L1"]].notna().all().all()
+    assert cbc[["EnWDF_H1", "EnWDF_L1"]].notna().all().all()
 
     # A glitch lives in one detector; the other one records a zero contribution,
     # not a missing value, so it is counted by amplitude and not by presence.
     glitches = table[table["category"] == "glitch"]
-    single = (glitches[["snr_H1", "snr_L1"]] > 0.0).sum(axis=1)
+    single = (glitches[["EnWDF_H1", "EnWDF_L1"]] > 0.0).sum(axis=1)
     assert (single == 1).all()
 
 
-def test_network_snr_is_the_quadrature_sum_for_cbc(tmp_path):
+def test_network_enwdf_is_the_quadrature_sum_for_cbc(tmp_path):
     table = generate_dataset(str(tmp_path), duration=2400.0, start_gps=1400000000.0,
                              n_cbc=6, n_glitch=0, seed=6, edge_pad=100.0,
                              write_background=False)
     cbc = table[table["category"] == "cbc"]
-    quad = np.sqrt(cbc["snr_H1"] ** 2 + cbc["snr_L1"] ** 2)
-    assert np.allclose(quad, cbc["network_snr"], rtol=1e-6)
+    quad = np.sqrt(cbc["EnWDF_H1"] ** 2 + cbc["EnWDF_L1"] ** 2)
+    assert np.allclose(quad, cbc["network_enwdf"], rtol=1e-6)
 
 
 def test_foreground_differs_from_background_only_where_injected(tmp_path):

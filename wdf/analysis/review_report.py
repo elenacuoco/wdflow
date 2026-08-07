@@ -78,7 +78,8 @@ def _headline_numbers(recovery, coincidence_matched, candidates, background_cand
     if len(found) > 2:
         r = float(np.corrcoef(found["injected_snr"], found["recovered_snr"])[0, 1])
         out.append(("SNR correlation", f"{r:.3f}"))
-        out.append(("Median timing offset", f"{found['dt_s'].median() * 1e3:+.1f} ms"))
+        if "dt_s" in found:
+            out.append(("Median timing offset", f"{found['dt_s'].median() * 1e3:+.1f} ms"))
     if coincidence_matched is not None and len(coincidence_matched):
         out.append(("Astrophysical in coincidence",
                     f"{coincidence_matched['found'].mean() * 100:.1f}%"))
@@ -115,7 +116,7 @@ def _population_figure(injections):
     for cat, colour in (("cbc", C_BLUE), ("glitch", C_ORANGE)):
         sel = injections[injections["category"] == cat]
         if len(sel):
-            axes[1].hist(sel["network_snr"], bins=np.linspace(0, 50, 26), histtype="step",
+            axes[1].hist(sel["network_snr"], bins=np.linspace(0, 100, 26), histtype="step",
                          lw=2, color=colour, label=cat)
     axes[1].set_xlabel("injected network SNR")
     axes[1].set_title("Signal-to-noise ratio", color=INK)
@@ -132,7 +133,7 @@ def _efficiency_figure(recovery):
     bins = np.linspace(4, 50, 12)
     for ax, name in zip(axes, classes):
         sel = recovery[recovery["subclass"] == name]
-        curve = efficiency(sel, bins=bins, snr_column="injected_snr")
+        curve = efficiency(sel, bins=bins, injected_snr_column="injected_snr")
         ax.step(curve["snr_mid"], curve["efficiency"], where="mid", lw=2, color=C_BLUE)
         ax.fill_between(curve["snr_mid"], 0, curve["efficiency"], step="mid",
                         alpha=0.12, color=C_BLUE)
@@ -157,7 +158,7 @@ def _recovery_figure(recovery):
             axes[0].scatter(sel["injected_snr"], sel["recovered_snr"], s=10, alpha=0.5,
                             color=colour, edgecolors="none", label=cat)
     axes[0].set_xlabel("injected SNR")
-    axes[0].set_ylabel("recovered snrMax")
+    axes[0].set_ylabel("recovered EnWDF")
     axes[0].set_title("SNR recovery", color=INK)
     axes[0].legend(fontsize=8)
     if len(found):

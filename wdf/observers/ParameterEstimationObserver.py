@@ -2,6 +2,7 @@ import logging
 import numpy as np
  
 from pytsa.tsa import  WaveletTransform
+from wdf.analysis.wavelets import peak_frequency
 from wdf.observers.observable import Observable
 from wdf.observers.observer import Observer
 from wdf.structures.array2SeqView import array2SeqView
@@ -223,7 +224,7 @@ def extract_meta_features(
     sigIn,
     fs,
     sigma=None,
-    EnWDF=None,
+    wt=None,
     f_low=0.0,
     f_high=None,
     energy_fraction=0.90,
@@ -232,21 +233,36 @@ def extract_meta_features(
     """
     Extract robust time-domain and frequency-domain trigger metaparameters.
 
-    ``EnWDF`` remains the detection statistic. ``snrMean`` and ``snrPeak``
-    are derived from EnWDF and the shape of the reconstructed waveform,
-    rather than independently dividing by a potentially inconsistent sigma.
+    ``EnWDF`` remains the detection statistic and is not recomputed here.
+    The signal-to-noise ratios are amplitudes of the whitened reconstruction
+    expressed in units of the noise scale sigma, the same scale EnWDF is
+    normalized by:
 
-    ``snrMean`` is the root-mean-square amplitude over the interval the
-    duration is measured on, not over the whole analysis window: a transient
-    occupying a few samples of the window has a mean amplitude set by its own
-    support, and averaging over the window instead dilutes it by the square
-    root of the ratio of the two lengths.
+        snrPeak = max|x| / sigma
+        snrMean = rms(x over its support) / sigma
+        EnWDF   = ||x|| / sigma
 
-    This guarantees, up to numerical precision,
+    so a transient occupying an effective number of samples n_eff satisfies
+    EnWDF ~ sqrt(n_eff) * snrMean: the integrated statistic grows with the
+    duration, as an energy signal-to-noise ratio must, while the two amplitude
+    ratios stay independent of the analysis window length.
 
-        snrMean <= snrPeak <= EnWDF
+    ``snrMean`` uses the interval the duration is measured on rather than the
+    whole window: a transient occupying a few samples has a mean amplitude set
+    by its own support, and averaging over the window instead dilutes it by the
+    square root of the ratio of the two lengths.
 
-    for a nonzero reconstruction.
+    ``freqPeak`` is read off the wavelet coefficients when ``wt`` is supplied.
+    The transform is orthogonal and the data whitened, so the largest
+    coefficient locates the tile where the local signal-to-noise ratio peaks;
+    the frequency is then the energy-weighted geometric mean over the tiles
+    that overlap it in time, which keeps that localisation without quantising
+    the answer onto the dyadic ladder (see
+    ``wdf.analysis.wavelets.peak_frequency``). The periodogram of the whole
+    window, used for the other frequency metaparameters, answers a different
+    question -- where the energy of the window sits on average -- and for a
+    chirp it returns the frequency the signal sweeps through most slowly
+    rather than the loudest one.
 
     Parameters
     ----------
@@ -255,10 +271,10 @@ def extract_meta_features(
     fs : float
         Sampling frequency in Hz.
     sigma : float or None
-        Kept for API compatibility. It is used only as a fallback when
-        EnWDF is not supplied.
-    EnWDF : float or None
-        WDF normalized wavelet-energy detection statistic.
+        Noise scale the signal-to-noise ratios are expressed in.
+    wt : array-like or None
+        Forward wavelet coefficients of the same window. When None, freqPeak
+        falls back to the maximum-power frequency of the periodogram.
     f_low, f_high : float
         Analysis band.
     energy_fraction : float
@@ -310,33 +326,22 @@ def extract_meta_features(
         )
     )
 
-    l2_norm = float(np.linalg.norm(x))
+    if wt is not None:
+        peak = peak_frequency(wt, fs)
+        if np.isfinite(peak):
+            band_high = 0.5 * float(fs) if f_high is None else float(f_high)
+            freq_peak = float(np.clip(peak, float(f_low), band_high))
 
-    if EnWDF is not None and np.isfinite(EnWDF) and EnWDF >= 0:
-        normalized_energy = float(EnWDF)
-    elif (
-        sigma is not None
-        and np.isfinite(sigma)
-        and sigma > np.finfo(float).tiny
+    if (
+        sigma is None
+        or not np.isfinite(sigma)
+        or sigma <= np.finfo(float).tiny
     ):
-        # Backward-compatible fallback.
-        normalized_energy = l2_norm / float(sigma)
-    else:
-        normalized_energy = 0.0
-
-    if l2_norm <= np.finfo(float).tiny or normalized_energy == 0.0:
         snr_mean = 0.0
         snr_peak = 0.0
     else:
-        # Map the reconstructed waveform shape onto the EnWDF scale.
-        normalization = normalized_energy / l2_norm
-
-        snr_mean = float(
-            np.sqrt(np.mean(support * support)) * normalization
-        )
-        snr_peak = float(
-            np.max(absolute) * normalization
-        )
+        snr_mean = float(np.sqrt(np.mean(support * support)) / sigma)
+        snr_peak = float(np.max(absolute) / sigma)
 
     return (
         t_peak,
@@ -436,13 +441,13 @@ class ParameterEstimation(Observer, Observable):
             Icoeff,
             fs=self.sampling,
             sigma=sigma,
-            EnWDF=EnWDF,
+            wt=coeff,
             f_low=self.f_low,
             f_high=self.f_high,
             energy_fraction=0.90,
             spectral_alpha=0.10,
         )
-        
+
         # the gps of the signal is identified by WDF as the t0 of analyzing window
         gps=t0
         

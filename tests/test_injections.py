@@ -6,7 +6,7 @@ from wdf.analysis.injections import efficiency, false_alarms, match_injections
 
 
 def _candidates(times, snrs):
-    return pd.DataFrame({"gpsMax": times, "snrMax": snrs})
+    return pd.DataFrame({"gpsPeak": times, "EnWDF": snrs})
 
 
 def _injections(times, snrs=None):
@@ -51,13 +51,13 @@ def test_match_preserves_injection_rows_and_order():
 def test_false_alarms_excludes_candidates_near_injections():
     cands = _candidates([100.1, 500.0, 900.2], [5.0, 6.0, 7.0])
     extra = false_alarms(cands, _injections([100.0, 900.0]), window_s=0.5)
-    assert list(extra["gpsMax"]) == [500.0]
+    assert list(extra["gpsPeak"]) == [500.0]
 
 
 def test_false_alarms_with_a_single_injection():
     cands = _candidates([100.1, 500.0], [5.0, 6.0])
     extra = false_alarms(cands, _injections([100.0]), window_s=0.5)
-    assert list(extra["gpsMax"]) == [500.0]
+    assert list(extra["gpsPeak"]) == [500.0]
 
 
 def test_efficiency_is_one_when_everything_is_found():

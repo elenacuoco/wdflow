@@ -5,7 +5,7 @@ __project__ = "wdf"
 import logging
 from wdf.structures.array2SeqView import *
 import numpy as np
-from scipy.signal import sosfilt, sosfiltfilt, butter
+from scipy.signal import cheby2, sosfilt, sosfiltfilt
 
 def SV_to_array(seqView):
     """Copies a pytsa SeqView's single channel into a plain numpy array.
@@ -20,12 +20,54 @@ def SV_to_array(seqView):
     return y
 
 
+def settling_length(sos, sampling, floor=1e-8, limit_s=8.0):
+    """How many samples the filter needs before its response has decayed.
+
+    Measured from the impulse response rather than assumed from the order: a
+    steep filter close to Nyquist rings far longer than its order suggests, and
+    this length is the context a block needs on each side.
+
+    The floor is set by what happens downstream, not by what looks negligible
+    here. Whitening against a high-order autoregressive model applies its
+    largest gain at the band edges, which is exactly where the conditioning
+    residual lives, and it amplifies that residual by about five orders of
+    magnitude. Measured on real strain with an AR(3000) model: a floor of 1e-5
+    leaves a per-sample error of 2.5e-4 at the block edges, which the whitening
+    turns into an edge 62 times the block interior; a floor of 1e-8 leaves
+    2.0e-7, and the whitened edge is 1.06. Between the two there is a threshold,
+    not a slope, and going further buys nothing.
+
+    :type sos: numpy.ndarray
+    :param sos: second-order sections.
+    :type sampling: float
+    :param sampling: sampling frequency, Hz.
+    :type floor: float
+    :param floor: fraction of the peak below which the response is spent.
+    :type limit_s: float
+    :param limit_s: longest response to look for, seconds.
+    :return: int -- samples until the response has decayed below `floor`.
+    """
+    impulse = np.zeros(int(limit_s * sampling))
+    impulse[0] = 1.0
+    response = np.abs(sosfilt(sos, impulse))
+    peak = response.max()
+    if peak <= 0.0:
+        return 1
+    above = np.flatnonzero(response > floor * peak)
+    return int(above[-1]) + 1 if above.size else 1
+
+
 class BandPassDownSampling(object):
     """
-    The downsampling class base on scipy and numpy library. First implemente a band pass sos filter , and late decimate the data
+    Band-pass with zero phase, then decimate.
+
+    Over a stream, drive this through `read_conditioned` rather than calling
+    `Process` once per read: a block is emitted only once the data following it
+    has arrived, so `Process` returns None until then.
     """
 
-    def __init__(self, Parameters, order=None, low_freq_hp=None, padlen=None,estimation=False):
+    def __init__(self, Parameters, order=None, low_freq_hp=None, padlen=None,
+                 estimation=False, stopband_attenuation_db=60.0):
         """
         The constructor
 
@@ -33,10 +75,18 @@ class BandPassDownSampling(object):
         :param Parameters: The dictionary containing list of parameters
         :type order: int
         :order : the filter order; if None (the default), taken from
-            `Parameters.FilterOrder`, falling back to 5 if that is unset. Pass a
+            `Parameters.FilterOrder`, falling back to 10 if that is unset. Pass a
             number to override the configured value.
-        :type padlen:int
-        :padlen:  the lenght of workspace for backward filter. It must be <= the lenght of the input data but more that 1 sampling frame to cut th transient effect
+        :type stopband_attenuation_db: float
+        :stopband_attenuation_db: attenuation reached at the band edges, in dB.
+            This is what suppresses aliasing: everything above the decimated
+            Nyquist folds back into the analysed band, so the attenuation
+            reached before it is the only thing keeping it out.
+        :type padlen: int
+        :padlen: samples of real future data the backward pass settles over
+            before it reaches the stretch being emitted. Measured from the
+            impulse response when None; it must not exceed the read block, since
+            it is taken from the block that follows the one emitted.
         """
         try:
             self.sampling = int(Parameters.sampling)
@@ -52,7 +102,7 @@ class BandPassDownSampling(object):
             logging.error("Resampling factor not defined")
 
         self.nyquist_frequency = 0.5 * self.sampling
-        self.cutoff_frequency = 0.98 * (self.nyquist_frequency / self.ResamplingFactor)
+        self.cutoff_frequency = 0.90 * (self.nyquist_frequency / self.ResamplingFactor)
          
         if low_freq_hp is None:
             low_freq_hp = getattr(Parameters, "LowFrequencyCut", None)
@@ -60,77 +110,130 @@ class BandPassDownSampling(object):
 
         if order is None:
             order = getattr(Parameters, "FilterOrder", None)
-        self.order = 5 if order is None else int(order)
+        self.order = 10 if order is None else int(order)
+        self.stopband_attenuation_db = float(stopband_attenuation_db)
 
-         # Apply a low-pass filter to the data to prevent aliasing
-        self.sos = butter(self.order,[self.low_freq_hp, self.cutoff_frequency], fs=self.sampling, btype='bandpass', output='sos')
+         # Apply a low-pass filter to the data to prevent aliasing. Chebyshev
+         # type II is flat in the pass band, with its ripple confined to the
+         # stop band where nothing is read, and it reaches full attenuation at
+         # the edges given here rather than merely starting to roll off there.
+        self.sos = cheby2(self.order, self.stopband_attenuation_db,
+                          [self.low_freq_hp, self.cutoff_frequency],
+                          fs=self.sampling, btype='bandpass', output='sos')
         self.estimation=estimation
         
 
-       # Get the steady state of the filter's step response.
-
-        self.z1forw = np.zeros((self.sos.shape[0], 2), dtype=np.float32)
-        self.first_call = True
-
+        # Measured, not fixed at one second: the old value was tuned to a
+        # Butterworth that settled in 0.34 s, and a steeper filter simply rings
+        # past it, which puts the unsettled transient into the emitted block.
         if padlen is None:
-           self.padlen = int(self.sampling )
+            self.padlen = settling_length(self.sos, self.sampling)
         else:
-            self.padlen = padlen
+            self.padlen = int(padlen)
 
-        self.prefix = np.zeros(self.padlen)
+        # Blocks read but not yet emitted, and the stretch already emitted.
+        self.pending = []
+        self.history = np.zeros(0)
+
+        logging.info(
+            "BandPassDownSampling: %d -> %d Hz, band %.1f-%.1f Hz, order %d, "
+            "%.0f dB, settling %d samples (%.3f s)",
+            self.sampling, self.resampling, self.low_freq_hp,
+            self.cutoff_frequency, self.order, self.stopband_attenuation_db,
+            self.padlen, self.padlen / self.sampling)
 
     def Process(self, data):
         """
         The method for the downsampling the data.
 
-        On the first call after `estimation=True` construction, applies a
-        zero-phase (forward-backward, `sosfiltfilt`) band-pass + decimate in one
-        shot and clears the estimation flag. On every subsequent call, runs a
-        streaming forward-then-backward `sosfilt` pass instead (carrying filter
-        state and a `padlen`-sized prefix/lookahead buffer across calls), so
-        consecutive chunks stay continuous without needing the whole segment in
-        memory at once.
+        With `estimation=True` the block is complete in itself -- it is the
+        stretch the autoregressive fit is handed -- so it is band-passed with
+        `sosfiltfilt` and decimated in one shot.
+
+        Otherwise a block is filtered only once `padlen` samples of what follows
+        it have been read. `sosfiltfilt` is then applied to the block together
+        with its real past and its real future, and only the middle is kept, so
+        the result is what filtering the whole stream at once would give there.
+        None is returned while the future is still arriving, however many reads
+        that takes.
+
+        The cost is one block of latency, stated in `latency_s` and carried by
+        the timestamps. It is not optional: a block cannot be filtered with zero
+        phase before the filter has seen what follows it, and the residual left
+        by assuming a boundary instead is small in the conditioned data but is
+        amplified about tenfold by the whitening, which applies its largest gain
+        exactly at the band edges where that residual lives.
 
         :type data: pytsa.tsa.SeqView_double_t
         :param data: input data chunk at the original sampling rate.
-        :return: pytsa.tsa.SeqView_double_t -- band-passed, decimated data at
-            `self.resampling` Hz.
+        :return: pytsa.tsa.SeqView_double_t or None -- band-passed, decimated
+            data at `self.resampling` Hz, or None while the future is filling.
         """
-        ##
-        DSdata = data.GetSize()
-        # dimension of decimated data
-        Noutdata = int(DSdata / self.ResamplingFactor)
-        # decimate signal array
-        y_ds = np.zeros(Noutdata)
-         # signal array
         y = SV_to_array(data)
+        start = data.GetStart()
 
-        if self.estimation==True:  
-            y_ds=sosfiltfilt(self.sos,y)[::self.ResamplingFactor]
-            data_ds = array2SeqView(data.GetStart(), self.resampling, Noutdata)
-            data_ds.Fill(data.GetStart(), array=y_ds)
-            data_ds = data_ds.SV 
-            self.estimation=False        
-        else:
-            
-            ## implementation of forward and backward filter Francesco
+        if self.estimation:
+            y_ds = sosfiltfilt(self.sos, y)[::self.ResamplingFactor]
+            self.estimation = False
+            return self._decimated_view(y_ds, data.GetStart())
 
-            ext = np.concatenate([self.prefix, y])
-            s1 = ext[:DSdata]
-            s2 = ext[DSdata:DSdata + self.padlen]
-            self.prefix = ext[-self.padlen:]
-            # Forward
-            s1f, self.z1forw = sosfilt(self.sos, s1, zi=self.z1forw)
-            s2f, z2f = sosfilt(self.sos, s2, zi=self.z1forw)
-            # Backward
-            s2b, z2b = sosfilt(self.sos, s2f[::-1], zi=z2f)
-            s1b, z1b = sosfilt(self.sos, s1f[::-1], zi=z2b)
+        self.pending.append((y, start))
+        if sum(len(s) for s, _ in self.pending[1:]) < self.padlen:
+            return None
 
-            y_ds = s1b[::-self.ResamplingFactor]
-            startTime = data.GetStart() - self.padlen / self.sampling
+        block, block_start = self.pending.pop(0)
+        lookahead = np.concatenate([s for s, _ in self.pending])[:self.padlen]
 
-            data_ds = array2SeqView(startTime, self.resampling, Noutdata)
-            data_ds.Fill(startTime, array=y_ds)
-            data_ds = data_ds.SV
+        joined = np.concatenate([self.history, block, lookahead])
+        filtered = sosfiltfilt(self.sos, joined)
 
-        return data_ds
+        first = len(self.history)
+        emitted = filtered[first:first + len(block)]
+        self.history = joined[:first + len(block)][-self.padlen:]
+
+        y_ds = emitted[::self.ResamplingFactor]
+        return self._decimated_view(y_ds, block_start)
+
+    @property
+    def latency_s(self):
+        """Seconds of data read but not yet emitted. Zero in estimation mode."""
+        return sum(len(s) for s, _ in self.pending) / self.sampling
+
+    def _decimated_view(self, y_ds, start):
+        """Wrap decimated samples in a SeqView starting at `start`.
+
+        :type y_ds: numpy.ndarray
+        :param y_ds: decimated samples.
+        :type start: float
+        :param start: GPS time of the first sample.
+        :return: pytsa.tsa.SeqView_double_t
+        """
+        view = array2SeqView(start, self.resampling, len(y_ds))
+        view.Fill(start, array=y_ds)
+        return view.SV
+
+
+def read_conditioned(streaming, block, downsampling):
+    """Read from a stream until the conditioning front end returns a block.
+
+    This is the supported way to drive `BandPassDownSampling` over a stream.
+    The filter holds each block until the data following it has arrived, so it
+    returns None for the first few reads and a caller that assumes one block
+    per read will hand None to whatever it feeds. How many reads it takes
+    depends on the filter's ringing and on the read size, neither of which the
+    caller should have to know.
+
+    :type streaming: pytsa.tsa.FrameIChannel
+    :param streaming: the frame reader.
+    :type block: pytsa.tsa.SeqView_double_t
+    :param block: scratch view the reader fills.
+    :type downsampling: BandPassDownSampling
+    :param downsampling: the conditioning front end.
+    :return: pytsa.tsa.SeqView_double_t -- one conditioned block, labelled with
+        the time of the samples it holds.
+    """
+    while True:
+        streaming.GetData(block)
+        conditioned = downsampling.Process(block)
+        if conditioned is not None:
+            return conditioned

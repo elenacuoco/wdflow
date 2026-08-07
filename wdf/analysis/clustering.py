@@ -17,8 +17,8 @@ from sklearn.cluster import DBSCAN
 CLUSTER_COL = "cluster_id"
 
 CLUSTERED_EVENT_COLUMNS = [
-    "cluster_id", "is_noise", "trigger_index", "ifo", "gpsStart", "gpsMax", "snrMean", "snrMax",
-    "freqMean", "freqMax", "freqMin", "duration", "wave",
+    "cluster_id", "is_noise", "trigger_index", "ifo", "gpsStart", "gpsPeak", "snrMean", "EnWDF",
+    "freqMean", "freqMax", "freqMin", "freqPeak", "duration", "wave",
     "n_triggers", "gps_span_s",
 ]
 
@@ -39,10 +39,10 @@ class TriggerClusterer:
         time_eps_s: float = 0.5,
         freq_eps_hz: float = 50.0,
         min_samples: int = 2,
-        snr_weight: float = 0.0,
+        stat_weight: float = 0.0,
         time_col: str = "gpsPeak",
-        freq_col: str = "freqPeak",
-        snr_col: str = "snrPeak",
+        freq_col: str = "freqMean",
+        stat_col: str = "EnWDF",
     ):
         """
         :type method: str
@@ -56,16 +56,19 @@ class TriggerClusterer:
         :param min_samples: minimum members for a group to count as a real cluster
             rather than noise/singletons (same semantics as `sklearn.cluster.DBSCAN`'s
             `min_samples`, applied identically in the greedy method too).
-        :type snr_weight: float
-        :param snr_weight: if > 0, adds `snr_weight * log10(snr_col)` as a third
+        :type stat_weight: float
+        :param stat_weight: if > 0, adds `stat_weight * log10(stat_col)` as a third
             clustering feature alongside time/frequency (0 disables it).
         :type time_col: str
         :param time_col: trigger column used as the time-axis clustering feature.
         :type freq_col: str
         :param freq_col: trigger column used as the frequency-axis clustering feature.
-        :type snr_col: str
-        :param snr_col: trigger column used to rank cluster members (peak selection
-            in `clustered_events`) and as the optional SNR clustering feature.
+            `freqMean` is a spectral moment and tracks a narrowband carrier more
+            closely than `freqPeak`, which answers where the local signal-to-noise
+            ratio peaks and is the sharper of the two only for a sweeping transient.
+        :type stat_col: str
+        :param stat_col: trigger column used to rank cluster members (peak selection
+            in `clustered_events`) and as the optional third clustering feature.
         :raises ValueError: if `method` is not "dbscan" or "greedy".
         """
         if method not in ("dbscan", "greedy"):
@@ -74,10 +77,10 @@ class TriggerClusterer:
         self.time_eps_s = time_eps_s
         self.freq_eps_hz = freq_eps_hz
         self.min_samples = min_samples
-        self.snr_weight = snr_weight
+        self.stat_weight = stat_weight
         self.time_col = time_col
         self.freq_col = freq_col
-        self.snr_col = snr_col
+        self.stat_col = stat_col
 
     def fit_predict(self, triggers: pd.DataFrame) -> pd.DataFrame:
         """Input: raw single-IFO trigger DataFrame (>=1 unique `ifo` value;
@@ -115,9 +118,9 @@ class TriggerClusterer:
         t = df[self.time_col].to_numpy(dtype=float) / self.time_eps_s
         f = df[self.freq_col].to_numpy(dtype=float) / self.freq_eps_hz
         features = [t, f]
-        if self.snr_weight > 0:
-            snr = np.log10(np.clip(df[self.snr_col].to_numpy(dtype=float), 1e-12, None))
-            features.append(self.snr_weight * snr)
+        if self.stat_weight > 0:
+            statistic = np.log10(np.clip(df[self.stat_col].to_numpy(dtype=float), 1e-12, None))
+            features.append(self.stat_weight * statistic)
         X = np.column_stack(features)
         labels = DBSCAN(eps=1.0, min_samples=self.min_samples).fit_predict(X)
         return labels
@@ -197,7 +200,7 @@ class TriggerClusterer:
 
         rows = []
         for gid, g in df.groupby("_group", sort=False):
-            peak = g.loc[g[self.snr_col].idxmax()]
+            peak = g.loc[g[self.stat_col].idxmax()]
             n = len(g)
             gps_span_s = float(g[self.time_col].max() - g[self.time_col].min())
             is_noise = bool(g[CLUSTER_COL].iloc[0] == -1)
@@ -207,12 +210,13 @@ class TriggerClusterer:
                 trigger_index=int(g["_row_index"].iloc[0]) if is_noise else -1,
                 ifo=g["ifo"].iloc[0] if "ifo" in g.columns else None,
                 gpsStart=float(g["gps"].min()) if "gps" in g.columns else float(g[self.time_col].min()),
-                gpsMax=float(peak[self.time_col]),
-                snrMean=float(g["snrMean"].mean()) if "snrMean" in g.columns else float(g[self.snr_col].mean()),
-                snrMax=float(peak[self.snr_col]),
+                gpsPeak=float(peak[self.time_col]),
+                snrMean=float(g["snrMean"].mean()) if "snrMean" in g.columns else float(g[self.stat_col].mean()),
+                EnWDF=float(peak[self.stat_col]),
                 freqMean=float(g["freqMean"].mean()) if "freqMean" in g.columns else float(peak[self.freq_col]),
                 freqMax=float(peak["freqMax"]) if "freqMax" in g.columns else float(peak[self.freq_col]),
                 freqMin=float(g["freqMin"].min()) if "freqMin" in g.columns else float(peak[self.freq_col]),
+                freqPeak=float(peak[self.freq_col]),
                 duration=gps_span_s if n > 1 else float(peak.get("duration", 0.0)),
                 wave=peak.get("wave"),
                 n_triggers=n,
@@ -221,9 +225,10 @@ class TriggerClusterer:
         return pd.DataFrame(rows, columns=CLUSTERED_EVENT_COLUMNS)
 
 
-PIXEL_COLUMNS = ["trigger_index", "ifo", "t_lo", "t_hi", "f_lo", "f_hi", "energy"]
+PIXEL_COLUMNS = ["trigger_index", "ifo", "t_lo", "t_hi", "f_lo", "f_hi", "energy", "sigma"]
 PIXEL_CLUSTERED_EVENT_COLUMNS = [
-    "cluster_id", "gpsStart", "gpsEnd", "freqMin", "freqMax",
+    "cluster_id", "ifo", "gpsStart", "gpsEnd", "gpsPeak", "duration",
+    "freqMin", "freqMax", "freqPeak", "EnWDF", "sigma",
     "total_energy", "n_pixels", "n_triggers", "ifos",
 ]
 
@@ -256,6 +261,7 @@ def collect_significant_pixels(triggers: pd.DataFrame, fs: float) -> pd.DataFram
         wt = trig[wt_cols].to_numpy(dtype=float)
         tiles = wavelet_coeff_tiles(wt, fs)
         gps0 = trig["gps"]
+        sigma = float(trig.get("sigma", np.nan))
         for t_lo, t_hi, f_lo, f_hi, mag in tiles:
             if mag == 0.0:
                 continue
@@ -264,6 +270,7 @@ def collect_significant_pixels(triggers: pd.DataFrame, fs: float) -> pd.DataFram
                 t_lo=gps0 + t_lo, t_hi=gps0 + t_hi,
                 f_lo=f_lo, f_hi=f_hi,
                 energy=mag ** 2,
+                sigma=sigma,
             ))
     return pd.DataFrame(rows, columns=PIXEL_COLUMNS)
 
@@ -315,24 +322,120 @@ class WaveletPixelClusterer:
         _, labels = connected_components(csr_matrix(adjacency), directed=False)
         return labels
 
+    def trigger_labels(self, pixels: pd.DataFrame) -> pd.Series:
+        """Cluster label per trigger, for grouping triggers before stitching.
+
+        Overlapping windows put pixels of the same transient in several
+        triggers, and one trigger's window can touch more than one cluster; the
+        trigger is assigned to the cluster it deposits most energy in.
+
+        :type pixels: pandas.DataFrame
+        :param pixels: `fit`'s output.
+        :return: pandas.Series -- cluster label indexed by `trigger_index`.
+        """
+        if pixels.empty:
+            return pd.Series(dtype=int)
+        totals = pixels.groupby(["trigger_index", "cluster_id"])["energy"].sum()
+        return totals.reset_index().sort_values("energy").groupby(
+            "trigger_index")["cluster_id"].last()
+
     def clustered_events(self, pixels: pd.DataFrame) -> pd.DataFrame:
-        """One row per connected component: total energy (sum of |coefficient|^2
-        over every member pixel -- an actual integrated energy statistic,
-        unlike a single window's `EnWDF`/`snrPeak`), and the cluster's real
-        time/frequency span (not one window's worth)."""
+        """One row per connected component: the cluster's real time/frequency
+        span (not one window's worth), the tile where the local
+        signal-to-noise ratio peaks, and `EnWDF` on the noise scale.
+
+        `total_energy` sums each member pixel's squared coefficient. Because
+        consecutive WDF windows overlap, pixels covering the same samples are
+        counted once per window they appear in, so `EnWDF` derived from it is
+        an upper bound. `wavegram_events` reconstructs the cluster in the time
+        domain instead, where each sample is counted exactly once, and is the
+        value to release.
+
+        :type pixels: pandas.DataFrame
+        :param pixels: `fit`'s output.
+        :return: pandas.DataFrame -- one row per cluster,
+            `PIXEL_CLUSTERED_EVENT_COLUMNS`.
+        """
+        from wdf.analysis.wavelets import tile_frequency
+
         if pixels.empty:
             return pd.DataFrame(columns=PIXEL_CLUSTERED_EVENT_COLUMNS)
         rows = []
         for cid, g in pixels.groupby("cluster_id"):
+            loudest = g.loc[g["energy"].idxmax()]
+            scales = g["sigma"].to_numpy(dtype=float) if "sigma" in g else np.array([])
+            scales = scales[np.isfinite(scales)]
+            sigma = float(np.median(scales)) if scales.size else float("nan")
+            total_energy = float(g["energy"].sum())
+            gps_start = float(g["t_lo"].min())
+            gps_end = float(g["t_hi"].max())
             rows.append(dict(
                 cluster_id=int(cid),
-                gpsStart=float(g["t_lo"].min()),
-                gpsEnd=float(g["t_hi"].max()),
+                ifo=g["ifo"].iloc[0] if "ifo" in g else None,
+                gpsStart=gps_start,
+                gpsEnd=gps_end,
+                gpsPeak=0.5 * float(loudest["t_lo"] + loudest["t_hi"]),
+                duration=gps_end - gps_start,
                 freqMin=float(g["f_lo"].min()),
                 freqMax=float(g["f_hi"].max()),
-                total_energy=float(g["energy"].sum()),
+                freqPeak=tile_frequency(float(loudest["f_lo"]), float(loudest["f_hi"])),
+                EnWDF=float(np.sqrt(total_energy) / sigma) if sigma > 0 else float("nan"),
+                sigma=sigma,
+                total_energy=total_energy,
                 n_pixels=len(g),
                 n_triggers=int(g["trigger_index"].nunique()),
                 ifos=sorted(g["ifo"].dropna().unique().tolist()) if "ifo" in g else [],
             ))
         return pd.DataFrame(rows, columns=PIXEL_CLUSTERED_EVENT_COLUMNS)
+
+
+def wavegram_events(triggers: pd.DataFrame, fs: float, window: int, overlap: int,
+                    time_tol_s: float) -> pd.DataFrame:
+    """Cluster triggers on the wavegram and score each cluster on its
+    time-domain reconstruction.
+
+    Percolation over the wavelet-coefficient tiles decides which windows belong
+    to the same transient, so a signal longer than the analysis window is one
+    event rather than a chain of partial ones. The event's `EnWDF` is then the
+    norm of the reconstruction stitched across those windows, divided by the
+    noise scale: each sample is counted exactly once, and the statistic covers
+    the signal's whole extent instead of the best single window.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: one detector's triggers, carrying `gps`, `sigma`, `wave`
+        and the `wt*` columns (`fullPrint >= 1`).
+    :type fs: float
+    :param fs: analysis sampling frequency, Hz.
+    :type window: int
+    :param window: analysis window length, samples.
+    :type overlap: int
+    :param overlap: overlap between consecutive windows, samples.
+    :type time_tol_s: float
+    :param time_tol_s: time gap two tiles may leave and still be chained into
+        the same cluster, seconds.
+    :return: pandas.DataFrame -- one row per event, with the geometry from the
+        wavegram and `EnWDF` from the reconstruction.
+    """
+    from wdf.analysis.reconstruction import combined_snr
+
+    clusterer = WaveletPixelClusterer(time_tol_s=time_tol_s)
+    pixels = clusterer.fit(triggers, fs)
+    events = clusterer.clustered_events(pixels)
+    if events.empty:
+        return events
+
+    labels = clusterer.trigger_labels(pixels)
+    reconstructed = []
+    for _, event in events.iterrows():
+        members = triggers.loc[labels.index[labels == event.cluster_id]]
+        summary = combined_snr(members, fs, window, overlap)
+        reconstructed.append(dict(
+            cluster_id=event.cluster_id,
+            EnWDF=summary["EnWDF"],
+            loudest_window=summary["loudest_window"],
+            span_s=summary["span_s"],
+            windows=summary["windows"],
+        ))
+
+    return events.drop(columns=["EnWDF"]).merge(
+        pd.DataFrame(reconstructed), on="cluster_id")

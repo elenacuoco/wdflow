@@ -18,7 +18,8 @@ from pytsa.tsa import SeqView_double_t as SV
 from wdf.observers.ParameterEstimationObserver import ParameterEstimation 
 from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 
-from wdf.processes.BandPassDownSampling import BandPassDownSampling
+from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
+                                                read_conditioned)
 from wdf.config.Parameters import Parameters 
 from wdf.processes.wdf import wdf
 from wdf.processes.Whitening import Whitening
@@ -30,6 +31,11 @@ from wdf.processes.zero_phase_whitening import (
 DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0 
 import logging
 import os
+
+
+
+
+
 
 class wdfUnitDSWorker(object):
     def __init__(self, parameters, fullPrint=1):
@@ -147,7 +153,6 @@ class wdfUnitDSWorker(object):
             self.par.gps = gpsStart
             self.par.gpsStart = gpsStart
             
-            self.par.gpsEnd = gpsEnd - 2 * self.par.len
 
             ######################
             # self.parameter for sequence of data and the resampling
@@ -177,8 +182,7 @@ class wdfUnitDSWorker(object):
             streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
             # reading data, downsampling and whitening
             for i in range(self.par.preWhite):
-                streaming.GetData(data)
-                data_ds=ds.Process(data) 
+                data_ds = read_conditioned(streaming, data, ds)
                 whitening.Process(data_ds,dataw)
                
                 
@@ -197,28 +201,57 @@ class wdfUnitDSWorker(object):
             extra_size = int(getattr(self.par, "WhiteningExtraSize", 20 * self.par.resampling))
             self.par.WhiteningExtraSize = extra_size
 
-            if extra_size > 0:
-                # Prime the whitening buffer with `extra_size` samples of real
-                # future data *before* the main loop starts. DoubleWhitening::
-                # GetData requires mOutputSize + ExtraSize samples already
-                # buffered, and each call only removes mOutputSize samples --
-                # so the ExtraSize surplus must be pre-loaded exactly once,
-                # here, using extra reads at the still-active warm-up 1.0s
-                # dLength (SetDataLength(self.par.len) hasn't been called
-                # yet). whitening.Input() is SetData-only (no GetData/Output), so it
-                # does not require or consume an output chunk. extra_size is
-                # in resampled-rate samples; each 1.0s native read yields
-                # self.par.resampling resampled samples.
-                extra_native_seconds = -(-extra_size // int(self.par.resampling))  # ceil division, no numpy needed
-                for _ in range(extra_native_seconds):
-                    streaming.GetData(data)
-                    data_ds = ds.Process(data)
-                    whitening.Input(data_ds)
+            # The chain reads ahead of what it emits, and the segment has to end
+            # far enough from the frame's end to supply that. Three terms, each
+            # a real buffer rather than an estimate:
+            #
+            #   par.len       the whitening holds a whole output block, since
+            #                 DoubleWhitening::GetData needs mOutputSize +
+            #                 ExtraSize buffered before it produces anything
+            #   par.len       the loop reads one block past the last it uses,
+            #                 because the read that ends the loop still happens
+            #   padlen        the conditioning filter's backward pass settles
+            #                 over this much data following the block it emits
+            #   ExtraSize     the whitening's own backward lookahead
+            #
+            # The two read blocks were already there as a bare `2 * par.len`,
+            # and that was right: what it did not cover was the conditioning
+            # filter's own lookahead, which is why the reader could still run
+            # off the end of the frame. Spelling the terms out costs about two
+            # seconds of observation time and makes the margin follow the
+            # filter instead of a constant that has to be remembered.
+            read_ahead_s = (2 * self.par.len
+                            + ds.padlen / self.par.sampling
+                            + extra_size / self.par.resampling)
+            self.par.gpsEnd = gpsEnd - read_ahead_s
 
             #Set new size for the function in the loop
             streaming.SetDataLength(self.par.len)
 
             self.par.NoutData= int(self.par.resampling*self.par.len)
+            if extra_size > 0:
+                # Prime the whitening buffer before the detection loop starts.
+                # DoubleWhitening::GetData needs mOutputSize + ExtraSize samples
+                # buffered before it can produce anything, and each call removes
+                # only mOutputSize, so the surplus is pre-loaded exactly once
+                # here. whitening.Input() is SetData-only, so it neither needs
+                # nor consumes an output chunk.
+                #
+                # This runs after SetDataLength so that the conditioning front
+                # end has already flushed the short warm-up blocks still held in
+                # its lookahead queue. Priming first would leave those queued: the
+                # loop would then feed the whitening a one-second block while it
+                # expected par.len seconds, and it would starve on the second
+                # pass. Counted in samples delivered rather than in reads, since
+                # a read and a delivered block are neither the same event nor
+                # the same size.
+                needed = extra_size + int(self.par.resampling * self.par.len)
+                buffered = 0
+                while buffered < needed:
+                    data_ds = read_conditioned(streaming, data, ds)
+                    buffered += data_ds.GetSize()
+                    whitening.Input(data_ds)
+
             whitening.SetOutputSize(self.par.NoutData, extra_size)
 
 
@@ -241,12 +274,20 @@ class wdfUnitDSWorker(object):
             data = SV()
             data_ds = SV()
             dataw = SV()
-            while data.GetStart() <=self.par.gpsEnd:
-                streaming.GetData(data)
-                data_ds=ds.Process(data)
+            # Tested on the block that comes out of conditioning, not on the
+            # reader: the two are not at the same time, and testing the reader
+            # would end the loop while conditioned data was still queued.
+            data_ds = read_conditioned(streaming, data, ds)
+            while data_ds.GetStart() <= self.par.gpsEnd:
                 whitening.Process(data_ds, dataw)
                 WDF.SetData(dataw)
                 WDF.Process()
+                if data.GetStart() + 2 * self.par.len > gpsEnd:
+                    logging.warning(
+                        "Stopping at %.1f: the next read would pass the end of "
+                        "the segment at %.1f", data_ds.GetStart(), gpsEnd)
+                    break
+                data_ds = read_conditioned(streaming, data, ds)
 
             savetrigger.close()
 

@@ -1,3 +1,4 @@
+import pytest
 from wdf.analysis.clustering import TriggerClusterer
 from wdf.analysis.coincidence import CoincidenceFinder
 from wdf.analysis.significance import BackgroundEstimator, pool_backgrounds
@@ -32,7 +33,7 @@ def test_background_distribution_and_fap():
     if not bg.empty:
         assert bg["slide_index"].between(0, be.n_slides - 1).all()
 
-    best = real_candidates.loc[real_candidates["network_snr"].idxmax()]
+    best = real_candidates.loc[real_candidates["network_enwdf"].idxmax()]
     result = be.false_alarm_probability(best, bg, segment_duration_s=h1_bounds[1] - h1_bounds[0])
     assert 0.0 <= result["fap"] <= 1.0
     assert result["n_slides"] == 50
@@ -55,7 +56,7 @@ def test_background_distribution_with_find_network_for_three_ifos():
         assert (bg["n_ifos"] == 3).all()
 
     if len(real_candidates) > 0:
-        best = real_candidates.loc[real_candidates["network_snr"].idxmax()]
+        best = real_candidates.loc[real_candidates["network_enwdf"].idxmax()]
         result = be.false_alarm_probability(best, bg, segment_duration_s=h1_bounds[1] - h1_bounds[0])
         assert 0.0 <= result["fap"] <= 1.0
         assert "far_per_day" in result
@@ -93,8 +94,8 @@ def test_rank_candidates_empty_input():
     cf = CoincidenceFinder()
     be = BackgroundEstimator(cf, n_slides=10)
     import pandas as pd
-    empty = pd.DataFrame(columns=["candidate_id", "network_snr"])
-    bg = pd.DataFrame({"network_snr": [1.0, 2.0]})
+    empty = pd.DataFrame(columns=["candidate_id", "network_enwdf"])
+    bg = pd.DataFrame({"network_enwdf": [1.0, 2.0]})
     ranked = be.rank_candidates(empty, bg)
     assert ranked.empty
     assert {"fap", "n_background_ge", "n_slides"} <= set(ranked.columns)
@@ -102,8 +103,48 @@ def test_rank_candidates_empty_input():
 
 def test_pool_backgrounds_tags_segment_id():
     import pandas as pd
-    a = pd.DataFrame({"network_snr": [1.0, 2.0]})
-    b = pd.DataFrame({"network_snr": [3.0]})
+    a = pd.DataFrame({"network_enwdf": [1.0, 2.0]})
+    b = pd.DataFrame({"network_enwdf": [3.0]})
     pooled = pool_backgrounds({"seg_a": a, "seg_b": b})
     assert set(pooled["segment_id"]) == {"seg_a", "seg_b"}
     assert len(pooled) == 3
+
+
+def test_the_false_alarm_probability_cannot_exceed_one():
+    """The denominator counts background candidates, not slides: one slide
+    routinely yields many candidates, and mixing the two gave probabilities
+    above one on a real segment."""
+    import numpy as np
+    import pandas as pd
+    from wdf.analysis.coincidence import CoincidenceFinder
+    from wdf.analysis.significance import BackgroundEstimator
+
+    estimator = BackgroundEstimator(CoincidenceFinder(), n_slides=10)
+    background = pd.DataFrame({"network_enwdf": np.linspace(1.0, 50.0, 5000)})
+
+    quiet = estimator.false_alarm_probability(
+        pd.Series({"network_enwdf": 0.0}), background)
+    loud = estimator.false_alarm_probability(
+        pd.Series({"network_enwdf": 100.0}), background)
+
+    assert 0.0 < loud["fap"] <= 1.0
+    assert 0.0 < quiet["fap"] <= 1.0
+    assert quiet["fap"] == pytest.approx(1.0, rel=1e-3)   # nothing is quieter
+    assert loud["fap"] < 1e-3
+    assert quiet["n_background"] == 5000
+
+
+def test_ranking_and_the_single_row_estimator_agree():
+    import numpy as np
+    import pandas as pd
+    from wdf.analysis.coincidence import CoincidenceFinder
+    from wdf.analysis.significance import BackgroundEstimator
+
+    estimator = BackgroundEstimator(CoincidenceFinder(), n_slides=10)
+    background = pd.DataFrame({"network_enwdf": np.linspace(1.0, 50.0, 500)})
+    candidates = pd.DataFrame({"network_enwdf": [5.0, 25.0, 45.0]})
+
+    ranked = estimator.rank_candidates(candidates, background)
+    for _, row in ranked.iterrows():
+        one = estimator.false_alarm_probability(row, background)
+        assert one["fap"] == pytest.approx(row["fap"])

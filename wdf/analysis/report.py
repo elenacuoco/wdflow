@@ -100,7 +100,7 @@ def _tf_plot_b64(ifo: str, member_rows: pd.DataFrame, fs: float, sigma: float,
     ax.set_ylim(0, fs / 2)
     ax.set_xlabel(f"time - {center_gps:.3f} [s]")
     ax.set_ylabel("frequency [Hz]")
-    ax.set_title(f"{ifo}: time-frequency tiles, loudest survivor (snrMax={snr_label:.1f})")
+    ax.set_title(f"{ifo}: time-frequency tiles, loudest survivor (EnWDF={snr_label:.1f})")
     return _fig_to_b64(fig)
 
 
@@ -161,7 +161,7 @@ def build_run_report(
     :param top_n: how many loudest events to list per detector.
     :type rank_col: str | None
     :param rank_col: column used to rank/select the "loudest" events. Default
-        (None): `snrMax` if `clustered` is given (or any per-detector
+        (None): `EnWDF` if `clustered` is given (or any per-detector
         DataFrame already has it), else `snrPeak` (the raw-trigger schema
         `cleaned` falls back to when `clustered` is omitted).
     :type filename: str
@@ -185,12 +185,12 @@ def build_run_report(
         ranking_df = clustered.get(ifo, df)
         if rank_col is not None:
             this_rank_col = rank_col
-        elif "snrMax" in ranking_df.columns:
-            this_rank_col = "snrMax"
+        elif "EnWDF" in ranking_df.columns:
+            this_rank_col = "EnWDF"
         else:
             this_rank_col = "snrPeak"
         top = ranking_df.sort_values(this_rank_col, ascending=False).head(top_n)
-        table_cols = [c for c in ("gpsMax", "gpsPeak", this_rank_col, "freqMax", "freqPeak",
+        table_cols = [c for c in ("gpsStart", "gpsPeak", this_rank_col, "freqMax", "freqPeak",
                                    "n_triggers") if c in top.columns]
         if this_rank_col not in table_cols:
             table_cols.append(this_rank_col)
@@ -199,7 +199,7 @@ def build_run_report(
         tf_html = ""
         if ifo in raw_triggers and ifo in par and len(top):
             best = top.iloc[0]
-            center_gps = best.get("gpsMax", best.get("gpsPeak"))
+            center_gps = best["gpsPeak"]
             raw = raw_triggers[ifo]
             window_s = 0.5
             near = raw[(raw["gps"] - center_gps).abs() <= window_s] if "gps" in raw.columns else raw.iloc[0:0]

@@ -24,12 +24,12 @@ LIGHT_TRAVEL_TIME_S = {
 
 CANDIDATE_COLUMNS_BASE = [
     "candidate_id", "gps_candidate", "ifos_involved", "dt_s",
-    "network_snr", "n_ifos", "n_candidate_matches",
+    "network_enwdf", "n_ifos", "n_candidate_matches",
 ]
 
 NETWORK_CANDIDATE_COLUMNS_BASE = [
     "candidate_id", "gps_candidate", "ifos_involved",
-    "network_snr", "n_ifos", "n_triggers_in_candidate",
+    "network_enwdf", "n_ifos", "n_triggers_in_candidate",
 ]
 
 
@@ -52,8 +52,8 @@ class CoincidenceFinder:
         :param timing_jitter_s: margin added on top of light-travel-time in
             `coincidence_window` (see that method for why).
         :type network_stat: str
-        :param network_stat: how to combine per-detector `snrMax` into one candidate
-            `network_snr` -- one of "quadrature_sum", "min", "mean".
+        :param network_stat: how to combine per-detector `EnWDF` into one candidate
+            `network_enwdf` -- one of "quadrature_sum", "min", "mean".
         :raises ValueError: if `network_stat` is not one of the three above.
         """
         if network_stat not in ("quadrature_sum", "min", "mean"):
@@ -88,8 +88,8 @@ class CoincidenceFinder:
             )
         return ltt + 2 * self.timing_jitter_s
 
-    def _network_snr(self, snrs: list[float]) -> float:
-        arr = np.asarray(snrs, dtype=float)
+    def _network_enwdf(self, statistics: list[float]) -> float:
+        arr = np.asarray(statistics, dtype=float)
         if self.network_stat == "quadrature_sum":
             return float(np.sqrt(np.sum(arr ** 2)))
         if self.network_stat == "min":
@@ -106,8 +106,8 @@ class CoincidenceFinder:
         :param clustered: {ifo: TriggerClusterer.clustered_events output for that
             detector}.
         :return: pandas.DataFrame -- one row per pairwise coincidence candidate,
-            columns per `CANDIDATE_COLUMNS_BASE` plus per-IFO `snr_<ifo>`/
-            `freq_<ifo>`/`cluster_id_<ifo>` columns for each pair tested; empty
+            columns per `CANDIDATE_COLUMNS_BASE` plus per-IFO `EnWDF_<ifo>`/
+            `freqMean_<ifo>`/`cluster_id_<ifo>` columns for each pair tested; empty
             (with `CANDIDATE_COLUMNS_BASE` columns only) if nothing coincides.
         """
         ifos = list(clustered.keys())
@@ -120,7 +120,7 @@ class CoincidenceFinder:
                 continue
             window_s = self.coincidence_window(ifo_a, ifo_b)
             for _, row_a in df_a.iterrows():
-                dt = (df_b["gpsMax"] - row_a["gpsMax"]).to_numpy()
+                dt = (df_b["gpsPeak"] - row_a["gpsPeak"]).to_numpy()
                 in_window = np.abs(dt) <= window_s
                 n_matches = int(in_window.sum())
                 if n_matches == 0:
@@ -129,21 +129,21 @@ class CoincidenceFinder:
                 # n_candidate_matches rather than silently resolved
                 best_idx = np.argmin(np.abs(np.where(in_window, dt, np.inf)))
                 row_b = df_b.iloc[best_idx]
-                snr_a, snr_b = float(row_a["snrMax"]), float(row_b["snrMax"])
-                network_snr = self._network_snr([snr_a, snr_b])
+                enwdf_a, enwdf_b = float(row_a["EnWDF"]), float(row_b["EnWDF"])
+                network_enwdf = self._network_enwdf([enwdf_a, enwdf_b])
                 gps_candidate = float(
-                    np.average([row_a["gpsMax"], row_b["gpsMax"]],
-                               weights=[snr_a, snr_b])
+                    np.average([row_a["gpsPeak"], row_b["gpsPeak"]],
+                               weights=[enwdf_a, enwdf_b])
                 )
                 candidates.append({
                     "gps_candidate": gps_candidate,
                     "ifos_involved": f"{ifo_a},{ifo_b}",
-                    "dt_s": float(row_a["gpsMax"] - row_b["gpsMax"]),
-                    f"snr_{ifo_a}": snr_a,
-                    f"snr_{ifo_b}": snr_b,
-                    f"freq_{ifo_a}": float(row_a["freqMean"]),
-                    f"freq_{ifo_b}": float(row_b["freqMean"]),
-                    "network_snr": network_snr,
+                    "dt_s": float(row_a["gpsPeak"] - row_b["gpsPeak"]),
+                    f"EnWDF_{ifo_a}": enwdf_a,
+                    f"EnWDF_{ifo_b}": enwdf_b,
+                    f"freqMean_{ifo_a}": float(row_a["freqMean"]),
+                    f"freqMean_{ifo_b}": float(row_b["freqMean"]),
+                    "network_enwdf": network_enwdf,
                     "n_ifos": 2,
                     "n_candidate_matches": n_matches,
                     f"cluster_id_{ifo_a}": row_a["cluster_id"],
@@ -177,7 +177,7 @@ class CoincidenceFinder:
             component must span to be kept as a candidate.
         :return: pandas.DataFrame -- one row per connected-component candidate,
             columns per `NETWORK_CANDIDATE_COLUMNS_BASE` plus per-involved-IFO
-            `snr_<ifo>`/`freq_<ifo>`/`cluster_id_<ifo>` columns, sorted by
+            `EnWDF_<ifo>`/`freqMean_<ifo>`/`cluster_id_<ifo>` columns, sorted by
             `gps_candidate`; empty (with `NETWORK_CANDIDATE_COLUMNS_BASE` columns
             only) if nothing qualifies.
         """
@@ -205,7 +205,7 @@ class CoincidenceFinder:
                     window_s = self.coincidence_window(ifo_i, ifo_j)
                 except KeyError:
                     continue
-                if abs(row_i["gpsMax"] - row_j["gpsMax"]) <= window_s:
+                if abs(row_i["gpsPeak"] - row_j["gpsPeak"]) <= window_s:
                     edge_i.append(i)
                     edge_j.append(j)
 
@@ -220,14 +220,14 @@ class CoincidenceFinder:
             involved_ifos = sorted(set(ifo for ifo, _ in members))
             if len(involved_ifos) < min_ifos:
                 continue
-            snrs = [float(row["snrMax"]) for _, row in members]
+            statistics = [float(row["EnWDF"]) for _, row in members]
             gps_candidate = float(
-                np.average([row["gpsMax"] for _, row in members], weights=snrs)
+                np.average([row["gpsPeak"] for _, row in members], weights=statistics)
             )
             row_out = {
                 "gps_candidate": gps_candidate,
                 "ifos_involved": ",".join(involved_ifos),
-                "network_snr": self._network_snr(snrs),
+                "network_enwdf": self._network_enwdf(statistics),
                 "n_ifos": len(involved_ifos),
                 "n_triggers_in_candidate": len(members),
             }
@@ -236,10 +236,10 @@ class CoincidenceFinder:
                 # component (e.g. via a third IFO), keep the louder one
                 loudest = max(
                     (row for f, row in members if f == ifo),
-                    key=lambda row: row["snrMax"],
+                    key=lambda row: row["EnWDF"],
                 )
-                row_out[f"snr_{ifo}"] = float(loudest["snrMax"])
-                row_out[f"freq_{ifo}"] = float(loudest["freqMean"])
+                row_out[f"EnWDF_{ifo}"] = float(loudest["EnWDF"])
+                row_out[f"freqMean_{ifo}"] = float(loudest["freqMean"])
                 row_out[f"cluster_id_{ifo}"] = loudest["cluster_id"]
             candidates.append(row_out)
 

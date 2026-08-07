@@ -1,4 +1,4 @@
-"""ROC curve for a coincidence detection statistic (classical `network_snr`
+"""ROC curve for a coincidence detection statistic (classical `network_enwdf`
 or GNN `gnn_score`), built from known-event candidate scores (TRUE class)
 against time-slide background candidate scores (FALSE class, from
 significance.BackgroundEstimator).
@@ -28,7 +28,7 @@ class ROCCurve:
         cls,
         known_event_candidates: pd.DataFrame,
         background: pd.DataFrame,
-        score_col: str = "network_snr",
+        score_col: str = "network_enwdf",
     ) -> "ROCCurve":
         return cls(
             known_event_candidates[score_col].to_numpy(),

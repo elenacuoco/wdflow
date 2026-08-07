@@ -1,0 +1,594 @@
+<title>WDFlow — the Wavelet Detection Filter</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="WDFlow: the Wavelet Detection Filter, an un-modelled search for transient signals in gravitational-wave detector data.">
+
+<style>
+  :root {
+    color-scheme: light dark;
+
+    /* The palette is the scalogram: cold end for ground and neutrals,
+       hot end for the one accent. */
+    --ink:        #08121c;
+    --ink-2:      #0e1e2b;
+    --paper:      #eef3f5;
+    --paper-2:    #ffffff;
+    --text:       #0d1a24;
+    --text-dim:   #4a6473;
+    --hair:       #c3d3da;
+    --accent:     #a8580c;
+    --accent-lit: #f2a83b;
+    --cold:       #2f6d80;
+
+    --bg:      var(--paper);
+    --bg-2:    var(--paper-2);
+    --fg:      var(--text);
+    --fg-dim:  var(--text-dim);
+    --rule:    var(--hair);
+    --link:    var(--accent);
+
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --body:    "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --mono:    ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+    --measure: 64ch;
+    --gutter: clamp(1.25rem, 5vw, 4rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:     var(--ink);
+      --bg-2:   var(--ink-2);
+      --fg:     #dfe9ee;
+      --fg-dim: #8aa6b4;
+      --rule:   #1d3341;
+      --link:   var(--accent-lit);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:     var(--ink);
+    --bg-2:   var(--ink-2);
+    --fg:     #dfe9ee;
+    --fg-dim: #8aa6b4;
+    --rule:   #1d3341;
+    --link:   var(--accent-lit);
+  }
+  :root[data-theme="light"] {
+    --bg:     var(--paper);
+    --bg-2:   var(--paper-2);
+    --fg:     var(--text);
+    --fg-dim: var(--text-dim);
+    --rule:   var(--hair);
+    --link:   var(--accent);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--body);
+    font-size: clamp(1rem, 0.96rem + 0.2vw, 1.075rem);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+  a:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; border-radius: 2px; }
+
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.15; margin: 0; }
+
+  .label {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+
+  .wrap { max-width: 74rem; margin-inline: auto; padding-inline: var(--gutter); }
+  .measure { max-width: var(--measure); }
+
+  /* ---------------------------------------------------------- hero
+     The canvas is a background layer; the copy stays in normal flow so it can
+     never overflow the canvas on a narrow screen. */
+  .hero {
+    position: relative;
+    isolation: isolate;
+    background: var(--ink);
+    color: #dfe9ee;
+    display: grid;
+    align-content: end;
+    min-height: clamp(19rem, 62vh, 30rem);
+    padding: clamp(4rem, 18vh, 9rem) var(--gutter) clamp(1.75rem, 5vh, 3rem);
+  }
+  #wavegram {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .hero-copy { max-width: 74rem; margin-inline: auto; width: 100%; }
+  .mark {
+    display: block;
+    width: clamp(3.4rem, 7vw, 5rem);
+    height: auto;
+    color: var(--accent-lit);
+    margin-bottom: 0.9rem;
+  }
+  .hero-copy h1 {
+    font-size: clamp(2.6rem, 9vw, 4.5rem);
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    margin-block: 0.15rem 0.5rem;
+  }
+  .hero-copy .expansion {
+    font-size: clamp(1.05rem, 0.98rem + 0.45vw, 1.35rem);
+    color: var(--accent-lit);
+    margin: 0 0 0.9rem;
+  }
+  .hero-copy p.summary {
+    max-width: 52ch;
+    margin: 0;
+    color: #a9c2ce;
+    font-size: clamp(0.98rem, 0.94rem + 0.25vw, 1.1rem);
+  }
+  .hero-note { display: none; }
+  @media (min-width: 52rem) {
+    .hero-note {
+      display: block;
+      position: absolute;
+      top: clamp(1rem, 3vh, 2rem);
+      right: var(--gutter);
+      max-width: 22ch;
+      text-align: right;
+      color: #7d9aab;
+    }
+  }
+
+  /* ------------------------------------------------------ sections */
+  section { padding-block: clamp(3rem, 8vh, 5.5rem); }
+  section + section { border-top: 1px solid var(--rule); }
+
+  .lede { font-size: clamp(1.15rem, 1.05rem + 0.5vw, 1.5rem); line-height: 1.5; }
+  .prose > * + * { margin-top: 1.1em; }
+  .prose h2 { font-size: clamp(1.6rem, 1.3rem + 1vw, 2.2rem); font-weight: 400; }
+  .prose h3 { font-size: 1.15rem; font-weight: 600; }
+
+  .eq {
+    font-family: var(--mono);
+    font-size: 1.05rem;
+    background: var(--bg-2);
+    border-left: 2px solid var(--link);
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+  }
+  .eq b { color: var(--link); font-weight: 600; }
+
+  /* the pipeline really is a sequence, so it is numbered */
+  .stages { list-style: none; margin: 2.5rem 0 0; padding: 0; display: grid; gap: 1px; background: var(--rule); }
+  @media (min-width: 60rem) { .stages { grid-template-columns: repeat(4, 1fr); } }
+  .stages li { background: var(--bg); padding: 1.4rem 1.3rem 1.6rem; }
+  .stages .n {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    color: var(--link);
+    display: block;
+    margin-bottom: 0.6rem;
+  }
+  .stages h3 { margin-bottom: 0.4rem; }
+  .stages p { margin: 0; font-size: 0.95rem; color: var(--fg-dim); }
+
+  /* repositories */
+  .repos { display: grid; gap: 1px; background: var(--rule); margin-top: 2.5rem; border-block: 1px solid var(--rule); }
+  @media (min-width: 52rem) { .repos { grid-template-columns: repeat(3, 1fr); } }
+  .repo { background: var(--bg); padding: 1.5rem 1.4rem; display: flex; flex-direction: column; gap: 0.55rem; }
+  .repo h3 { font-family: var(--mono); font-size: 0.95rem; font-weight: 600; letter-spacing: -0.01em; }
+  /* only the description grows; the eyebrow and the link row keep their own
+     size and colour, so the third card's label is not flattened by this rule */
+  .repo p { margin: 0; }
+  .repo p:not(.links):not(.label) { font-size: 0.95rem; color: var(--fg-dim); flex: 1; }
+  .repo .links { display: flex; flex-wrap: wrap; gap: 0.9rem; font-family: var(--mono); font-size: 0.8rem; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    line-height: 1.7;
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    margin: 0;
+  }
+  pre .c { color: var(--fg-dim); }
+  code { font-family: var(--mono); font-size: 0.9em; }
+
+  .tutorials { list-style: none; margin: 2.5rem 0 0; padding: 0; display: grid; gap: 1px; background: var(--rule); border-block: 1px solid var(--rule); }
+  @media (min-width: 58rem) { .tutorials { grid-template-columns: repeat(3, 1fr); } }
+  .tutorials li { background: var(--bg); padding: 1.5rem 1.4rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .tutorials .n { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--link); }
+  .tutorials h3 { font-size: 1.1rem; font-weight: 600; }
+  .tutorials p { margin: 0; font-size: 0.95rem; color: var(--fg-dim); }
+  .tutorials p:not(.links) { flex: 1; }
+  .tutorials .links { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 0.9rem; font-family: var(--mono); font-size: 0.8rem; }
+  .tutorials .dep { color: var(--fg-dim); opacity: 0.85; }
+
+  .repo.downstream { background: var(--bg-2); }
+  .repo.downstream .label { margin-bottom: 0.35rem; }
+
+  .deps { border-collapse: collapse; width: 100%; font-size: 0.86rem; margin-top: 1rem; }
+  .deps th, .deps td { text-align: left; padding: 0.45rem 0.7rem 0.45rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .deps th { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-dim); font-weight: 400; }
+  .deps td:first-child { font-family: var(--mono); white-space: nowrap; }
+  .deps td:nth-child(3) { color: var(--fg-dim); }
+
+  .cols { display: grid; gap: clamp(1.5rem, 4vw, 3rem); }
+  @media (min-width: 56rem) { .cols { grid-template-columns: 1fr 1fr; align-items: start; } }
+
+  .refs { list-style: none; padding: 0; margin: 1.5rem 0 0; display: grid; gap: 1rem; }
+  .refs li { padding-left: 1.1rem; border-left: 1px solid var(--rule); font-size: 0.95rem; }
+  .refs .who { color: var(--fg-dim); }
+
+  footer { border-top: 1px solid var(--rule); padding-block: 2.5rem 3.5rem; font-size: 0.9rem; color: var(--fg-dim); }
+  footer .row { display: flex; flex-wrap: wrap; gap: 0.75rem 2rem; justify-content: space-between; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<header class="hero">
+  <canvas id="wavegram" aria-label="A wavegram: the time-frequency tiles of a wavelet transform, with a transient sweeping upward in frequency across them."></canvas>
+  <p class="label hero-note">wavegram: each tile is one wavelet coefficient</p>
+  <div class="hero-copy">
+    <svg class="mark" viewBox="0 0 143 96" role="img" aria-label="WDF">
+      <title>WDF</title>
+      <g fill="currentColor">
+        <rect x="2.0" y="2" width="13.7" height="29" rx="2"/>
+        <rect x="17.7" y="33" width="13.7" height="29" rx="2"/>
+        <rect x="33.4" y="64" width="13.7" height="29" rx="2"/>
+        <rect x="49.1" y="33" width="13.7" height="29" rx="2"/>
+        <rect x="64.8" y="2" width="13.7" height="29" rx="2"/>
+        <rect x="80.5" y="33" width="13.7" height="29" rx="2"/>
+        <rect x="96.2" y="64" width="13.7" height="29" rx="2"/>
+        <rect x="111.9" y="33" width="13.7" height="29" rx="2"/>
+        <rect x="127.6" y="2" width="13.7" height="29" rx="2"/>
+      </g>
+    </svg>
+    <p class="label">Un-modelled transient search</p>
+    <h1>WDFlow</h1>
+    <p class="expansion">WDF — the Wavelet Detection Filter</p>
+    <p class="summary">A search for transient signals in gravitational-wave detector data. The data are whitened in the time domain, transformed in competing orthonormal wavelet bases, and each analysis window is scored by the norm of its surviving coefficients on the noise scale.</p>
+  </div>
+</header>
+
+<main>
+  <section class="wrap">
+    <div class="prose measure">
+      <p class="lede">Matched filtering requires a template. Where no accurate waveform model exists — an un-modelled burst, or a detector glitch — WDF instead asks which of a set of orthonormal bases represents the data most compactly, and how much of the window's energy survives a threshold set by the noise alone.</p>
+      <p>Each window of whitened strain is transformed in every candidate basis. Coefficients below the Donoho–Johnstone universal threshold are set to zero; the threshold depends only on the noise scale and the number of coefficients, so it encodes no assumption about the signal's shape. The surviving coefficients are scored, and the basis giving the largest score is recorded for that window.</p>
+      <p>The score is the norm of the surviving coefficients on the noise scale:</p>
+      <p class="eq"><b>ρ_WDF</b> = ‖c‖₂ ⁄ σ</p>
+      <p>where <i>c</i> are the surviving coefficients and σ is the noise scale estimated in that window. The candidate bases are orthonormal, so by Parseval ‖<i>c</i>‖₂ = ‖<i>x̂</i>‖₂ and the score is the matched-filter signal-to-noise ratio of the reconstructed transient. The identity holds under two conditions: the noise the coefficients are measured against must be white, and the surviving coefficients must retain their amplitude — which is why the conditioning stage and the choice of hard thresholding both matter to the calibration.</p>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <p class="label">The pipeline, in order</p>
+    <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">Conditioning, basis selection, scoring, ranking.</h2>
+    <ol class="stages">
+      <li>
+        <span class="n">Stage 1</span>
+        <h3>Condition</h3>
+        <p>An autoregressive lattice filter whitens the data in the time domain, which allows the search to run on streaming data. The filter is applied as its square root in the forward and backward directions, giving zero phase: the spectrum is flattened without displacing the transient in time.</p>
+      </li>
+      <li>
+        <span class="n">Stage 2</span>
+        <h3>Compete</h3>
+        <p>Ten orthonormal bases — Haar, centred Daubechies at orders 4, 8, 12, 16, 20, Symlet 4 and 8, Coiflet 1 and 2 — transform the window independently. The basis with the largest score is recorded with the trigger.</p>
+      </li>
+      <li>
+        <span class="n">Stage 3</span>
+        <h3>Score</h3>
+        <p>The surviving coefficients give ρ_WDF; their time–frequency tiles and the inverse transform give peak time, frequency band and duration. No waveform is fitted at any point.</p>
+      </li>
+      <li>
+        <span class="n">Stage 4</span>
+        <h3>Rank</h3>
+        <p>Connected components of the tile map group the windows a single transient spans, and the reconstruction stitched across them is scored as a whole. Events are matched between detectors within the light-travel time, and unphysical time shifts give the accidental background.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="wrap">
+    <div class="cols">
+      <div class="prose">
+        <p class="label">The wavegram</p>
+        <h2>Transients longer than the analysis window</h2>
+        <p>Consecutive windows step by less than their length, so a transient lasting longer than one window is divided across several triggers, each containing only the part that fell inside its own window. The loudest single window then carries a small fraction of the signal-to-noise ratio the whole signal has.</p>
+        <p>Mapping every surviving coefficient's tile to absolute time gives a time–frequency representation of the whole run, in which a transient is a connected component. The windows of that component are reassembled — each contributing only the region it alone covers, so no sample is counted twice — and ρ_WDF is evaluated over the full extent of the signal.</p>
+        <p>On simulated binary-neutron-star injections spanning about eight windows, the median recovered fraction of the injected signal-to-noise ratio rises from 0.31 to 0.68.</p>
+      </div>
+      <div class="prose">
+        <p class="label">Parameter estimation</p>
+        <h2>Every parameter comes from the same coefficients.</h2>
+        <p>No waveform is fitted at any point. The surviving coefficients are inverted back to the time domain, and the estimates are read off that reconstruction and off the tiles that produced it.</p>
+        <div style="overflow-x:auto;">
+        <table class="deps">
+          <thead><tr><th>Parameter</th><th>How it is measured</th></tr></thead>
+          <tbody>
+            <tr><td>ρ<sub>WDF</sub></td><td>‖c‖₂ ⁄ σ, over the whole event when it spans several windows</td></tr>
+            <tr><td>tPeak</td><td>time of the largest sample of the reconstruction</td></tr>
+            <tr><td>duration</td><td>the central interval holding 90% of the reconstruction's energy</td></tr>
+            <tr><td>freqMean</td><td>energy-weighted mean frequency; the frequency a signal is identified by</td></tr>
+            <tr><td>freqMin, freqMax</td><td>bounds of the central 90% of spectral energy</td></tr>
+            <tr><td>freqPeak</td><td>energy-weighted frequency around the loudest coefficient — where the local signal-to-noise ratio peaks, which for a transient that sweeps is not where its energy sits on average</td></tr>
+            <tr><td>snrPeak, snrMean</td><td>peak and r.m.s. amplitude of the reconstruction, on the same noise scale σ</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <p style="font-size:0.9rem;color:var(--fg-dim);">The three amplitude-like quantities share one scale, so ρ<sub>WDF</sub> ≈ √n · snrMean for a transient occupying n samples: the integrated statistic grows with duration, as an energy signal-to-noise ratio must, while the two amplitudes do not.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <p class="label">Software</p>
+    <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">A compiled core and the pipeline built on it.</h2>
+
+    <div class="repos">
+      <article class="repo">
+        <h3>p4TSA</h3>
+        <p>The C++ core: spectral estimation, time-domain whitening, the wavelet transform and the detection filter itself. Exposed to Python as a single compiled module, <code>pytsa</code>.</p>
+        <p class="links">
+          <a href="https://github.com/elenacuoco/p4TSA">source</a>
+          <a href="https://p4tsa.readthedocs.io">documentation</a>
+        </p>
+      </article>
+      <article class="repo">
+        <h3>wdflow</h3>
+        <p>The pipeline. Trigger generation on top of <code>pytsa</code>, and the analysis layer — clustering on the wavegram, reconstruction across windows, multi-detector coincidence, background and false-alarm probability — which runs on saved trigger files without the compiled core.</p>
+        <p class="links">
+          <a href="https://github.com/elenacuoco/wdflow">source</a>
+          <a href="#tutorials">tutorials</a>
+        </p>
+      </article>
+      <article class="repo downstream">
+        <p class="label">Downstream</p>
+        <h3>Wavefier</h3>
+        <p>A framework for multi-messenger astronomy, which will use WDF as its event trigger generator.</p>
+        <p class="links">
+          <a href="https://wavefier.github.io/wavefier/">project</a>
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="cols">
+      <div class="prose">
+        <p class="label">Getting started</p>
+        <h2>Installation</h2>
+        <p>The analysis layer — clustering, coincidence, background, ROC — runs on saved trigger files and installs from PyPI alone:</p>
+        <pre>pip install -e ".[all]"</pre>
+        <p>Trigger generation additionally needs p4TSA, built from its own source. It is not on PyPI, and the <code>pytsa</code> package that is on PyPI is an unrelated project, so install it from the repository:</p>
+        <pre><span class="c"># from a p4TSA checkout</span>
+pip install .
+
+<span class="c"># confirm you got the compiled module</span>
+python -c "import pytsa; print(pytsa.__file__)"</pre>
+      </div>
+      <div class="prose">
+        <p class="label">Dependencies</p>
+        <h2>What each part needs</h2>
+        <div style="overflow-x:auto;">
+        <table class="deps">
+          <thead><tr><th>Group</th><th>Packages</th><th>Needed for</th></tr></thead>
+          <tbody>
+            <tr><td>core</td><td>numpy, scipy, pandas, pyarrow, h5py, scikit-learn, matplotlib</td><td>always installed; the analysis layer runs on these alone</td></tr>
+            <tr><td>gnn</td><td>torch, torch_geometric</td><td>the learned cross-detector coincidence</td></tr>
+            <tr><td>data</td><td>gwpy</td><td>fetching public strain, plus a GWF backend (lalsuite or frameCPP)</td></tr>
+            <tr><td>mock</td><td>pycbc</td><td>generating simulated data sets with CBC injections</td></tr>
+            <tr><td>pipeline</td><td>coloredlogs</td><td>trigger-generation logging</td></tr>
+            <tr><td>tutorials</td><td>jupyter, nbclient, ipykernel</td><td>running the notebooks</td></tr>
+            <tr><td>docs</td><td>sphinx, sphinx-rtd-theme, myst-nb</td><td>building the documentation</td></tr>
+            <tr><td>dev</td><td>pytest</td><td>the test suite</td></tr>
+            <tr><td><b>p4TSA</b></td><td>GSL, FFTW3, FrameL, Boost.uBLAS, Cereal</td><td><b>not on any index</b>; built from source, and required for trigger generation</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <p style="font-size:0.9rem;color:var(--fg-dim);">Python 3.10 or newer.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap" id="tutorials">
+    <p class="label">Tutorials</p>
+    <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">Three notebooks, each generating its own data.</h2>
+    <p class="measure" style="color:var(--fg-dim);margin-top:1rem;">No external data set and no frame file is required, so they run on a fresh checkout. The third needs no compiled core at all.</p>
+
+    <ol class="tutorials">
+      <li>
+        <span class="n">Notebook 1</span>
+        <h3>The statistic and the parameters</h3>
+        <p>One window of whitened data: the transform, Parseval, thresholding, the competition between the ten bases, and what each estimated parameter means — including why the three signal-to-noise quantities are ordered as they are.</p>
+        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/01_the_statistic_and_the_parameters.ipynb">open notebook</a> <span class="dep">requires pytsa</span></p>
+      </li>
+      <li>
+        <span class="n">Notebook 2</span>
+        <h3>The wavegram and long signals</h3>
+        <p>Reading the peak frequency off the time–frequency tiles and comparing it with the periodogram, then recovering a transient that spans several analysis windows by percolation and stitched reconstruction.</p>
+        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/02_the_wavegram_and_long_signals.ipynb">open notebook</a> <span class="dep">requires pytsa</span></p>
+      </li>
+      <li>
+        <span class="n">Notebook 3</span>
+        <h3>Coincidence and significance</h3>
+        <p>Multi-detector coincidence within the light-travel time, accidental background from unphysical time shifts, false-alarm probability and ROC — using the analysis layer alone.</p>
+        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/03_coincidence_and_significance.ipynb">open notebook</a> <span class="dep">no compiled core</span></p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="wrap">
+    <div class="measure prose">
+      <p class="label">Publications</p>
+      <h2>How to cite</h2>
+      <p><b>Use of this code in published work requires citation of the references below</b>: the method paper for the Wavelet Detection Filter, and the papers describing the autoregressive time-domain whitening the conditioning stage implements. A further paper covering the calibration of the statistic and the parameter estimation is in preparation and will be added here.</p>
+      <p class="label" style="margin-top:2rem;">Wavelet Detection Filter</p>
+      <ul class="refs">
+        <li>
+          E. Cuoco, M. Razzano, A. Utina,
+          <i>Wavelet-based classification of transient signals for gravitational wave detectors</i>,
+          <span class="who">26th European Signal Processing Conference (EUSIPCO), 2666–2670 (2018).</span>
+          <a href="https://doi.org/10.23919/EUSIPCO.2018.8553584">10.23919/EUSIPCO.2018.8553584</a>
+        </li>
+      </ul>
+      <p class="label" style="margin-top:2rem;">Time-domain whitening</p>
+      <ul class="refs">
+        <li>
+          E. Cuoco <i>et al.</i>,
+          <i>On-line power spectra identification and whitening for the noise in interferometric gravitational wave detectors</i>,
+          <span class="who">Class. Quantum Grav. <b>18</b>, 1727 (2001).</span>
+          <a href="https://doi.org/10.1088/0264-9381/18/9/309">10.1088/0264-9381/18/9/309</a>
+        </li>
+        <li>
+          E. Cuoco, G. Curci, M. Beccaria,
+          <i>Noise parametric identification and whitening for LIGO 40-m interferometer data</i>,
+          <span class="who">Phys. Rev. D <b>64</b>, 122002 (2001).</span>
+          <a href="https://doi.org/10.1103/PhysRevD.64.122002">10.1103/PhysRevD.64.122002</a>
+        </li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <div class="row">
+    <p style="margin:0;">
+      © 2017–2026 <a href="https://elenacuoco.github.io/">Elena Cuoco</a> ·
+      <a href="mailto:elena.cuoco@unibo.it">elena.cuoco@unibo.it</a>
+    </p>
+    <p style="margin:0;">
+      Released under the
+      <a href="https://www.gnu.org/licenses/gpl-3.0.html">GNU General Public License v3</a>
+      or later. Use in published work requires the citations above.
+    </p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  const canvas = document.getElementById("wavegram");
+  const ctx = canvas.getContext("2d");
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Levels of a dyadic transform: level j holds 2^j coefficients, each tiling
+  // a block of the window 2^-j wide and an octave of frequency. Drawing them
+  // is drawing the wavegram.
+  const J_LO = 3, J_HI = 9;
+
+  // The ridge: a transient sweeping upward through the octaves.
+  function ridgeLevel(u) {
+    return J_LO + 0.6 + (J_HI - J_LO - 1.1) * Math.pow(u, 0.72);
+  }
+  function envelope(u) {
+    return Math.exp(-Math.pow((u - 0.52) / 0.34, 2));
+  }
+
+  // Deterministic hash so the background texture is stable across resizes.
+  function hash(i, j) {
+    const x = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  let width = 0, height = 0, started = 0;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = canvas.getBoundingClientRect();
+    width = rect.width;
+    height = rect.height;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // Cold ground to hot ridge, sampled from a scalogram colour map.
+  function colour(t) {
+    const stops = [
+      [0.00, [10, 22, 34]],
+      [0.35, [23, 55, 74]],
+      [0.60, [47, 109, 128]],
+      [0.80, [201, 105, 46]],
+      [1.00, [246, 196, 96]],
+    ];
+    let a = stops[0], b = stops[stops.length - 1];
+    for (let i = 0; i < stops.length - 1; i++) {
+      if (t >= stops[i][0] && t <= stops[i + 1][0]) { a = stops[i]; b = stops[i + 1]; break; }
+    }
+    const f = (t - a[0]) / Math.max(b[0] - a[0], 1e-6);
+    const c = a[1].map((v, k) => Math.round(v + (b[1][k] - v) * f));
+    return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
+  }
+
+  function draw(now) {
+    if (!started) started = now;
+    const elapsed = (now - started) / 1000;
+
+    ctx.fillStyle = "#08121c";
+    ctx.fillRect(0, 0, width, height);
+
+    for (let j = J_LO; j <= J_HI; j++) {
+      // Coarse scales arrive first, then finer ones -- the order the
+      // pyramidal transform is built in.
+      const appear = reduced ? 1 : Math.min(1, Math.max(0, (elapsed - (j - J_LO) * 0.13) / 0.55));
+      if (appear <= 0) continue;
+
+      const n = 1 << j;
+      // Frequency axis is logarithmic: one octave per level, top = finest.
+      const y1 = height * (1 - (j - J_LO + 1) / (J_HI - J_LO + 1));
+      const y0 = height * (1 - (j - J_LO) / (J_HI - J_LO + 1));
+      const h = y0 - y1;
+      const w = width / n;
+      if (w < 0.7) continue;
+
+      for (let i = 0; i < n; i++) {
+        const u = (i + 0.5) / n;
+        const distance = Math.abs(j + 0.5 - ridgeLevel(u));
+        const onRidge = Math.exp(-distance * distance / 0.42) * envelope(u);
+        const texture = 0.10 + 0.16 * hash(i, j);
+        const value = Math.min(1, texture + 0.95 * onRidge);
+
+        ctx.globalAlpha = appear;
+        ctx.fillStyle = colour(value);
+        ctx.fillRect(i * w, y1, Math.max(w - 0.6, 0.6), Math.max(h - 0.6, 0.6));
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // A readable ground for the headline, over the quiet low-frequency tiles.
+    const shade = ctx.createLinearGradient(0, height * 0.32, 0, height);
+    shade.addColorStop(0, "rgba(8,18,28,0)");
+    shade.addColorStop(1, "rgba(8,18,28,0.94)");
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, height * 0.32, width, height * 0.68);
+
+    if (!reduced && elapsed < 2.4) requestAnimationFrame(draw);
+  }
+
+  function render() { started = 0; requestAnimationFrame(draw); }
+
+  resize();
+  render();
+
+  let pending;
+  window.addEventListener("resize", function () {
+    clearTimeout(pending);
+    pending = setTimeout(function () { resize(); render(); }, 120);
+  });
+})();
+</script>

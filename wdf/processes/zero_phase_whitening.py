@@ -159,8 +159,12 @@ class ZeroPhaseWhitening(object):
         :type output_size: int
         :param output_size: number of whitened samples produced per `Process` call.
         :type extra_size: int
-        :param extra_size: lookahead buffer, in samples. Anything at or above
-            ``order`` is exact; below it the backward pass is truncated.
+        :param extra_size: lookahead buffer, in samples. It must be at least
+            ``order``, which is what the backward pass reads ahead; a smaller
+            positive value is refused rather than silently truncated. Zero means
+            the lookahead is supplied later through `SetOutputSize`, which is
+            how the worker primes the buffer.
+        :raises ValueError: if `extra_size` is positive and below ``order``.
         :type order: int
         :param order: order of the square-root model.
         :type grid: int
@@ -171,6 +175,13 @@ class ZeroPhaseWhitening(object):
             ar, order=order, grid=grid)
         self.sigma = float(np.asarray(ar, dtype=float)[0]) * self.error
         self.LV = sqrt_lattice_view(ar, order=order, grid=grid)
+
+        if 0 < extra_size < self.order:
+            raise ValueError(
+                f"the lookahead is {extra_size} samples but the backward pass "
+                f"reads {self.order} ahead: it would be truncated at every "
+                f"block join. Set WhiteningExtraSize to at least "
+                f"SqrtWhiteningOrder.")
 
         self.filter = DoubleWhitening(self.LV, output_size, extra_size)
         self.filter.init(self.LV)
@@ -218,4 +229,10 @@ class ZeroPhaseWhitening(object):
         :param extra_size: lookahead buffer, in samples.
         :return: None
         """
+        if 0 < extra_size < self.order:
+            raise ValueError(
+                f"the lookahead is {extra_size} samples but the backward pass "
+                f"reads {self.order} ahead: it would be truncated at every "
+                f"block join. Set WhiteningExtraSize to at least "
+                f"SqrtWhiteningOrder.")
         self.filter.SetOutputSize(output_size, extra_size)

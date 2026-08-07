@@ -59,8 +59,8 @@ def test_combined_snr_of_a_long_signal_exceeds_its_loudest_window():
     result = combined_snr(triggers_from(chirp), FS, WINDOW, OVERLAP)
 
     assert result["windows"] > 1
-    assert result["snr"] > result["loudest_window"]
-    assert result["snr"] == pytest.approx(np.linalg.norm(chirp) / SIGMA, rel=0.02)
+    assert result["EnWDF"] > result["loudest_window"]
+    assert result["EnWDF"] == pytest.approx(np.linalg.norm(chirp) / SIGMA, rel=0.02)
 
 
 def test_a_single_window_signal_gains_nothing():
@@ -71,10 +71,31 @@ def test_a_single_window_signal_gains_nothing():
     triggers = triggers_from(np.concatenate([burst, np.zeros(2 * STEP)]))
     result = combined_snr(triggers, FS, WINDOW, OVERLAP)
 
-    assert result["snr"] == pytest.approx(result["loudest_window"], rel=0.05)
+    assert result["EnWDF"] == pytest.approx(result["loudest_window"], rel=0.05)
 
 
 def test_stitch_needs_coefficients():
     triggers = pd.DataFrame([dict(gps=1000.0, wave=WAVE, sigma=SIGMA, EnWDF=1.0)])
     with pytest.raises(ValueError, match="wt"):
         stitch(triggers, FS, WINDOW, OVERLAP)
+
+
+def test_wavegram_events_score_a_multi_window_signal_on_its_reconstruction():
+    """Percolation on the wavegram gathers the windows; the score comes from
+    the reconstruction, so it exceeds the loudest single window."""
+    from wdf.analysis.clustering import wavegram_events
+
+    rng = np.random.default_rng(3)
+    signal = np.zeros(WINDOW + 4 * STEP)
+    envelope = np.hanning(WINDOW + 4 * STEP)
+    signal += envelope * np.sin(2 * np.pi * 200.0 * np.arange(signal.size) / FS)
+    signal += 1e-3 * rng.standard_normal(signal.size)
+
+    triggers = triggers_from(signal)
+    events = wavegram_events(triggers, FS, WINDOW, OVERLAP, time_tol_s=0.05)
+
+    assert len(events) >= 1
+    loudest = events.sort_values("EnWDF").iloc[-1]
+    assert loudest.EnWDF > loudest.loudest_window
+    assert loudest.windows > 1
+    assert loudest.freqMin <= loudest.freqPeak <= loudest.freqMax

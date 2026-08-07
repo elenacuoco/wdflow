@@ -40,6 +40,15 @@ def triggers_from_csvs(csv_paths: list[str], ifo: str) -> pd.DataFrame:
         raise ValueError(f"no trigger file paths given for ifo={ifo!r}")
     frames = [_read_trigger_file(p) for p in csv_paths]
     df = pd.concat(frames, ignore_index=True)
+
+    # The coefficient columns dominate the frame -- one per coefficient, 512 of
+    # them at a typical window length -- and they are read as double precision.
+    # They carry seven significant digits' worth of information at most, so
+    # single precision halves the frame at no cost to anything downstream.
+    coefficient_columns = [c for c in df.columns
+                           if c[:2] in ("wt", "rw") and c[2:].isdigit()]
+    if coefficient_columns:
+        df[coefficient_columns] = df[coefficient_columns].astype("float32")
     missing = set(TRIGGER_COLUMNS) - set(df.columns)
     if missing:
         raise ValueError(f"trigger files missing expected columns {sorted(missing)}: {csv_paths}")
@@ -146,35 +155,6 @@ def add_wavelet_energy_diagnostics(
             out["EnWDF_from_coeff"] - out["EnWDF"]
         )
 
-    return out 
-    """Replaces `snrPeak`/`snrMean` with `wdfLib.wavelets.wavelet_energy_snr`'s
-    energy-based statistic, computed directly from each trigger's own `wt*`
-    columns. This is the SNR value wdfLib's downstream clustering,
-    coincidence, and GNN scoring use (they all key off `snrPeak`/`snrMean`/
-    `snrMax`), so calling this once, right after loading triggers, is what
-    makes the energy-based statistic "the" SNR for the rest of the pipeline.
-
-    Requires `wt0..wtN` columns (`fullPrint >= 1`). Run this *after*
-    `clean_triggers` -- the numerical-artifact guard there checks the
-    original `snrPeak`, which this function overwrites. The original values
-    are kept under `snrPeak_legacy`/`snrMean_legacy` so nothing is silently
-    lost.
-    """
-    from wdf.analysis.wavelets import wavelet_energy_snr
-
-    wt_cols = sorted((c for c in df.columns if c.startswith("wt") and c[2:].isdigit()),
-                      key=lambda c: int(c[2:]))
-    if not wt_cols:
-        raise ValueError("no wt* columns -- rerun WDF with fullPrint >= 1")
-
-    snr_values = df[wt_cols].apply(
-        lambda row: wavelet_energy_snr(row.to_numpy(dtype=float), sigma)["snr"], axis=1,
-    )
-    out = df.copy()
-    out["snrPeak_legacy"] = out["snrPeak"]
-    out["snrMean_legacy"] = out["snrMean"]
-    out["snrPeak"] = snr_values
-    out["snrMean"] = snr_values
     return out
 
 

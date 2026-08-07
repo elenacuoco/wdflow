@@ -148,17 +148,213 @@ def plot_wavelet_tiles(ax, wt: np.ndarray, fs: float, t0: float = 0.0, top_frac:
     mags = np.array([t[4] for t in tiles])
     if mags.max() <= 0:
         return 0
-    thresh, vmax = np.percentile(mags, 100 * (1 - top_frac)), mags.max()
+
+    # A zero coefficient is not a faint tile, it is a tile thresholding removed,
+    # and drawing it says the search found something there. It also breaks the
+    # percentile: at the measured density of about half a per cent, the 90th
+    # percentile of |wt| is exactly zero, so every tile clears the cut and the
+    # overlay becomes a solid block covering whatever it was drawn over.
+    surviving = mags > 0
+    thresh = np.percentile(mags[surviving], 100 * (1 - top_frac))
+    vmax = mags.max()
 
     style = dict(fill=False, edgecolor="white", lw=1.1)
     style.update(rect_kwargs)
 
     n_drawn = 0
     for t_lo, t_hi, f_lo, f_hi, mag in tiles:
-        if mag < thresh:
+        if mag <= 0 or mag < thresh:
             continue
         f_lo = max(f_lo, 0.1)  # avoid a zero/negative lower edge under a log frequency axis
         alpha = 0.25 + 0.65 * min(mag / vmax, 1.0)
         ax.add_patch(Rectangle((t0 + t_lo, f_lo), t_hi - t_lo, f_hi - f_lo, alpha=alpha, **style))
         n_drawn += 1
     return n_drawn
+
+
+def tile_frequency(f_lo: float, f_hi: float) -> float:
+    """Representative frequency of a wavelet tile spanning `[f_lo, f_hi]`.
+
+    The dyadic tiling is uniform in log frequency, so the geometric centre is
+    the centre of the band; the coarsest tile starts at 0 Hz and has none, and
+    is represented by half its upper edge.
+
+    :type f_lo: float
+    :param f_lo: lower band edge, Hz.
+    :type f_hi: float
+    :param f_hi: upper band edge, Hz.
+    :return: float -- the tile's representative frequency, Hz.
+    """
+    if f_lo <= 0.0:
+        return 0.5 * float(f_hi)
+    return float(np.sqrt(f_lo * f_hi))
+
+
+def dominant_tile(wt: np.ndarray, fs: float, sigma: float | None = None) -> dict:
+    """The time-frequency tile carrying the largest wavelet coefficient.
+
+    The transform is orthogonal and the data are whitened, so a coefficient
+    divided by the noise scale is the signal-to-noise ratio of that one tile;
+    the largest coefficient is therefore the tile where the local
+    signal-to-noise ratio peaks, and its band is the frequency the transient
+    deposits most of its amplitude in.
+
+    :type wt: numpy.ndarray
+    :param wt: wavelet coefficients of one analysis window.
+    :type fs: float
+    :param fs: sampling frequency the coefficients were computed at, Hz.
+    :type sigma: float or None
+    :param sigma: noise scale the tile signal-to-noise ratio is expressed in.
+    :return: dict -- `freq`, `f_lo`, `f_hi`, `time`, `t_lo`, `t_hi`,
+        `magnitude` and `snr` of that tile; empty when `wt` carries no energy.
+    """
+    wt = np.asarray(wt, dtype=float).reshape(-1)
+    if wt.size == 0:
+        return {}
+
+    magnitudes = np.abs(wt)
+    k = int(np.argmax(magnitudes))
+    if magnitudes[k] <= 0.0:
+        return {}
+
+    t_lo, t_hi = coeff_time_bounds(wt.size, fs)
+    f_lo, f_hi = coeff_freq_bands(wt.size, fs)
+
+    magnitude = float(magnitudes[k])
+    return {
+        "freq": tile_frequency(f_lo[k], f_hi[k]),
+        "f_lo": float(f_lo[k]),
+        "f_hi": float(f_hi[k]),
+        "time": 0.5 * float(t_lo[k] + t_hi[k]),
+        "t_lo": float(t_lo[k]),
+        "t_hi": float(t_hi[k]),
+        "magnitude": magnitude,
+        "snr": float(magnitude / sigma) if (sigma is not None and sigma > 0) else float("nan"),
+    }
+
+
+def wavegram_ridge(wt: np.ndarray, fs: float, sigma: float | None = None,
+                   n_time_bins: int | None = None) -> dict:
+    """The time-frequency track of the loudest tile in each time bin.
+
+    Bins the coefficient tiles by the centre of their time support and keeps,
+    per bin, the tile with the largest coefficient. The result is the ridge of
+    the wavegram: the frequency the transient occupies as a function of time,
+    read off WDF's own coefficients rather than off a spectrogram of the
+    reconstruction. Bins no tile falls in are left `nan` rather than
+    interpolated, so a gap in the track stays visible as a gap.
+
+    :type wt: numpy.ndarray
+    :param wt: wavelet coefficients of one analysis window.
+    :type fs: float
+    :param fs: sampling frequency the coefficients were computed at, Hz.
+    :type sigma: float or None
+    :param sigma: noise scale the ridge signal-to-noise ratio is expressed in.
+    :type n_time_bins: int or None
+    :param n_time_bins: number of time bins; defaults to the number of tiles
+        of the finest scale, which is the transform's own time resolution.
+    :return: dict -- `times`, `freqs`, `magnitudes` and `snr` arrays over the
+        bins; empty when `wt` carries no energy.
+    """
+    wt = np.asarray(wt, dtype=float).reshape(-1)
+    if wt.size == 0:
+        return {}
+
+    magnitudes = np.abs(wt)
+    if magnitudes.max() <= 0.0:
+        return {}
+
+    t_lo, t_hi = coeff_time_bounds(wt.size, fs)
+    f_lo, f_hi = coeff_freq_bands(wt.size, fs)
+    t_mid = 0.5 * (t_lo + t_hi)
+    f_mid = np.array([tile_frequency(a, b) for a, b in zip(f_lo, f_hi)])
+
+    if n_time_bins is None:
+        n_time_bins = wt.size // 2
+    n_time_bins = max(int(n_time_bins), 1)
+
+    span = wt.size / fs
+    edges = np.linspace(0.0, span, n_time_bins + 1)
+    bin_index = np.clip(np.digitize(t_mid, edges) - 1, 0, n_time_bins - 1)
+
+    freqs = np.full(n_time_bins, np.nan)
+    mags = np.full(n_time_bins, np.nan)
+    for i in range(n_time_bins):
+        members = np.flatnonzero(bin_index == i)
+        if members.size == 0:
+            continue
+        k = members[int(np.argmax(magnitudes[members]))]
+        if magnitudes[k] <= 0.0:
+            continue
+        freqs[i] = f_mid[k]
+        mags[i] = magnitudes[k]
+
+    snr = mags / sigma if (sigma is not None and sigma > 0) else np.full(n_time_bins, np.nan)
+
+    return {
+        "times": 0.5 * (edges[:-1] + edges[1:]),
+        "freqs": freqs,
+        "magnitudes": mags,
+        "snr": snr,
+    }
+
+
+def peak_frequency(wt: np.ndarray, fs: float) -> float:
+    """Frequency at which the transient's local amplitude peaks.
+
+    The loudest single coefficient locates the peak in time and frequency, but
+    reading its band off directly quantises the answer onto the dyadic ladder:
+    a tile is an octave wide, so the estimate can only take one value per
+    octave. It also biases high-frequency narrowband signals low, because at
+    fine scales a tile is a couple of samples long, the signal spreads over
+    many of them, and each individual coefficient is smaller than one at a
+    coarser scale that captured more of it -- so the single largest coefficient
+    sits below the true carrier.
+
+    The estimate is the energy-weighted frequency of the tiles whose centres
+    fall inside the loudest tile's own time span. That span is wide exactly
+    when the loudest coefficient sits at a coarse scale, which is the case the
+    bias comes from, so the average then reaches the finer tiles living inside
+    it and pulls the estimate back up; when the loudest coefficient is already
+    fine the span is narrow and the estimate barely moves. The time
+    localisation is kept -- which is the reason for asking the question in the
+    wavelet domain rather than of the periodogram -- and the answer is no
+    longer confined to one value per octave. The mean is geometric, since the
+    tiling is uniform in log frequency.
+
+    On simulated narrowband bursts this halves the high-frequency bias of the
+    single loudest tile and removes the quantisation, but it remains a poorer
+    estimator of a carrier frequency than ``freqMean``: a spectral moment is
+    the right instrument when the signal *has* one carrier. ``freqPeak``
+    earns its place on transients that sweep, where ``freqMean`` answers a
+    different question.
+
+    :type wt: numpy.ndarray
+    :param wt: wavelet coefficients of one analysis window.
+    :type fs: float
+    :param fs: sampling frequency the coefficients were computed at, Hz.
+    :return: float -- the peak frequency in Hz, `nan` when `wt` carries no
+        energy.
+    """
+    wt = np.asarray(wt, dtype=float).reshape(-1)
+    if wt.size == 0:
+        return float("nan")
+
+    magnitude = np.abs(wt)
+    k = int(np.argmax(magnitude))
+    if magnitude[k] <= 0.0:
+        return float("nan")
+
+    t_lo, t_hi = coeff_time_bounds(wt.size, fs)
+    f_lo, f_hi = coeff_freq_bands(wt.size, fs)
+    t_mid = 0.5 * (t_lo + t_hi)
+    f_mid = np.array([tile_frequency(a, b) for a, b in zip(f_lo, f_hi)])
+
+    overlapping = (t_mid >= t_lo[k]) & (t_mid <= t_hi[k])
+    weight = magnitude[overlapping] ** 2
+    total = float(weight.sum())
+    if total <= 0.0:
+        return float(f_mid[k])
+
+    frequency = np.maximum(f_mid[overlapping], np.finfo(float).tiny)
+    return float(np.exp(float(weight @ np.log(frequency)) / total))

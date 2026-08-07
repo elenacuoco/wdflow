@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 143 96" role="img" aria-label="WDF">
+  <title>WDF</title>
+  <!--
+    Time across, frequency up: the lit cells are the track of a transient that
+    descends and rises twice, ending where it began. It reads as a W, drawn as
+    the pipeline's own picture of a signal rather than as a letter.
+
+    One colour through currentColor, no gradients, no text, so it holds at
+    32 px and on a light or a dark ground alike.
+  -->
+  <g fill="currentColor">
+    <rect x="2.0" y="2" width="13.7" height="29" rx="2"/>
+    <rect x="17.7" y="33" width="13.7" height="29" rx="2"/>
+    <rect x="33.4" y="64" width="13.7" height="29" rx="2"/>
+    <rect x="49.1" y="33" width="13.7" height="29" rx="2"/>
+    <rect x="64.8" y="2" width="13.7" height="29" rx="2"/>
+    <rect x="80.5" y="33" width="13.7" height="29" rx="2"/>
+    <rect x="96.2" y="64" width="13.7" height="29" rx="2"/>
+    <rect x="111.9" y="33" width="13.7" height="29" rx="2"/>
+    <rect x="127.6" y="2" width="13.7" height="29" rx="2"/>
+  </g>
+</svg>

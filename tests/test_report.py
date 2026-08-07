@@ -1,5 +1,8 @@
 import os
 
+import numpy as np
+import pandas as pd
+
 from wdf.analysis.report import build_run_report
 from tests._synth import synth_raw_triggers
 
@@ -12,13 +15,9 @@ class _FakePar:
 
 def _with_clustered_columns(df):
     # build_run_report's default ranking/table columns expect a
-    # clustered-events-like shape (gpsMax/snrMax/n_triggers); reuse the
-    # raw-trigger synth fixture with renamed columns rather than adding a
-    # second synthetic generator. Drop the fixture's own freqMax first --
-    # renaming freqPeak->freqMax on top of it would otherwise produce two
-    # same-named columns.
-    out = df.drop(columns=["freqMax"]).rename(columns={"gpsPeak": "gpsMax", "snrPeak": "snrMax",
-                                                         "freqPeak": "freqMax"})
+    # clustered-events-like shape; the raw-trigger synth fixture already
+    # carries gpsPeak/EnWDF/freqPeak, so only n_triggers is missing.
+    out = df.copy()
     out["n_triggers"] = 1
     return out
 
@@ -51,8 +50,50 @@ def test_build_run_report_skips_tf_plot_without_wt_columns(tmp_path):
     # raw_triggers/par omitted entirely -- must not raise, TF section just
     # doesn't appear. No `clustered` dict given either, so rank_col=None
     # must auto-fall-back to `cleaned`'s own raw-trigger schema (snrPeak,
-    # since it has no snrMax).
+    # since it has no EnWDF).
     cleaned = {"H1": synth_raw_triggers("H1", n_background=10, gps0=0.0, span_s=50.0, seed=3)}
     path = build_run_report(str(tmp_path), cleaned, event_name="NO_WT")
     html = open(path).read()
     assert "time-frequency" not in html.lower()
+
+
+def test_build_review_report_writes_html_and_markdown(tmp_path):
+    """The review report is the last cell of a review run, so a broken keyword
+    in it only surfaces after the whole analysis has been recomputed."""
+    from wdf.analysis.review_report import build_review_report
+
+    rng = np.random.default_rng(4)
+    n = 60
+    recovery = pd.DataFrame({
+        "category": np.where(np.arange(n) < 30, "cbc", "glitch"),
+        "subclass": np.where(np.arange(n) < 30, "bbh", "blip"),
+        "detector": np.where(np.arange(n) % 2 == 0, "H1", "L1"),
+        "gps": 1000.0 + np.arange(n),
+        "injected_snr": rng.uniform(8, 100, n),
+        "found": rng.random(n) < 0.8,
+    })
+    recovery["recovered_snr"] = recovery["injected_snr"] * rng.uniform(0.3, 1.1, n)
+    recovery["dt_s"] = rng.uniform(-0.02, 0.02, n)
+    injections = recovery[["category", "subclass", "gps", "injected_snr"]].copy()
+    injections["network_snr"] = injections["injected_snr"]
+
+    candidates = pd.DataFrame({
+        "gps_candidate": 1000.0 + np.arange(20),
+        "network_enwdf": rng.uniform(5, 40, 20),
+        "dt_s": rng.uniform(-0.01, 0.01, 20),
+    })
+
+    paths = build_review_report(
+        str(tmp_path) + os.sep,
+        recovery=recovery,
+        coincidence_matched=recovery[recovery.category == "cbc"].assign(
+            dt_s=rng.uniform(-0.01, 0.01, 30)),
+        candidates=candidates,
+        background_candidates=candidates,
+        injections=injections,
+        livetime_days=1.0,
+    )
+
+    for kind, path in paths.items():
+        assert os.path.exists(path), f"{kind} report not written"
+        assert os.path.getsize(path) > 0

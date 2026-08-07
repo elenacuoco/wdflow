@@ -66,7 +66,7 @@ class BackgroundEstimator:
         needed to wrap shifted times back into the segment.
 
         The first IFO (dict insertion order) is kept fixed as the time
-        reference; every other IFO's `gpsMax`/`gpsStart` are shifted by a
+        reference; every other IFO's `gpsPeak`/`gpsStart` are shifted by a
         random offset (modular wraparound within that IFO's segment,
         min_shift_s <= abs(shift) <= max_shift_s, sign random) drawn fresh per
         slide, then `coincidence_finder.<finder_method>(shifted, **finder_kwargs)`
@@ -118,7 +118,7 @@ class BackgroundEstimator:
                 shift = magnitude if rng.integers(0, 2) else -magnitude
 
                 df = clustered[ifo].copy()
-                for col in ("gpsMax", "gpsStart"):
+                for col in ("gpsPeak", "gpsStart"):
                     if col in df.columns:
                         df[col] = gps_start + ((df[col] - gps_start + shift) % span)
                 shifted[ifo] = df
@@ -139,21 +139,42 @@ class BackgroundEstimator:
         self,
         candidate_row: pd.Series,
         background: pd.DataFrame,
-        score_col: str = "network_snr",
+        score_col: str = "network_enwdf",
         segment_duration_s: float | None = None,
     ) -> dict:
-        """Empirical-tail "+1" FAP estimator: avoids FAP=0 from a finite
-        number of background trials, the standard convention for small
-        time-slide background counts.
+        """Empirical-tail "+1" false-alarm probability: the fraction of
+        background candidates at least as loud as this one, with one added to
+        each side so a finite background cannot report exactly zero.
 
-        far_per_day is reported ONLY if segment_duration_s is given, and is
-        only as reliable as the single-segment background it's derived
-        from -- see module-level caveat.
+        Both counts are over background *candidates*. Dividing the number of
+        loud background candidates by the number of slides instead mixes two
+        different denominators and can return a probability above one, since a
+        single slide routinely produces many candidates.
+
+        `far_per_day` is reported only when `segment_duration_s` is given, and
+        is only as trustworthy as the single-segment background behind it --
+        see the module-level caveat.
+
+        :type candidate_row: pandas.Series
+        :param candidate_row: one row of the candidate table.
+        :type background: pandas.DataFrame
+        :param background: the accidental background, ranked on the same
+            statistic.
+        :type score_col: str
+        :param score_col: the statistic both are ranked on.
+        :type segment_duration_s: float or None
+        :param segment_duration_s: analysed livetime, for the rate.
+        :return: dict -- `fap`, `n_background_ge`, `n_background`, `n_slides`
+            and, when the duration is given, `far_per_day`.
         """
         score = candidate_row[score_col]
-        n_ge = int((background[score_col] >= score).sum())
-        fap = (1 + n_ge) / (1 + self.n_slides)
-        result = dict(fap=fap, n_background_ge=n_ge, n_slides=self.n_slides)
+        scores = pd.to_numeric(background[score_col], errors="coerce")
+        n_background = int(scores.notna().sum())
+        n_ge = int((scores >= score).sum())
+
+        fap = (1 + n_ge) / (1 + n_background)
+        result = dict(fap=fap, n_background_ge=n_ge, n_background=n_background,
+                      n_slides=self.n_slides)
         if segment_duration_s is not None:
             result["far_per_day"] = fap / (segment_duration_s / 86400.0)
         return result
@@ -162,7 +183,7 @@ class BackgroundEstimator:
         self,
         candidates: pd.DataFrame,
         background: pd.DataFrame,
-        score_col: str = "network_snr",
+        score_col: str = "network_enwdf",
         segment_duration_s: float | None = None,
     ) -> pd.DataFrame:
         """Vectorized `false_alarm_probability` over every row of `candidates`
@@ -185,13 +206,14 @@ class BackgroundEstimator:
         :param segment_duration_s: if given, also reports `far_per_day` (with the
             same single-segment caveat as `false_alarm_probability`).
         :return: pandas.DataFrame -- `candidates` with `fap`/`n_background_ge`/
-            `n_slides` columns added (plus `far_per_day` if `segment_duration_s` is
+            `n_background`/`n_slides` columns added (plus `far_per_day` if
+            `segment_duration_s` is
             given), sorted by `fap` ascending (most significant first). Empty input
             returns an empty DataFrame with those columns added.
         """
         out = candidates.copy()
         if out.empty:
-            for col in ("fap", "n_background_ge", "n_slides"):
+            for col in ("fap", "n_background_ge", "n_background", "n_slides"):
                 out[col] = pd.Series(dtype=float if col == "fap" else int)
             if segment_duration_s is not None:
                 out["far_per_day"] = pd.Series(dtype=float)
@@ -207,8 +229,12 @@ class BackgroundEstimator:
         n_ge = len(bg_sorted) - idx
 
         out["n_background_ge"] = n_ge
+        out["n_background"] = len(bg_sorted)
         out["n_slides"] = self.n_slides
-        out["fap"] = (1 + n_ge) / (1 + self.n_slides)
+        # Both counts are over background candidates -- see
+        # `false_alarm_probability` for why the number of slides is the wrong
+        # denominator here.
+        out["fap"] = (1 + n_ge) / (1 + len(bg_sorted))
         if segment_duration_s is not None:
             out["far_per_day"] = out["fap"] / (segment_duration_s / 86400.0)
         return out.sort_values("fap", kind="stable").reset_index(drop=True)

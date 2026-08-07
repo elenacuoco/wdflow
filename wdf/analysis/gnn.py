@@ -40,7 +40,13 @@ except ImportError as _e:  # pragma: no cover
         "wdfLib.gnn requires torch and torch_geometric. Install with: pip install -e '.[gnn]'"
     ) from _e
 
-NODE_FEATURE_COLUMNS = ["snrMax", "freqMean", "freqMax", "duration", "n_triggers"]
+# A node is described by the wavelet coefficients of its cluster, rendered on a
+# fixed octave-by-time grid (`ClusterCoefficients.wavegram`), not by scalar
+# summaries. Scoring a coincidence on peak time, peak frequency and the
+# statistic is what the classical finder already does; the coefficients carry
+# the transient's time-frequency pattern, which is the information a learned
+# combiner can use and a time window cannot.
+WAVEGRAM_TIME_BINS = 32
 
 
 class TriggerGraph:
@@ -69,19 +75,20 @@ class TriggerGraph:
 
     def candidate_table(self) -> pd.DataFrame:
         """Cross-IFO candidate edges as a DataFrame, schema-compatible with
-        CoincidenceFinder.find's output (gps_candidate/dt_s/network_snr/
+        CoincidenceFinder.find's output (gps_candidate/dt_s/network_enwdf/
         n_ifos in common), so ROCCurve can be run on either interchangeably.
         """
         rows = []
         for k, (i, j) in enumerate(self.cross_edges):
             ni, nj = self.nodes.iloc[int(i)], self.nodes.iloc[int(j)]
-            dt, dfreq, dsnr = self.cross_edge_features[k]
+            dt, similarity = self.cross_edge_features[k]
             rows.append(dict(
                 candidate_id=k,
-                gps_candidate=float((ni["gpsMax"] + nj["gpsMax"]) / 2),
+                gps_candidate=float((ni["gpsPeak"] + nj["gpsPeak"]) / 2),
                 ifos_involved=f"{ni['ifo']},{nj['ifo']}",
                 dt_s=float(dt),
-                network_snr=float(np.sqrt(ni["snrMax"] ** 2 + nj["snrMax"] ** 2)),
+                wavegram_similarity=float(similarity),
+                network_enwdf=float(np.sqrt(ni["EnWDF"] ** 2 + nj["EnWDF"] ** 2)),
                 n_ifos=2,
                 node_i=int(i),
                 node_j=int(j),
@@ -95,33 +102,62 @@ class TriggerGraphBuilder:
         intra_ifo_window_s: float = 5.0,
         cross_ifo_window_s: float = 0.5,
         ifos: list[str] | None = None,
+        wavegram_time_bins: int = WAVEGRAM_TIME_BINS,
     ):
         self.intra_ifo_window_s = intra_ifo_window_s
         self.cross_ifo_window_s = cross_ifo_window_s
         self.ifos = ifos
+        self.wavegram_time_bins = wavegram_time_bins
 
-    def build(self, clustered: dict[str, pd.DataFrame]) -> TriggerGraph:
+    def build(self, clustered: dict[str, pd.DataFrame],
+              coefficients: dict[str, dict]) -> TriggerGraph:
+        """Assemble the graph from each detector's events and their coefficients.
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: ``{ifo: event catalogue}``, each row carrying at
+            least `cluster_id` and `gpsPeak`.
+        :type coefficients: dict[str, dict]
+        :param coefficients: ``{ifo: {cluster_id: ClusterCoefficients}}``, as
+            `wdf.analysis.cluster_coefficients.collect_cluster_coefficients`
+            returns. Every event must have an entry.
+        :return: TriggerGraph
+        :raises KeyError: if an event has no coefficients.
+        """
         ifos = self.ifos or list(clustered.keys())
-        nodes, node_ifo = [], []
+        nodes, node_ifo, grids = [], [], []
         for ifo in ifos:
+            per_cluster = coefficients[ifo]
             for _, row in clustered[ifo].reset_index(drop=True).iterrows():
+                label = int(row["cluster_id"])
+                if label not in per_cluster:
+                    raise KeyError(
+                        f"no coefficients for cluster {label} of {ifo}; the graph is "
+                        "built from the wavelet coefficients, so every event needs them"
+                    )
                 nodes.append(row)
                 node_ifo.append(ifo)
+                grids.append(per_cluster[label].wavegram(self.wavegram_time_bins).ravel())
         nodes_df = pd.DataFrame(nodes).reset_index(drop=True)
         nodes_df["ifo"] = node_ifo
 
-        feats = nodes_df[NODE_FEATURE_COLUMNS].to_numpy(dtype=float)
-        log_snr = np.log10(np.clip(nodes_df["snrMax"].to_numpy(dtype=float), 1e-6, None))[:, None]
+        # |coefficient|/sigma spans decades, so compress before standardising;
+        # log1p leaves the empty cells of the grid at exactly zero.
+        wavegrams = np.log1p(np.vstack(grids)) if grids else np.zeros((0, 1))
         onehot = pd.get_dummies(nodes_df["ifo"]).reindex(columns=ifos, fill_value=0).to_numpy(dtype=float)
-        X = np.hstack([feats, log_snr, onehot])
+        X = np.hstack([wavegrams, onehot])
         mu, sigma = X.mean(axis=0), X.std(axis=0)
         sigma[sigma == 0] = 1.0
         X = ((X - mu) / sigma).astype(np.float32)
 
+        # Unit-norm grids, so the similarity between two of them is a shape
+        # comparison and not an amplitude one: the same signal reaches two
+        # detectors with amplitudes set by their antenna responses.
+        norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        shapes = wavegrams / norms
+
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
-        gps = nodes_df["gpsMax"].to_numpy(dtype=float)
-        freq = nodes_df["freqMean"].to_numpy(dtype=float)
-        snr = nodes_df["snrMax"].to_numpy(dtype=float)
+        gps = nodes_df["gpsPeak"].to_numpy(dtype=float)
 
         # Vectorized replacement for a pure-Python itertools.combinations /
         # nested-for-loop pairwise scan: with clustered_events keeping every
@@ -155,15 +191,14 @@ class TriggerGraphBuilder:
             ia, jb = np.nonzero(keep)  # row-major -> same (i outer, j inner) order as the old nested loop
             i_sel, j_sel = idx_a[ia], idx_b[jb]
             dt_sel = dt_mat[ia, jb]
-            dfreq_sel = freq[idx_a][ia] - freq[idx_b][jb]
-            dsnr_sel = snr[idx_a][ia] - snr[idx_b][jb]
+            similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
             cross_edges.append(np.column_stack([i_sel, j_sel]))
-            cross_feats.append(np.column_stack([dt_sel, dfreq_sel, dsnr_sel]))
+            cross_feats.append(np.column_stack([dt_sel, similarity]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)
         intra_feats = np.concatenate(intra_feats) if intra_feats else np.zeros((0, 1), dtype=np.float32)
         cross_edges = np.concatenate(cross_edges) if cross_edges else np.zeros((0, 2), dtype=np.int64)
-        cross_feats = np.concatenate(cross_feats) if cross_feats else np.zeros((0, 3), dtype=np.float32)
+        cross_feats = np.concatenate(cross_feats) if cross_feats else np.zeros((0, 2), dtype=np.float32)
 
         return TriggerGraph(
             nodes=nodes_df,
@@ -171,7 +206,7 @@ class TriggerGraphBuilder:
             intra_edges=intra_edges.astype(np.int64).reshape(-1, 2),
             intra_edge_features=intra_feats.astype(np.float32).reshape(-1, 1),
             cross_edges=cross_edges.astype(np.int64).reshape(-1, 2),
-            cross_edge_features=cross_feats.astype(np.float32).reshape(-1, 3),
+            cross_edge_features=cross_feats.astype(np.float32).reshape(-1, 2),
             ifos=ifos,
         )
 
@@ -197,7 +232,8 @@ class _CandidateData(Data):
         return super().__cat_dim__(key, value, *args, **kwargs)
 
 
-def _to_pyg_data(graph: TriggerGraph, labels: np.ndarray | None = None) -> _CandidateData:
+def _to_pyg_data(graph: TriggerGraph, labels: np.ndarray | None = None,
+                 mask: np.ndarray | None = None) -> _CandidateData:
     data = _CandidateData(
         x=torch.from_numpy(graph.node_features),
         edge_index=torch.from_numpy(graph.intra_edges.T).long().reshape(2, -1),
@@ -208,6 +244,11 @@ def _to_pyg_data(graph: TriggerGraph, labels: np.ndarray | None = None) -> _Cand
     )
     if labels is not None:
         data.y = torch.from_numpy(np.asarray(labels, dtype=np.float32))
+    # A mask selects which edges contribute to the loss. It travels with the
+    # graph so `Batch.from_data_list` concatenates it like the labels.
+    n_edges = graph.cross_edges.shape[0]
+    keep = np.ones(n_edges, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+    data.train_mask = torch.from_numpy(keep)
     return data
 
 
@@ -239,14 +280,29 @@ class GNNCoincidenceScorer(nn.Module):
     """Intra-detector message passing (`_IntraMessagePassing`), then an
     edge-classification head scores cross-detector candidate edges."""
 
-    def __init__(self, node_dim: int, hidden: int = 16, seed: int = 0, device: str | None = None):
+    def __init__(self, node_dim: int, hidden: int = 16, seed: int = 0,
+                 device: str | None = None, cross_edge_dim: int = 2):
+        """
+        :type node_dim: int
+        :param node_dim: width of a node's feature vector, i.e.
+            `TriggerGraph.node_features.shape[1]`.
+        :type hidden: int
+        :param hidden: width of the hidden representation.
+        :type seed: int
+        :param seed: torch seed, for a reproducible initialisation.
+        :type device: str or None
+        :param device: torch device; CUDA when available if None.
+        :type cross_edge_dim: int
+        :param cross_edge_dim: number of features on a candidate edge, i.e.
+            `TriggerGraph.cross_edge_features.shape[1]`.
+        """
         super().__init__()
         torch.manual_seed(seed)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.encoder = nn.Sequential(nn.Linear(node_dim, hidden), nn.ReLU())
         self.intra_mp = _IntraMessagePassing(hidden)
         self.edge_head = nn.Sequential(
-            nn.Linear(hidden * 2 + 3, hidden), nn.ReLU(), nn.Linear(hidden, 1)
+            nn.Linear(hidden * 2 + cross_edge_dim, hidden), nn.ReLU(), nn.Linear(hidden, 1)
         )
         self.to(self.device)
 
@@ -269,26 +325,52 @@ class GNNCoincidenceScorer(nn.Module):
         return self._edge_logits_from_data(_to_pyg_data(graph))
 
     def score(self, graph: TriggerGraph) -> pd.DataFrame:
-        """Cross-IFO candidate table (TriggerGraph.candidate_table schema)
-        with an added `gnn_score` column: sigmoid probability that the edge
-        is a real astrophysical coincidence rather than accidental."""
+        """Cross-IFO candidate table (`TriggerGraph.candidate_table` schema)
+        with the model's output on each candidate edge.
+
+        Two columns are added. `gnn_score` is the sigmoid probability that the
+        edge is a real astrophysical coincidence, which is what to read when a
+        probability is wanted. `gnn_logit` is the same quantity before the
+        sigmoid, and it is what to rank and threshold on: a confident model
+        saturates the sigmoid, so many candidates land on exactly 1.0 and a
+        threshold there admits every one of them, while the logits stay
+        ordered.
+
+        :type graph: TriggerGraph
+        :param graph: the graph to score.
+        :return: pandas.DataFrame -- the candidate table with `gnn_logit` and
+            `gnn_score`.
+        """
         with torch.no_grad():
             logits = self.edge_logits(graph)
-            probs = torch.sigmoid(logits).cpu().numpy() if logits.numel() else np.array([])
+            if logits.numel():
+                raw = logits.cpu().numpy()
+                probs = torch.sigmoid(logits).cpu().numpy()
+            else:
+                raw = probs = np.array([])
         table = graph.candidate_table()
+        table["gnn_logit"] = raw
         table["gnn_score"] = probs
         return table
 
     def fit(
         self,
-        examples: list[tuple[TriggerGraph, np.ndarray]],
+        examples: list[tuple],
         epochs: int = 100,
         lr: float = 1e-2,
         batch_size: int | None = None,
     ) -> list[float]:
-        """examples: (graph, labels) pairs, one per segment, labels a 0/1
-        array aligned with graph.cross_edges (1 = real astrophysical
-        coincidence, 0 = accidental/background).
+        """examples: `(graph, labels)` or `(graph, labels, mask)` per segment,
+        labels a 0/1 array aligned with `graph.cross_edges` (1 = real
+        astrophysical coincidence, 0 = accidental/background).
+
+        `mask` selects the edges that contribute to the loss. Supply one
+        whenever the same graph is later scored, so that training and
+        evaluation use disjoint edges: a model scored on the edges it was
+        fitted on reports its own memory rather than its performance. Edges
+        share nodes, so the split should follow the segment's time
+        (`wdf.analysis.evaluation.temporal_split`) rather than be drawn at
+        random.
 
         `batch_size` groups segments into `torch_geometric` `Batch`es for a
         single sparse forward/backward pass each, instead of one Python-level
@@ -298,7 +380,10 @@ class GNNCoincidenceScorer(nn.Module):
         whole training set for one run, not a huge out-of-core dataset.
         Returns the per-epoch loss history.
         """
-        datas = [_to_pyg_data(g, labels) for g, labels in examples if g.cross_edges.size]
+        datas = [_to_pyg_data(example[0], example[1],
+                              example[2] if len(example) > 2 else None)
+                 for example in examples if example[0].cross_edges.size]
+        datas = [d for d in datas if bool(d.train_mask.any())]
         if not datas:
             return []
         chunk_size = batch_size or len(datas)
@@ -312,7 +397,8 @@ class GNNCoincidenceScorer(nn.Module):
             for start in range(0, len(datas), chunk_size):
                 batch = Batch.from_data_list(datas[start:start + chunk_size])
                 logits = self._edge_logits_from_data(batch)
-                total = total + loss_fn(logits, batch.y.to(self.device))
+                keep = batch.train_mask.to(self.device)
+                total = total + loss_fn(logits[keep], batch.y.to(self.device)[keep])
                 n_chunks += 1
             loss = total / n_chunks
             loss.backward()

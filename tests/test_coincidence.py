@@ -21,8 +21,8 @@ def test_finds_true_coincidence_within_window():
     assert len(candidates) > 0
     near = candidates[(candidates["gps_candidate"] - 1100.0).abs() < 1.0]
     assert len(near) >= 1
-    best = near.sort_values("network_snr", ascending=False).iloc[0]
-    assert best["network_snr"] > 10.0
+    best = near.sort_values("network_enwdf", ascending=False).iloc[0]
+    assert best["network_enwdf"] > 10.0
     assert abs(best["dt_s"]) < cf.coincidence_window("H1", "L1")
 
 
@@ -68,10 +68,10 @@ def test_find_network_three_ifo_coincidence():
     network = cf.find_network(clustered)
     near = network[(network["gps_candidate"] - 1100.0).abs() < 1.0]
     assert len(near) >= 1
-    best = near.sort_values("network_snr", ascending=False).iloc[0]
+    best = near.sort_values("network_enwdf", ascending=False).iloc[0]
     assert best["n_ifos"] == 3
     assert set(best["ifos_involved"].split(",")) == {"H1", "L1", "V1"}
-    assert best["network_snr"] > near["snr_H1"].iloc[0]  # combined > any single IFO
+    assert best["network_enwdf"] > near["EnWDF_H1"].iloc[0]  # combined > any single IFO
 
 
 def test_find_network_min_ifos_drops_pair_only_candidates():
