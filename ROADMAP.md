@@ -22,18 +22,23 @@ A representation carrying `(index, value)` pairs instead of the full vector
 holds about **130× fewer numbers**. Everything currently writes and reads 512
 columns of which roughly 510 are zero.
 
-**On disk that factor does not survive, and the measurement says so.** Written
-out and compared on the same 20 000 real triggers at a window of 512, the whole
-file goes from 2.42 MB to 1.78 MB -- **1.4×**, not 130×. Parquet had already
-taken most of it: the 512 dense coefficient columns cost 0.83 MB of the 2.42,
-because a column of exact zeros encodes to almost nothing, while each scalar
-metadata column of incompressible floats costs about 0.2 MB on its own. The
-file was never dominated by the coefficients. Dropping the reconstructed
-waveform is where a large factor genuinely is -- `rw*` is incompressible, and
-against `fullPrint=3` the saving is 8.3×.
+**On disk that factor does not survive, and the measurement says so.** Running
+the search over the same simulated segment twice, once writing each format:
 
-So the size argument is a small one, and the reason to make the change is the
-other one below.
+| | dense `wt*` | sparse pairs | |
+|---|---|---|---|
+| H1 foreground, 153 041 triggers | 49.4 MB | 15.7 MB | **3.1×** |
+
+Parquet had already taken most of the 130×, because a column of exact zeros
+encodes to almost nothing, while a scalar column of incompressible floats does
+not. What is left is a factor of three, and dropping the reconstructed waveform
+adds to it wherever a run wrote `rw*`, since those never compressed at all.
+
+The size argument is therefore a real but modest one, and the reason to make the
+change is the other one below. Measure this by writing both formats from the
+search, not by re-encoding one file into the other: a re-written file lands its
+rows in different row groups and compresses differently, which understates the
+difference by more than half.
 
 **Why it is more than an optimisation.** The sparse pairs are what the algorithm
 actually produces; the dense vector is an artefact of how it is written down. A
