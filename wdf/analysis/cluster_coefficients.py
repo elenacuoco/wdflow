@@ -36,6 +36,47 @@ def coefficient_columns(frame: pd.DataFrame) -> list[str]:
     return columns
 
 
+# Coefficient columns are read a block at a time: a trigger frame carries one
+# column per coefficient, and a column-store reader materialises each of them
+# separately.
+_COLUMN_BLOCK = 64
+
+
+def _coefficient_matrix(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:
+    """The frame's ``wt*`` columns as one ``(n_triggers, n_coeff)`` array.
+
+    :type frame: pandas.DataFrame
+    :param frame: triggers written with ``fullPrint >= 1``.
+    :type columns: list[str]
+    :param columns: the coefficient columns, in coefficient order.
+    :return: numpy.ndarray -- single-precision coefficients.
+    """
+    matrix = np.empty((len(frame), len(columns)), dtype=np.float32)
+    for start in range(0, len(columns), _COLUMN_BLOCK):
+        block = columns[start:start + _COLUMN_BLOCK]
+        matrix[:, start:start + len(block)] = frame[block].to_numpy(dtype=np.float32)
+    return matrix
+
+
+def _rows_by_label(frame: pd.DataFrame, cluster_column: str) -> dict:
+    """Map each cluster label to the rows of `frame` that carry it.
+
+    :type frame: pandas.DataFrame
+    :param frame: triggers carrying a cluster label.
+    :type cluster_column: str
+    :param cluster_column: the label column.
+    :return: dict -- ``{label: numpy.ndarray of row positions}``.
+    """
+    if cluster_column not in frame or len(frame) == 0:
+        return {}
+    label = frame[cluster_column].to_numpy(dtype=np.int64)
+    order = np.argsort(label, kind="stable")
+    ordered = label[order]
+    boundary = np.flatnonzero(np.diff(ordered)) + 1
+    return dict(zip((int(v) for v in ordered[np.concatenate(([0], boundary))]),
+                    np.split(order, boundary)))
+
+
 @dataclass
 class ClusterCoefficients:
     """One cluster's wavelet coefficients, one row per analysis window.
@@ -131,7 +172,7 @@ class ClusterCoefficients:
             # digits, far more than anything read off them needs, and a full
             # segment holds hundreds of thousands of these rows. The
             # reconstruction converts back to double, where pytsa wants it.
-            coefficients=ordered[columns].to_numpy(dtype=np.float32),
+            coefficients=_coefficient_matrix(ordered, columns),
             waves=tuple(ordered["wave"].astype(str)) if "wave" in ordered else (),
             sigma=(ordered["sigma"].to_numpy(dtype=float) if "sigma" in ordered
                    else np.full(len(ordered), np.nan)),
@@ -233,19 +274,52 @@ def iter_cluster_coefficients(labeled_triggers: pd.DataFrame, events: pd.DataFra
         return
 
     ifo = str(labeled_triggers["ifo"].iloc[0]) if "ifo" in labeled_triggers else ""
-    by_label = {label: group for label, group in labeled_triggers.groupby(cluster_column)}
+    columns = coefficient_columns(labeled_triggers)
 
-    for _, event in events.iterrows():
-        label = int(event[cluster_column])
-        members = event.get("member_indices")
-        if members is not None and len(members):
-            group = labeled_triggers.loc[list(members)]
+    # The whole coefficient matrix is read once. Taking one cluster's rows out
+    # of the trigger frame instead costs a column-by-column extraction per
+    # event, and a segment holds hundreds of thousands of them.
+    coefficients = _coefficient_matrix(labeled_triggers, columns)
+    gps = labeled_triggers["gps"].to_numpy(dtype=float)
+    waves = (labeled_triggers["wave"].astype(str).to_numpy()
+             if "wave" in labeled_triggers else None)
+    sigma = (labeled_triggers["sigma"].to_numpy(dtype=float)
+             if "sigma" in labeled_triggers else np.full(len(gps), np.nan))
+
+    labels = events[cluster_column].to_numpy(dtype=int)
+    members_of = (events["member_indices"].to_numpy()
+                  if "member_indices" in events else None)
+    rows_of_label = _rows_by_label(labeled_triggers, cluster_column)
+
+    # `member_indices` records each trigger's position in the frame the search
+    # wrote, which is not its row in the cleaned and time-ordered frame.
+    trigger_index = (labeled_triggers["trigger_index"].to_numpy(dtype=np.int64)
+                     if "trigger_index" in labeled_triggers else None)
+    if trigger_index is not None:
+        row_of_trigger = np.full(int(trigger_index.max()) + 1, -1, dtype=np.int64)
+        row_of_trigger[trigger_index] = np.arange(len(trigger_index))
+
+    for position, label in enumerate(labels):
+        members = None if members_of is None else members_of[position]
+        if members is not None and len(members) and trigger_index is not None:
+            rows = row_of_trigger[np.asarray(members, dtype=np.int64)]
+            rows = rows[rows >= 0]
         else:
-            group = by_label.get(label)
-        if group is None or len(group) == 0:
+            rows = rows_of_label.get(int(label))
+        if rows is None or len(rows) == 0:
             continue
-        yield label, ClusterCoefficients.from_triggers(
-            group, fs, window, overlap, cluster_id=label, ifo=ifo)
+        rows = rows[np.argsort(gps[rows], kind="stable")]
+        yield int(label), ClusterCoefficients(
+            cluster_id=int(label),
+            ifo=ifo,
+            fs=float(fs),
+            window=int(window),
+            overlap=int(overlap),
+            times=gps[rows],
+            coefficients=coefficients[rows],
+            waves=tuple(waves[rows]) if waves is not None else (),
+            sigma=sigma[rows],
+        )
 
 
 def collect_cluster_coefficients(labeled_triggers: pd.DataFrame, events: pd.DataFrame,

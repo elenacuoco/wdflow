@@ -12,6 +12,15 @@ from scipy.optimize import linear_sum_assignment
 
 EPS = np.finfo(float).tiny
 
+# Wavelet coefficients are read a block of columns at a time: a trigger file
+# carries one column per coefficient, and materialising all of them at once
+# costs several times the memory of the triggers themselves.
+_COEFFICIENT_BLOCK = 64
+
+# Candidate neighbour pairs are formed a block of triggers at a time, so a
+# dense stretch of the segment cannot allocate one array per pair of the run.
+_PAIR_BLOCK = 4096
+
 
 def _first_existing(frame: pd.DataFrame, names: Iterable[str], default=None):
     for name in names:
@@ -105,17 +114,57 @@ def _coefficient_energy(frame: pd.DataFrame) -> np.ndarray:
         key=lambda c: int(c[2:]),
     )
     if wt:
-        values = frame[wt].to_numpy(dtype=float)
-        values = np.where(np.isfinite(values), values, 0.0)
-        return np.sum(values * values, axis=1)
+        energy = np.zeros(len(frame), dtype=float)
+        for start in range(0, len(wt), _COEFFICIENT_BLOCK):
+            values = frame[wt[start:start + _COEFFICIENT_BLOCK]].to_numpy(dtype=float)
+            values = np.where(np.isfinite(values), values, 0.0)
+            energy += np.einsum("ij,ij->i", values, values)
+        return energy
     rank = _numeric(frame, ("EnWDF", "mSNR"), default=0.0)
     return rank * rank
 
 
 def _overlap_fraction(a0, a1, b0, b1):
-    overlap = max(0.0, min(a1, b1) - max(a0, b0))
-    width = max(min(a1 - a0, b1 - b0), EPS)
+    overlap = np.maximum(0.0, np.minimum(a1, b1) - np.maximum(a0, b0))
+    width = np.maximum(np.minimum(a1 - a0, b1 - b0), EPS)
     return overlap / width
+
+
+def _neighbour_pairs(time: np.ndarray, time_eps: float):
+    """Yield index pairs of triggers no further apart in time than `time_eps`.
+
+    `time` must be sorted. Pairs come in blocks so that a dense stretch of the
+    segment does not allocate one array element per pair of the whole run.
+
+    :param time: sorted trigger times, seconds.
+    :param time_eps: largest gap that still joins two triggers, seconds.
+    :return: iterator of (left, right) integer index arrays, left < right.
+    """
+    n = len(time)
+    stop = np.searchsorted(time, time + time_eps, side="right")
+    counts = stop - np.arange(n) - 1
+
+    for begin in range(0, n, _PAIR_BLOCK):
+        end = min(begin + _PAIR_BLOCK, n)
+        block = counts[begin:end]
+        total = int(block.sum())
+        if total == 0:
+            continue
+        index = np.arange(begin, end)
+        left = np.repeat(index, block)
+        offset = np.repeat(np.cumsum(block) - block, block)
+        right = np.arange(total) - offset + left + 1
+        yield left, right
+
+
+def _group_bounds(size: np.ndarray) -> np.ndarray:
+    return np.concatenate(([0], np.cumsum(size)[:-1]))
+
+
+def _group_weighted_mean(values, weights, group_index, n_groups):
+    total = np.bincount(group_index, weights=weights, minlength=n_groups)
+    weighted = np.bincount(group_index, weights=values * weights, minlength=n_groups)
+    return np.divide(weighted, total, out=np.full(n_groups, np.nan), where=total > 0)
 
 
 class _UnionFind:
@@ -181,131 +230,137 @@ def cluster_detector_triggers(
     stride = stride_seconds(parameters)
     time_eps = stride * (1 + int(config.max_missing_windows))
     uf = _UnionFind(len(cleaned))
+    log_energy = np.log(energy)
 
-    for i in range(len(cleaned)):
-        stop = np.searchsorted(time, time[i] + time_eps, side="right")
-        for j in range(i + 1, stop):
-            freq_ok = (
-                _overlap_fraction(fmin[i], fmax[i], fmin[j], fmax[j])
-                >= config.minimum_frequency_overlap
-            )
-            energy_ok = (
-                abs(np.log(energy[i] / energy[j]))
-                <= config.maximum_log_energy_jump
-            )
-            if freq_ok and energy_ok:
-                uf.union(i, j)
+    for left, right in _neighbour_pairs(time, time_eps):
+        keep_pair = (
+            _overlap_fraction(fmin[left], fmax[left], fmin[right], fmax[right])
+            >= config.minimum_frequency_overlap
+        ) & (
+            np.abs(log_energy[left] - log_energy[right])
+            <= config.maximum_log_energy_jump
+        )
+        for i, j in zip(left[keep_pair], right[keep_pair]):
+            uf.union(i, j)
 
     roots = np.array([uf.find(i) for i in range(len(cleaned))])
     _, cluster_ids = np.unique(roots, return_inverse=True)
     cleaned["cluster_id"] = cluster_ids
 
-    rows = []
-    for cluster_id, group in cleaned.groupby("cluster_id", sort=True):
-        idx = group.index.to_numpy()
-        group_energy = energy[idx]
-        group_rank = rank[idx]
-        weights = np.maximum(group_energy, EPS)
+    sizes = np.bincount(cluster_ids, minlength=cluster_ids.max() + 1)
+    n_clusters = len(sizes)
+    by_cluster = np.argsort(cluster_ids, kind="stable")
+    starts = _group_bounds(sizes)
+    grouped = cluster_ids[by_cluster]
 
-        gps_start = float(
-            pd.to_numeric(
-                _first_existing(group, ("gpsStart", "gps"), default=time[idx]),
-                errors="coerce",
-            ).min()
-        )
-        if "gpsEnd" in group:
-            gps_end = float(pd.to_numeric(group["gpsEnd"], errors="coerce").max())
-        elif "duration" in group:
-            gps_end = float(
-                np.nanmax(
-                    _numeric(group, ("gpsStart", "gps"), default=time[idx])
-                    + _numeric(group, ("duration",), default=0.0)
-                )
-            )
-        else:
-            gps_end = float(np.max(time[idx]) + float(parameters.window) / float(parameters.resampling))
+    weights = np.maximum(energy, EPS)[by_cluster]
+    group_rank = rank[by_cluster]
+    group_time = time[by_cluster]
 
-        peak_local = int(np.argmax(group_rank))
-        peak_row = group.iloc[peak_local]
+    # The peak member of each cluster is the loudest, so ordering by cluster and
+    # then by decreasing rank puts it first in every group.
+    peak_at = np.lexsort((-rank, cluster_ids))[starts]
 
-        # Coincidence time: use the actual time of the loudest WDF member.
-        # The energy centroid is retained only as a diagnostic because it can
-        # move by hundreds of milliseconds in long or contaminated clusters.
-        peak_time = float(time[idx][peak_local])
-        gps_energy_centroid = float(
-            np.average(time[idx], weights=weights)
-        )
+    if "gpsStart" in cleaned or "gps" in cleaned:
+        start_time = _numeric(cleaned, ("gpsStart", "gps"))
+        start_time = np.where(np.isfinite(start_time), start_time, time)
+    else:
+        start_time = time
+    gps_start = np.minimum.reduceat(start_time[by_cluster], starts)
 
-        member_indices = tuple(int(v) for v in group["trigger_index"].to_numpy())
-        n_triggers = len(group)
+    if "gpsEnd" in cleaned:
+        end_time = _numeric(cleaned, ("gpsEnd",))
+    elif "duration" in cleaned:
+        end_time = start_time + _numeric(cleaned, ("duration",), default=0.0)
+    else:
+        end_time = time + float(parameters.window) / float(parameters.resampling)
+    gps_end = np.maximum.reduceat(np.nan_to_num(end_time[by_cluster], nan=-np.inf), starts)
 
-        # Primary cluster ranking: do not add EnWDF values in quadrature across
-        # overlapping WDF windows, because that double-counts common samples.
-        enwdf_peak = float(np.max(group_rank))
-        enwdf_quadrature_sum = float(
-            np.sqrt(np.sum(group_rank * group_rank))
-        )
+    peak_time = time[peak_at]
+    span = np.maximum(0.0, gps_end - gps_start)
 
-        member_snr_mean = _numeric(
-            group,
-            ("snrMean",),
-            default=0.0,
-        )
-        member_snr_peak = _numeric(
-            group,
-            ("snrPeak",),
-            default=0.0,
-        )
-        member_sigma = _numeric(
-            group,
-            ("sigmaWin", "sigma", "mSigma"),
-            default=np.nan,
-        )
+    snr_mean = _numeric(cleaned, ("snrMean",), default=0.0)
+    snr_peak = _numeric(cleaned, ("snrPeak",), default=0.0)
+    sigma = _numeric(cleaned, ("sigmaWin", "sigma", "mSigma"), default=np.nan)
+    finite_sigma = np.isfinite(sigma) & (sigma > 0.0)
 
-        snr_mean_cluster = float(
-            np.average(member_snr_mean, weights=weights)
-        )
-        snr_peak_cluster = float(
-            np.nanmax(member_snr_peak)
-        )
+    sigma_weights = np.where(finite_sigma, 1.0, 0.0)[by_cluster] * weights
+    cluster_sigma = _group_weighted_mean(
+        np.where(finite_sigma, sigma, 0.0)[by_cluster],
+        sigma_weights,
+        grouped,
+        n_clusters,
+    )
 
-        finite_sigma = np.isfinite(member_sigma) & (member_sigma > 0.0)
-        sigma_cluster = (
-            float(np.average(member_sigma[finite_sigma], weights=weights[finite_sigma]))
-            if np.any(finite_sigma)
-            else np.nan
-        )
+    cluster_snr_peak = np.maximum.reduceat(
+        np.nan_to_num(snr_peak[by_cluster], nan=-np.inf), starts
+    )
+    cluster_snr_peak[~np.isfinite(cluster_snr_peak)] = np.nan
 
-        rows.append(
-            {
-                "cluster_id": int(cluster_id),
-                "ifo": peak_row.get("ifo", getattr(parameters, "itf", "")),
-                "gps": gps_start,
-                "gpsStart": gps_start,
-                "gpsEnd": gps_end,
-                "gpsMax": peak_time,
-                "gpsPeak": peak_time,
-                "gpsEnergyCentroid": gps_energy_centroid,
-                "duration": max(0.0, gps_end - gps_start),
-                "gps_span_s": max(0.0, gps_end - gps_start),
-                "freqMin": float(np.min(fmin[idx])),
-                "freqMean": float(np.average(fmean[idx], weights=weights)),
-                "freqMax": float(np.max(fmax[idx])),
-                "freqPeak": float(peak_row.get("freqPeak", fmean[idx][peak_local])),
-                "EnWDF": enwdf_peak,
-                "cluster_sum_enwdf": enwdf_quadrature_sum,
-                "snrMean": snr_mean_cluster,
-                "snrPeak": snr_peak_cluster,
-                "sigmaWin": sigma_cluster,
-                "coefficient_energy": float(np.sum(group_energy)),
-                "n_triggers": int(n_triggers),
-                "singleton": bool(n_triggers == 1),
-                "member_indices": member_indices,
-                "wave": peak_row.get("wave", peak_row.get("mWave", "")),
-            }
-        )
+    freq_peak = (
+        _numeric(cleaned, ("freqPeak",))[peak_at]
+        if "freqPeak" in cleaned
+        else fmean[peak_at]
+    )
+    ifo_column = (
+        cleaned["ifo"].to_numpy()[peak_at]
+        if "ifo" in cleaned
+        else np.full(n_clusters, getattr(parameters, "itf", ""))
+    )
+    if "wave" in cleaned:
+        wave_column = cleaned["wave"].to_numpy()[peak_at]
+    elif "mWave" in cleaned:
+        wave_column = cleaned["mWave"].to_numpy()[peak_at]
+    else:
+        wave_column = np.full(n_clusters, "")
 
-    return cleaned, pd.DataFrame(rows)
+    member_indices = np.split(
+        cleaned["trigger_index"].to_numpy()[by_cluster], np.cumsum(sizes)[:-1]
+    )
+
+    events = pd.DataFrame(
+        {
+            "cluster_id": np.arange(n_clusters, dtype=int),
+            "ifo": ifo_column,
+            "gps": gps_start,
+            "gpsStart": gps_start,
+            "gpsEnd": gps_end,
+            "gpsMax": peak_time,
+            "gpsPeak": peak_time,
+            # Coincidence time: use the actual time of the loudest WDF member.
+            # The energy centroid is retained only as a diagnostic because it
+            # can move by hundreds of milliseconds in long or contaminated
+            # clusters.
+            "gpsEnergyCentroid": _group_weighted_mean(
+                group_time, weights, grouped, n_clusters),
+            "duration": span,
+            "gps_span_s": span,
+            "freqMin": np.minimum.reduceat(fmin[by_cluster], starts),
+            "freqMean": _group_weighted_mean(
+                fmean[by_cluster], weights, grouped, n_clusters),
+            "freqMax": np.maximum.reduceat(fmax[by_cluster], starts),
+            "freqPeak": freq_peak,
+            # Primary cluster ranking: do not add EnWDF values in quadrature
+            # across overlapping WDF windows, because that double-counts common
+            # samples.
+            "EnWDF": np.maximum.reduceat(group_rank, starts),
+            "cluster_sum_enwdf": np.sqrt(
+                np.bincount(grouped, weights=group_rank * group_rank,
+                            minlength=n_clusters)),
+            "snrMean": _group_weighted_mean(
+                snr_mean[by_cluster], weights, grouped, n_clusters),
+            "snrPeak": cluster_snr_peak,
+            "sigmaWin": cluster_sigma,
+            "coefficient_energy": np.bincount(
+                grouped, weights=energy[by_cluster], minlength=n_clusters),
+            "n_triggers": sizes.astype(int),
+            "singleton": sizes == 1,
+            "member_indices": [tuple(int(v) for v in m) for m in member_indices],
+            "wave": wave_column,
+        }
+    )
+
+    return cleaned, events
 
 
 def select_events_for_coincidence(
