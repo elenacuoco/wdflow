@@ -131,3 +131,46 @@ def test_the_record_reproduces_its_own_window(n_coeff):
     assert np.all(tiles["t_hi"] > tiles["t_lo"])
     assert np.all(tiles["f_hi"] > tiles["f_lo"])
     assert np.all(tiles["f_hi"] <= FS / 2.0)
+
+
+def test_the_measurements_are_single_precision_and_the_times_are_not(tmp_path):
+    """A GPS time has to stay meaningful well under a millisecond; EnWDF, the
+    noise scale and the frequencies carry a handful of significant digits."""
+    rng = np.random.default_rng(5)
+    path = str(tmp_path / "triggers.parquet")
+    with TriggerWriter(path) as writer:
+        writer.append(trigger_record(1.4e9, *sparse_window(512, rng), 512))
+
+    frame = read_triggers(path)
+    for name in ("gps", "gpsStart", "gpsCentroid", "gpsPeak"):
+        assert frame[name].dtype == np.float64
+    for name in ("EnWDF", "sigma", "snrPeak", "tSpread", "duration",
+                 "freqMin", "freqMean", "freqMax", "freqPeak"):
+        assert frame[name].dtype == np.float32
+
+
+def test_the_measurement_columns_are_written_so_they_compress(tmp_path):
+    """The file is mostly columns of measurements, whose mantissas do not
+    compress on their own. Losing these settings silently costs about a factor
+    of two, which no test of the values would notice.
+    """
+    import pyarrow.parquet as pq
+
+    rng = np.random.default_rng(6)
+    path = str(tmp_path / "triggers.parquet")
+    with TriggerWriter(path) as writer:
+        for k in range(200):
+            writer.append(trigger_record(1.4e9 + k, *sparse_window(512, rng), 512))
+
+    metadata = pq.ParquetFile(path).metadata
+    encodings = {}
+    for column in range(metadata.num_columns):
+        chunk = metadata.row_group(0).column(column)
+        encodings[chunk.path_in_schema] = set(chunk.encodings)
+
+    assert "BYTE_STREAM_SPLIT" in encodings["EnWDF"]
+    assert "BYTE_STREAM_SPLIT" in encodings["gps"]
+    # The basis name is a small set of repeated strings, which is what
+    # dictionary encoding is for.
+    assert "RLE_DICTIONARY" in encodings["wave"] or "PLAIN_DICTIONARY" in encodings["wave"]
+    assert metadata.row_group(0).column(0).compression == "ZSTD"

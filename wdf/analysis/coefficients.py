@@ -23,16 +23,24 @@ import pyarrow.parquet as pq
 # may hold up to this many coefficients.
 MAX_COEFF = 1 << 16
 
-META_FIELDS = [
-    "gps", "gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
-    "EnWDF", "sigma", "snrPeak",
+# A GPS time is a large number that has to stay meaningful to well under a
+# millisecond, so it needs double precision. Everything else here is a
+# measurement carrying a handful of significant digits, and single precision
+# holds seven of them.
+TIME_FIELDS = ["gps", "gpsStart", "gpsCentroid", "gpsPeak"]
+
+MEASUREMENT_FIELDS = [
+    "tSpread", "duration", "EnWDF", "sigma", "snrPeak",
     "freqMin", "freqMean", "freqMax", "freqPeak",
 ]
+
+META_FIELDS = TIME_FIELDS + MEASUREMENT_FIELDS
 
 COEFFICIENT_FIELDS = ["wt_index", "wt_value"]
 
 TRIGGER_SCHEMA = pa.schema(
-    [pa.field(name, pa.float64()) for name in META_FIELDS]
+    [pa.field(name, pa.float64()) for name in TIME_FIELDS]
+    + [pa.field(name, pa.float32()) for name in MEASUREMENT_FIELDS]
     + [
         pa.field("wave", pa.string()),
         pa.field("n_coeff", pa.uint32()),
@@ -40,6 +48,19 @@ TRIGGER_SCHEMA = pa.schema(
         pa.field("wt_index", pa.list_(pa.uint16())),
         pa.field("wt_value", pa.list_(pa.float32())),
     ]
+)
+
+# The file is mostly columns of measurements, whose mantissas do not compress.
+# byte_stream_split regroups their bytes so that exponents sit together and
+# zstd has something to work with; the basis name keeps dictionary encoding,
+# which is what that is good at. pyarrow silently ignores the encoding unless
+# dictionary encoding is turned off for the columns it applies to.
+_FLOAT_COLUMNS = TIME_FIELDS + MEASUREMENT_FIELDS + ["fs"]
+
+_WRITER_PROPERTIES = dict(
+    compression="zstd",
+    use_dictionary=["wave"],
+    column_encoding={name: "BYTE_STREAM_SPLIT" for name in _FLOAT_COLUMNS},
 )
 
 
@@ -159,12 +180,14 @@ class TriggerWriter:
     reader needs before it can open it at all.
     """
 
-    def __init__(self, path: str, flush_every: int = 500):
+    def __init__(self, path: str, flush_every: int = 20000):
         """
         :type path: str
         :param path: file to write; an existing file is replaced.
         :type flush_every: int
-        :param flush_every: rows buffered before a row group is written.
+        :param flush_every: rows buffered before a row group is written. A row
+            group is the unit the encodings work over, so small ones cost size;
+            this is what bounds the writer's memory against that.
         """
         self.path = path
         self.flush_every = int(flush_every)
@@ -198,7 +221,8 @@ class TriggerWriter:
             return
         table = pa.Table.from_pylist(self._rows, schema=TRIGGER_SCHEMA)
         if self._writer is None:
-            self._writer = pq.ParquetWriter(self.path, TRIGGER_SCHEMA)
+            self._writer = pq.ParquetWriter(self.path, TRIGGER_SCHEMA,
+                                            **_WRITER_PROPERTIES)
         self._writer.write_table(table)
         self._rows = []
 
