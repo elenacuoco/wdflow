@@ -64,7 +64,7 @@ def _trigger(rng, gps0, gps_peak, enwdf, ifo, freq_mean, freq_peak,
     n_nonzero = int(rng.integers(1, 5))
     index = np.sort(rng.choice(NCOEFF, size=n_nonzero, replace=False))
     return dict(
-        gps=gps0, gpsStart=gps_peak - 0.05, gpsCentroid=gps_peak,
+        gps=gps_peak - 0.1, gpsStart=gps_peak - 0.05, gpsCentroid=gps_peak,
         tSpread=rng.uniform(0.005, 0.05), gpsPeak=gps_peak,
         duration=rng.uniform(0.05, 0.3),
         EnWDF=enwdf, sigma=1.0, snrPeak=snr_peak,

@@ -26,6 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from wdf.analysis.clustering import collect_significant_pixels
+from wdf.analysis.plots import plot_glitchgram, plot_trigger_tiles
 
 
 def _fig_to_b64(fig) -> str:
@@ -58,39 +59,21 @@ def _wave_stats_b64(ifo: str, df: pd.DataFrame) -> str | None:
 
 def _glitchgram_b64(ifo: str, df: pd.DataFrame, gps_reference: float | None) -> str:
     fig, ax = plt.subplots(figsize=(9, 4), dpi=110)
-    x = df["gpsPeak"] - gps_reference if gps_reference is not None else df["gpsPeak"]
-    sc = ax.scatter(x, df["freqPeak"], c=np.log10(df["snrPeak"].clip(lower=1e-3)),
-                     cmap="viridis", s=10, alpha=0.6, linewidths=0)
+    plot_glitchgram(ax, df, t0=gps_reference)
     if gps_reference is not None:
         ax.axvline(0.0, color="crimson", ls="--", lw=1, label="reference GPS")
         ax.legend(loc="upper right", fontsize=8)
-        ax.set_xlabel(f"time - {gps_reference:.1f} [s]")
-    else:
-        ax.set_xlabel("gpsPeak [s]")
-    ax.set_ylabel("freqPeak [Hz]")
     ax.set_title(f"{ifo}: glitchgram ({len(df)} triggers)")
-    cb = fig.colorbar(sc, ax=ax)
-    cb.set_label("log10(snrPeak)")
     return _fig_to_b64(fig)
 
 
 def _tf_plot_b64(ifo: str, member_rows: pd.DataFrame, fs: float, sigma: float,
                   center_gps: float, snr_label: float) -> str | None:
-    pixels = collect_significant_pixels(member_rows, fs)
-    if pixels.empty:
+    if collect_significant_pixels(member_rows, fs).empty:
         return None
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=110)
-    for tile in pixels.itertuples():
-        magnitude = np.sqrt(tile.energy)
-        ax.add_patch(plt.Rectangle(
-            (tile.t_lo - center_gps, tile.f_lo),
-            tile.t_hi - tile.t_lo, tile.f_hi - tile.f_lo,
-            color=plt.cm.viridis(min(magnitude / (10 * sigma), 1.0)), alpha=0.8,
-        ))
-    ax.set_xlim(-0.3, 0.3)
-    ax.set_ylim(0, fs / 2)
+    plot_trigger_tiles(ax, member_rows, fs, t0=center_gps, sigma=sigma)
     ax.set_xlabel(f"time - {center_gps:.3f} [s]")
-    ax.set_ylabel("frequency [Hz]")
     ax.set_title(f"{ifo}: time-frequency tiles, loudest survivor (EnWDF={snr_label:.1f})")
     return _fig_to_b64(fig)
 

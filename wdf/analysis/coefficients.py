@@ -249,6 +249,45 @@ def window_length(frame: pd.DataFrame) -> int:
     return int(lengths[0])
 
 
+def trigger_statistics(frame: pd.DataFrame) -> dict:
+    """What a run produced, in the numbers worth reading before anything else.
+
+    :type frame: pandas.DataFrame
+    :param frame: one detector's triggers.
+    :return: dict -- trigger count, livetime and rate; the quantiles of the
+        surviving-coefficient count, of `EnWDF` and of `snrPeak`; how often each
+        basis won; and the window lengths and sampling rates present, since a
+        run may hold more than one of each.
+    """
+    if not len(frame):
+        return dict(n_triggers=0)
+
+    n_nonzero = np.fromiter((len(v) for v in frame["wt_index"]),
+                            dtype=np.int64, count=len(frame))
+    gps = pd.to_numeric(frame["gps"], errors="coerce").to_numpy()
+    livetime = float(np.nanmax(gps) - np.nanmin(gps))
+
+    quantiles = [0.5, 0.9, 0.99, 1.0]
+    return dict(
+        n_triggers=int(len(frame)),
+        livetime_s=livetime,
+        rate_hz=len(frame) / livetime if livetime > 0 else float("nan"),
+        n_nonzero_mean=float(n_nonzero.mean()),
+        n_nonzero_quantiles=dict(zip(
+            quantiles, np.quantile(n_nonzero, quantiles).tolist())),
+        density=float(n_nonzero.mean() / float(np.mean(frame["n_coeff"]))),
+        enwdf_quantiles=dict(zip(
+            quantiles, np.nanquantile(
+                pd.to_numeric(frame["EnWDF"], errors="coerce"), quantiles).tolist())),
+        snr_peak_quantiles=dict(zip(
+            quantiles, np.nanquantile(
+                pd.to_numeric(frame["snrPeak"], errors="coerce"), quantiles).tolist())),
+        wave_counts=frame["wave"].value_counts().to_dict(),
+        n_coeff=sorted(int(v) for v in np.unique(frame["n_coeff"])),
+        fs=sorted(float(v) for v in np.unique(frame["fs"])),
+    )
+
+
 def coefficient_matrix(frame: pd.DataFrame) -> np.ndarray:
     """The triggers' coefficients as one dense `(n_triggers, n_coeff)` array.
 
