@@ -38,22 +38,17 @@ import os
 
 
 class wdfUnitDSWorker(object):
-    def __init__(self, parameters, fullPrint=1):
+    def __init__(self, parameters):
         """
         :type parameters: class Parameters object
         :param parameters: run configuration (channel, sampling, window, downsampling,
             AR whitening order, learn length, output paths, ...); copied onto a fresh
             `Parameters` instance so per-worker mutations (e.g. `Ncoeff`, `resampling`,
             `sigma`, set during `segmentProcess`) don't leak back into the caller's object.
-        :type fullPrint: int
-        :param fullPrint: verbosity passed through to `ParameterEstimation`/trigger
-            printing -- e.g. whether whitened-domain reconstruction columns (`rw*`) are
-            included in the output triggers.
         """
         self.par = Parameters()
         self.par.copy(parameters)
         self.par.Ncoeff = parameters.window
-        self.fullPrint = fullPrint
         self.par.channel = parameters.channel
         self.learn = parameters.learn
         self.par.resampling=parameters.sampling/parameters.ResamplingFactor
@@ -261,9 +256,7 @@ class wdfUnitDSWorker(object):
             WDF = wdf(self.par, wavThresh)
             
             # register obesevers to WDF process
-            # put 0 to save only metaself.parameters, 1 for wavelet coefficients and 2
-            # for waveform estimation, 3 for full event print
-            savetrigger = SingleEventPrintTriggers(self.par, self.fullPrint)
+            savetrigger = SingleEventPrintTriggers(self.par)
             parameterestimation = ParameterEstimation(self.par)
             parameterestimation.register(savetrigger)
             WDF.register(parameterestimation)

@@ -18,7 +18,7 @@ def _synth_clustered(ifo, n, t0, seed):
         cluster_id=range(n), ifo=ifo,
         gpsStart=t0 + np.sort(rng.uniform(0, 100, n)),
         gpsPeak=t0 + np.sort(rng.uniform(0, 100, n)),
-        snrMean=rng.uniform(1, 10, n), EnWDF=rng.uniform(1, 20, n),
+        EnWDF=rng.uniform(1, 20, n),
         freqMean=rng.uniform(50, 300, n), freqMax=rng.uniform(300, 500, n),
         freqMin=rng.uniform(20, 50, n), duration=rng.uniform(0.05, 0.5, n),
         wave="BsplineC309", n_triggers=rng.integers(1, 5, n), gps_span_s=rng.uniform(0, 1, n),

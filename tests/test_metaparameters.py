@@ -70,6 +70,35 @@ def test_the_extent_brackets_the_time_the_burst_was_placed_at(n_coeff):
     assert features["duration"] > 0.0
 
 
+@pytest.mark.parametrize("n_coeff", WINDOWS)
+def test_a_sharper_burst_is_wider_in_frequency(n_coeff):
+    """A short transient occupies more band than a long one at the same carrier."""
+    span = n_coeff / FS
+    long_burst = meta_features(
+        *thresholded(sine_gaussian(n_coeff, FS, 0.5 * span, FS / 16.0, 0.15 * span)),
+        n_coeff, FS, SIGMA)
+    short_burst = meta_features(
+        *thresholded(sine_gaussian(n_coeff, FS, 0.5 * span, FS / 16.0, 0.02 * span)),
+        n_coeff, FS, SIGMA)
+
+    assert (short_burst["freqMax"] - short_burst["freqMin"]
+            >= long_burst["freqMax"] - long_burst["freqMin"])
+
+
+@pytest.mark.parametrize("n_coeff", WINDOWS)
+def test_a_longer_burst_lasts_longer(n_coeff):
+    span = n_coeff / FS
+    short_burst = meta_features(
+        *thresholded(sine_gaussian(n_coeff, FS, 0.5 * span, FS / 16.0, 0.02 * span)),
+        n_coeff, FS, SIGMA)
+    long_burst = meta_features(
+        *thresholded(sine_gaussian(n_coeff, FS, 0.5 * span, FS / 16.0, 0.15 * span)),
+        n_coeff, FS, SIGMA)
+
+    assert long_burst["duration"] >= short_burst["duration"]
+    assert long_burst["tSpread"] >= short_burst["tSpread"]
+
+
 def test_the_centroid_sits_between_two_equal_tiles_where_the_peak_cannot():
     """Why the coincidence time is the centroid and not the loudest tile.
 

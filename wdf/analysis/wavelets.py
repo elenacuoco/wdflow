@@ -1,5 +1,4 @@
-"""Geometry of WDF's own forward wavelet coefficients (the `wt0..wtN` trigger
-CSV columns, written at `fullPrint>=1`) -- where each coefficient index sits
+"""Geometry of WDF's own forward wavelet coefficients -- where each index sits
 in (time, frequency), with no assumption about the shape of whatever
 transient produced them.
 

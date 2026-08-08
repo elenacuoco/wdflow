@@ -7,218 +7,77 @@ __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 __status__ = "Development"
 
-from collections import OrderedDict
- 
+from dataclasses import dataclass, field
+
+import numpy as np
 
 
-class OrderedMeta(type):
-    @classmethod
-    def __prepare__(metacls, name, bases):
-        return OrderedDict()
+@dataclass
+class eventPE:
+    """One trigger: the coefficients that survived, and the parameters they imply.
 
-    def __new__(cls, name, bases, clsdict):
-        c = type.__new__(cls, name, bases, clsdict)
-        c._orderedKeys = clsdict.keys()
-        return c
-
-
-class eventPE(object):
-
+    :param gps: GPS time of the analysis window's first sample, which the
+        coefficient tiles are placed against.
+    :param gpsStart: GPS time the transient starts at, the earliest surviving tile.
+    :param gpsCentroid: energy centroid of the transient in time.
+    :param tSpread: spread of the energy in time about the centroid, seconds.
+    :param gpsPeak: centre of the tile carrying the largest coefficient.
+    :param duration: extent of the surviving tiles, seconds.
+    :param EnWDF: the search's statistic for this window.
+    :param sigma: noise scale the search measured on this window.
+    :param snrPeak: largest coefficient on the noise scale.
+    :param freqMin: lower edge of the surviving tiles, Hz.
+    :param freqMean: energy-weighted frequency of the surviving tiles, Hz.
+    :param freqMax: upper edge of the surviving tiles, Hz.
+    :param freqPeak: frequency the transient's amplitude peaks at, Hz.
+    :param wave: name of the basis that produced the coefficients.
+    :param n_coeff: length of the window's coefficient vector.
+    :param fs: sampling frequency the coefficients were computed at, Hz.
+    :param index: coefficient indices of the survivors.
+    :param value: coefficient values, in the same order as `index`.
     """
-    This class stands for the encapsulation of the trigger data into one object
-    """
 
-    def __init__(self, gps, gpsPeak, duration, EnWDF, sigma, snrMean, snrPeak, freqMin, freqMean, freqMax, freqPeak, wave, coeff, Icoeff):
+    gps: float
+    gpsStart: float
+    gpsCentroid: float
+    tSpread: float
+    gpsPeak: float
+    duration: float
+    EnWDF: float
+    sigma: float
+    snrPeak: float
+    freqMin: float
+    freqMean: float
+    freqMax: float
+    freqPeak: float
+    wave: str
+    n_coeff: int
+    fs: float
+    index: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.uint16))
+    value: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
+
+    def record(self) -> dict:
+        """The trigger as one row of a trigger file.
+
+        :return: dict -- the fields of `wdf.analysis.coefficients.TRIGGER_SCHEMA`.
         """
-        This class stands for the encapsulation of the trigger data into one object
-
-        :type gps: float
-        :param gps: GPS time of the trigger denoting the first gps of analyzing window
-
-        :type gpsPeak: float
-        :param gps: GPS time of the trigger denoting the moment it appeared at maximum SNR
-
-        :type EnWDF: float
-        :param EnWDF: The Signal to Noise Ratio of the trigger statistics of WDF
-
-        :type sigma: float
-        :param sigma: The noise scale WDF divided by to obtain EnWDF, in the units of the analysed data
-
-        :type snrMean: float
-        :param snrMean: The estimated mean Signal to Noise Ratio of the trigger
-
-        :type snrPeak: float
-        :param snrPeak: The estimated Signal to Noise Ratio of the trigger at its peak
-
-        :type freqMin: float
-        :param freqMin: The minimum frequency of the trigger
-
-        :type freqMax: float
-        :param freqMax: The maximum frequency of the trigger
-        
-        :type freqMean: float
-        :param freqMean: The mean frequency of the trigger
-        
-        :type freqPeak: float
-        :param freqPeak: The frequency at the peak of the trigger
-
-        :type duration: float
-        :param duration: The time duration of the trigger
-
-        :type wave: str
-        :param wave: The type of the wavelet
-
-        :type coeff: list
-        :param coeff: The list containing wavelet coefficients of the trigger
-
-        :type Icoeff: list
-        :param Icoeff: The list containing raw wavelet coefficients of the trigger
-        """
-        self.gps = gps
-        self.gpsPeak = gpsPeak
-        self.EnWDF = EnWDF
-        self.sigma = sigma
-        self.snrMean = snrMean
-        self.snrPeak = snrPeak
-        self.freqMean = freqMean
-        self.freqMin = freqMin
-        self.freqMax = freqMax
-        self.freqPeak = freqPeak
-        self.duration = duration
-        self.wave = wave
-        self.Ncoeff = len(coeff)
-        for i in range(len(coeff)):
-            setattr(self, "wt" + str(i), coeff[i])
-        for i in range(len(Icoeff)):
-            setattr(self, "rw" + str(i), Icoeff[i])
- 
-    def update(self, gps, gpsPeak, duration, EnWDF, sigma, snrMean, snrPeak, freqMin, freqMean, freqMax, freqPeak, wave, coeff, Icoeff):
-        """
-        This method updates the eventPE object with new parameters
-
-        :type gps: float
-        :param gps: GPS time of the trigger denoting the first gps of analyzing window
-
-        :type gpsPeak: float
-        :param gps: GPS time of the trigger denoting the moment it appeared at maximum SNR
-
-        :type EnWDF: float
-        :param EnWDF: The Signal to Noise Ratio of the trigger statistics of WDF
-
-        :type sigma: float
-        :param sigma: The noise scale WDF divided by to obtain EnWDF, in the units of the analysed data
-
-        :type snrMean: float
-        :param snrMean: The estimated mean Signal to Noise Ratio of the trigger
-        
-        :type snrPeak: float
-        :param snrPeak: The estimated Signal to Noise Ratio of the trigger at its peak
-
-        :type freqMin: float
-        :param freqMin: The minimum frequency of the trigger
-
-        :type freqMax: float
-        :param freqMax: The maximum frequency of the trigger
-        
-        :type freqMean: float
-        :param freqMean: The mean frequency of the trigger
-        
-        :type freqPeak: float
-        :param freqPeak: The frequency at the peak of the trigger
-
-        :type duration: float
-        :param duration: The time duration of the trigger
-
-        :type wave: str
-        :param wave: The type of the wavelet
-
-        :type coeff: list
-        :param coeff: The list containing wavelet coefficients of the trigger
-
-        :type Icoeff: list
-        :param Icoeff: The list containing raw wavelet coefficients of the trigger
-        """
-        self.gps = gps
-        self.gpsPeak = gpsPeak
-        self.EnWDF = EnWDF
-        self.sigma = sigma
-        self.snrMean = snrMean
-        self.snrPeak = snrPeak
-        self.freqMean = freqMean
-        self.freqMin = freqMin
-        self.freqMax = freqMax
-        self.freqPeak = freqPeak
-        self.duration = duration
-        self.wave = wave
-        for i in range(len(coeff)):
-            setattr(self, "wt" + str(i), coeff[i])
-        for i in range(len(Icoeff)):
-            setattr(self, "rw" + str(i), Icoeff[i])
-
-    def evCopy(self, ev):
-        """
-        This method copies the parameter of the ev, eventPE object
-
-        :type ev: eventPE
-        :param ev: The eventPE object to copy parameters from
-        
-        :type gps: float
-        :param gps: GPS time of the trigger denoting the first gps of analyzing window
-        
-        
-        :type gpsPeak: float
-        :param gps: GPS time of the trigger denoting the moment it appeared at maximum SNR
-
-        :type EnWDF: float
-        :param EnWDF: The Signal to Noise Ratio of the trigger statistics of WDF
-
-        :type sigma: float
-        :param sigma: The noise scale WDF divided by to obtain EnWDF, in the units of the analysed data
-
-        :type snrMean: float
-        :param snrMean: The estimated mean Signal to Noise Ratio of the trigger
-
-        :type snrPeak: float
-        :param snrPeak: The estimated Signal to Noise Ratio of the trigger at its peak
-
-        :type freqMin: float
-        :param freqMin: The minimum frequency of the trigger
-
-        :type freqMax: float
-        :param freqMax: The maximum frequency of the trigger
-
-        :type freqMean: float
-        :param freqMean: The mean frequency of the trigger
-
-        :type freqPeak: float
-        :param freqPeak: The frequency at the peak of the trigger
-
-        :type duration: float
-        :param duration: The time duration of the trigger
-
-        :type wave: str
-        :param wave: The type of the wavelet
-
-        :type coeff: list
-        :param coeff: The list containing wavelet coefficients of the trigger
-
-        :type Icoeff: list
-        :param Icoeff: The list containing raw wavelet coefficients of the trigger
-        """
-
-        self.gps = ev.gps
-        self.gpsPeak = ev.gpsPeak
-        self.EnWDF = ev.EnWDF
-        self.sigma = ev.sigma
-        self.snrMean = ev.snrMean
-        self.snrPeak = ev.snrPeak
-        self.freqMean = ev.freqMean
-        self.freqMin = ev.freqMin
-        self.freqMax = ev.freqMax
-        self.freqPeak = ev.freqPeak
-        self.duration = ev.duration
-        self.wave = ev.wave
-
-        for i in range(self.Ncoeff):
-            setattr(self, "wt" + str(i), setattr(ev, "wt" + str(i)))
-            setattr(self, "rw" + str(i), setattr(ev, "rw" + str(i)))
+        return dict(
+            gps=float(self.gps),
+            gpsStart=float(self.gpsStart),
+            gpsCentroid=float(self.gpsCentroid),
+            tSpread=float(self.tSpread),
+            gpsPeak=float(self.gpsPeak),
+            duration=float(self.duration),
+            EnWDF=float(self.EnWDF),
+            sigma=float(self.sigma),
+            snrPeak=float(self.snrPeak),
+            freqMin=float(self.freqMin),
+            freqMean=float(self.freqMean),
+            freqMax=float(self.freqMax),
+            freqPeak=float(self.freqPeak),
+            wave=str(self.wave),
+            n_coeff=int(self.n_coeff),
+            fs=float(self.fs),
+            wt_index=[int(i) for i in self.index],
+            wt_value=[float(v) for v in self.value],
+        )

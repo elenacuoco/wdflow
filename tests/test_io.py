@@ -1,54 +1,67 @@
 """Loading trigger files."""
 import numpy as np
 import pandas as pd
+import pytest
 
-from wdf.analysis.io import TRIGGER_COLUMNS, triggers_from_csvs
+from wdf.analysis.coefficients import TriggerWriter
+from wdf.analysis.io import (
+    TRIGGER_COLUMNS,
+    add_wavelet_energy_diagnostics,
+    triggers_from_files,
+)
+from wdf.analysis.metaparameters import meta_features
+
+N_COEFF = 64
+FS = 2048.0
 
 
-def _trigger_frame(n=20, n_coeff=64):
-    frame = pd.DataFrame({c: np.zeros(n) for c in TRIGGER_COLUMNS if c != "wave"})
-    frame["wave"] = "DaubC12"
-    rng = np.random.default_rng(0)
-    for i in range(n_coeff):
-        frame[f"wt{i}"] = rng.standard_normal(n)
-        frame[f"rw{i}"] = rng.standard_normal(n)
-    return frame
+def write_triggers(path, n=20, seed=0, n_coeff=N_COEFF):
+    rng = np.random.default_rng(seed)
+    with TriggerWriter(str(path)) as writer:
+        for k in range(n):
+            index = np.sort(rng.choice(n_coeff, size=3, replace=False))
+            value = rng.normal(size=3)
+            gps = 1000.0 + k
+            writer.append(dict(
+                meta_features(index, value, n_coeff, FS, 1.0, gps=gps),
+                gps=gps, EnWDF=float(np.linalg.norm(value)), sigma=1.0,
+                wave="DaubC12", n_coeff=n_coeff, fs=FS,
+                wt_index=[int(i) for i in index],
+                wt_value=[float(v) for v in value]))
+    return path
 
 
-def test_coefficient_columns_are_loaded_in_single_precision(tmp_path):
-    """One column per coefficient dominates a trigger frame -- 512 of them at a
-    typical window length -- and they carry seven significant digits at most,
-    so double precision doubles the frame for nothing."""
-    path = tmp_path / "triggers.parquet"
-    _trigger_frame().to_parquet(path)
+def test_a_detectors_files_load_into_one_frame(tmp_path):
+    first = write_triggers(tmp_path / "a.parquet", n=7, seed=0)
+    second = write_triggers(tmp_path / "b.parquet", n=5, seed=1)
 
-    loaded = triggers_from_csvs([str(path)], "H1")
+    loaded = triggers_from_files([str(first), str(second)], "H1")
 
-    assert loaded["wt0"].dtype == np.float32
-    assert loaded["rw0"].dtype == np.float32
-    assert loaded["gps"].dtype == np.float64     # the metadata keeps its precision
+    assert len(loaded) == 12
+    assert set(TRIGGER_COLUMNS) <= set(loaded.columns)
     assert (loaded["ifo"] == "H1").all()
+    assert loaded["gps"].dtype == np.float64
 
 
-def test_a_frame_without_coefficients_loads_unchanged(tmp_path):
-    """`fullPrint = 0` writes no wt* columns at all."""
-    frame = pd.DataFrame({c: np.zeros(5) for c in TRIGGER_COLUMNS if c != "wave"})
-    frame["wave"] = "Haar"
-    path = tmp_path / "triggers.parquet"
-    frame.to_parquet(path)
-
-    loaded = triggers_from_csvs([str(path)], "L1")
-    assert len(loaded) == 5
-    assert not [c for c in loaded.columns if c[:2] == "wt" and c[2:].isdigit()]
+def test_no_paths_is_refused():
+    with pytest.raises(ValueError, match="no trigger file paths"):
+        triggers_from_files([], "H1")
 
 
 def test_missing_columns_are_named(tmp_path):
     path = tmp_path / "bad.parquet"
-    pd.DataFrame({"gps": [1.0]}).to_parquet(path)
+    pd.DataFrame({"gps": [1.0], "wt_index": [[0]], "wt_value": [[1.0]]}).to_parquet(path)
 
-    try:
-        triggers_from_csvs([str(path)], "H1")
-    except ValueError as error:
-        assert "missing expected columns" in str(error)
-    else:
-        raise AssertionError("a frame missing the trigger columns should be refused")
+    with pytest.raises(ValueError, match="missing expected columns"):
+        triggers_from_files([str(path)], "H1")
+
+
+def test_the_statistic_can_be_recomputed_from_the_coefficients(tmp_path):
+    """EnWDF is the coefficient norm on the noise scale, so the two agree."""
+    path = write_triggers(tmp_path / "t.parquet", n=10, seed=2)
+    loaded = add_wavelet_energy_diagnostics(triggers_from_files([str(path)], "H1"))
+
+    assert loaded["EnWDF_from_coeff"].to_numpy() == pytest.approx(
+        loaded["EnWDF"].to_numpy(), rel=1e-6)
+    assert loaded["EnWDF_residual"].abs().max() < 1e-6
+    assert (loaded["nActiveCoeff"] == 3).all()

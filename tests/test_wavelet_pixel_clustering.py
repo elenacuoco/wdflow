@@ -10,15 +10,13 @@ FS = 16.0  # -> window = NCOEFF/FS = 1.0s, J = log2(16) = 4 levels
 
 
 def _trigger_row(gps, wt_index, magnitude, ifo="H1", ncoeff=NCOEFF):
-    """One trigger row with a single non-zero coefficient, matching the
-    thresholded form WaveletThreshold emits (sub-threshold coefficients are 0).
+    """One trigger carrying a single coefficient, as WDF reports a window whose
+    other coefficients did not survive thresholding.
     """
-    wt = np.zeros(ncoeff)
-    wt[wt_index] = magnitude
-    row = {f"wt{i}": wt[i] for i in range(ncoeff)}
-    row["gps"] = gps
-    row["ifo"] = ifo
-    return row
+    index = np.atleast_1d(np.asarray(wt_index, dtype=np.uint16))
+    value = np.full(len(index), magnitude, dtype=np.float32)
+    return dict(gps=gps, ifo=ifo, wave="Daub4", sigma=1.0,
+                n_coeff=ncoeff, fs=FS, wt_index=index, wt_value=value)
 
 
 def test_collect_significant_pixels_keeps_the_surviving_coefficients():

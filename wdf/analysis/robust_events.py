@@ -12,11 +12,6 @@ from scipy.optimize import linear_sum_assignment
 
 EPS = np.finfo(float).tiny
 
-# Wavelet coefficients are read a block of columns at a time: a trigger file
-# carries one column per coefficient, and materialising all of them at once
-# costs several times the memory of the triggers themselves.
-_COEFFICIENT_BLOCK = 64
-
 # Candidate neighbour pairs are formed a block of triggers at a time, so a
 # dense stretch of the segment cannot allocate one array per pair of the run.
 _PAIR_BLOCK = 4096
@@ -106,19 +101,12 @@ def _frequency_interval(frame: pd.DataFrame):
 
 
 def _coefficient_energy(frame: pd.DataFrame) -> np.ndarray:
-    wt = sorted(
-        (
-            c for c in frame.columns
-            if c.startswith("wt") and c[2:].isdigit()
-        ),
-        key=lambda c: int(c[2:]),
-    )
-    if wt:
+    if "wt_value" in frame:
         energy = np.zeros(len(frame), dtype=float)
-        for start in range(0, len(wt), _COEFFICIENT_BLOCK):
-            values = frame[wt[start:start + _COEFFICIENT_BLOCK]].to_numpy(dtype=float)
-            values = np.where(np.isfinite(values), values, 0.0)
-            energy += np.einsum("ij,ij->i", values, values)
+        for row, value in enumerate(frame["wt_value"].to_numpy()):
+            value = np.asarray(value, dtype=float)
+            value = value[np.isfinite(value)]
+            energy[row] = value @ value
         return energy
     rank = _numeric(frame, ("EnWDF", "mSNR"), default=0.0)
     return rank * rank
@@ -279,7 +267,6 @@ def cluster_detector_triggers(
     peak_time = time[peak_at]
     span = np.maximum(0.0, gps_end - gps_start)
 
-    snr_mean = _numeric(cleaned, ("snrMean",), default=0.0)
     snr_peak = _numeric(cleaned, ("snrPeak",), default=0.0)
     sigma = _numeric(cleaned, ("sigmaWin", "sigma", "mSigma"), default=np.nan)
     finite_sigma = np.isfinite(sigma) & (sigma > 0.0)
@@ -347,8 +334,6 @@ def cluster_detector_triggers(
             "cluster_sum_enwdf": np.sqrt(
                 np.bincount(grouped, weights=group_rank * group_rank,
                             minlength=n_clusters)),
-            "snrMean": _group_weighted_mean(
-                snr_mean[by_cluster], weights, grouped, n_clusters),
             "snrPeak": cluster_snr_peak,
             "sigmaWin": cluster_sigma,
             "coefficient_energy": np.bincount(

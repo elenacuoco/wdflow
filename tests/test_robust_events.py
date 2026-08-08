@@ -65,7 +65,6 @@ def test_cluster_catalog_keeps_true_enwdf_and_member_indices():
             "freqMax": [150.0, 160.0],
             "freqPeak": [90.0, 100.0],
             "EnWDF": [4.0, 7.0],
-            "snrMean": [1.0, 2.0],
             "snrPeak": [2.0, 3.0],
             "sigma": [1.0, 1.0],
             "ifo": ["H1", "H1"],

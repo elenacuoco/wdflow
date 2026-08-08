@@ -55,7 +55,7 @@ def run_segment_process(tmp_outdir, whitening_extra_size=None):
     par.resampling = int(par.sampling / par.ResamplingFactor)
     del strInfo, info
 
-    worker = wdfUnitDSWorker(par, fullPrint=0)
+    worker = wdfUnitDSWorker(par)
     for segment in par.segments:
         worker.segmentProcess(segment)
 

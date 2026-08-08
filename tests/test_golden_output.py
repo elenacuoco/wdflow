@@ -6,14 +6,22 @@ output on a small, fast, fully-synthetic (fixed-seed Gaussian noise) fixture.
 """
 import os
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from conftest import FIXTURES_DIR, run_segment_process
 
-GOLDEN_CSV = os.path.join(FIXTURES_DIR, "golden_triggers.csv")
-COMPARE_COLUMNS = ["gps", "gpsPeak", "duration", "EnWDF", "sigma", "snrMean",
-                   "snrPeak", "freqMin", "freqMean", "freqMax", "freqPeak", "wave"]
+GOLDEN = os.path.join(FIXTURES_DIR, "golden_triggers.parquet")
+
+# What the search itself produces, straight from p4TSA. A change here is a
+# change to AR estimation, whitening or the trigger finder.
+SEARCH_COLUMNS = ["gps", "EnWDF", "sigma"]
+
+# What wdflow derives from the coefficients. A change here is a change to the
+# metaparameter estimators.
+DERIVED_COLUMNS = ["gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
+                   "snrPeak", "freqMin", "freqMean", "freqMax", "freqPeak"]
 
 # WDF2Classify's candidate basis set (2026-08-03, trimmed to 10 -- see
 # WDF2Classify.cpp's kCandidateBases for the full rationale): Haar,
@@ -31,22 +39,32 @@ ORTHONORMAL_WAVES = {
 
 
 def test_segment_process_matches_golden_output(tmp_outdir):
-    golden = pd.read_csv(GOLDEN_CSV)
+    golden = pd.read_parquet(GOLDEN)
     result = run_segment_process(tmp_outdir)
 
     assert len(result) == len(golden), (
         f"trigger count changed: {len(result)} vs golden {len(golden)}. "
         "If this is an intentional algorithm change, regenerate "
-        "tests/fixtures/golden_triggers.csv."
+        "tests/fixtures/golden_triggers.parquet."
     )
 
-    numeric_cols = [c for c in COMPARE_COLUMNS if c != "wave"]
+    numeric = SEARCH_COLUMNS + DERIVED_COLUMNS
     pd.testing.assert_frame_equal(
-        result[numeric_cols].reset_index(drop=True),
-        golden[numeric_cols].reset_index(drop=True),
+        result[numeric].reset_index(drop=True),
+        golden[numeric].reset_index(drop=True),
         check_exact=False, rtol=1e-6, atol=1e-30,
     )
     assert (result["wave"].reset_index(drop=True) == golden["wave"].reset_index(drop=True)).all()
+
+
+def test_the_golden_coefficients_are_reproduced_exactly(tmp_outdir):
+    """The coefficients are the record; nothing about them is approximate."""
+    golden = pd.read_parquet(GOLDEN)
+    result = run_segment_process(tmp_outdir)
+
+    for row, (index, value) in enumerate(zip(golden.wt_index, golden.wt_value)):
+        assert np.array_equal(np.asarray(result.wt_index.iloc[row]), np.asarray(index))
+        assert np.array_equal(np.asarray(result.wt_value.iloc[row]), np.asarray(value))
 
 
 def test_no_biorthogonal_wave_wins_on_pure_noise(tmp_outdir):

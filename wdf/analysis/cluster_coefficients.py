@@ -20,42 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-
-def coefficient_columns(frame: pd.DataFrame) -> list[str]:
-    """The ``wt0..wtN`` columns of a trigger frame, in coefficient order.
-
-    :type frame: pandas.DataFrame
-    :param frame: triggers written with ``fullPrint >= 1``.
-    :return: list[str] -- the column names, ordered by coefficient index.
-    :raises ValueError: if the frame carries no coefficient columns.
-    """
-    columns = sorted((c for c in frame.columns if c.startswith("wt") and c[2:].isdigit()),
-                     key=lambda c: int(c[2:]))
-    if not columns:
-        raise ValueError("no wt* columns: rerun WDF with fullPrint >= 1")
-    return columns
-
-
-# Coefficient columns are read a block at a time: a trigger frame carries one
-# column per coefficient, and a column-store reader materialises each of them
-# separately.
-_COLUMN_BLOCK = 64
-
-
-def _coefficient_matrix(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:
-    """The frame's ``wt*`` columns as one ``(n_triggers, n_coeff)`` array.
-
-    :type frame: pandas.DataFrame
-    :param frame: triggers written with ``fullPrint >= 1``.
-    :type columns: list[str]
-    :param columns: the coefficient columns, in coefficient order.
-    :return: numpy.ndarray -- single-precision coefficients.
-    """
-    matrix = np.empty((len(frame), len(columns)), dtype=np.float32)
-    for start in range(0, len(columns), _COLUMN_BLOCK):
-        block = columns[start:start + _COLUMN_BLOCK]
-        matrix[:, start:start + len(block)] = frame[block].to_numpy(dtype=np.float32)
-    return matrix
+from wdf.analysis.coefficients import coefficient_matrix, from_dense, window_length
 
 
 def _rows_by_label(frame: pd.DataFrame, cluster_column: str) -> dict:
@@ -141,7 +106,7 @@ class ClusterCoefficients:
 
         :type triggers: pandas.DataFrame
         :param triggers: the cluster's member triggers, carrying `gps`, `wave`,
-            `sigma` and the ``wt*`` columns.
+            `sigma` and the coefficient columns.
         :type fs: float
         :param fs: analysis sampling frequency, Hz.
         :type window: int
@@ -159,7 +124,6 @@ class ClusterCoefficients:
             raise ValueError("a cluster needs at least one trigger")
 
         ordered = triggers.sort_values("gps")
-        columns = coefficient_columns(ordered)
 
         return cls(
             cluster_id=int(cluster_id),
@@ -172,7 +136,7 @@ class ClusterCoefficients:
             # digits, far more than anything read off them needs, and a full
             # segment holds hundreds of thousands of these rows. The
             # reconstruction converts back to double, where pytsa wants it.
-            coefficients=_coefficient_matrix(ordered, columns),
+            coefficients=coefficient_matrix(ordered),
             waves=tuple(ordered["wave"].astype(str)) if "wave" in ordered else (),
             sigma=(ordered["sigma"].to_numpy(dtype=float) if "sigma" in ordered
                    else np.full(len(ordered), np.nan)),
@@ -244,15 +208,19 @@ class ClusterCoefficients:
         """The cluster back as a trigger frame, for functions that take one.
 
         :return: pandas.DataFrame -- one row per window, with `gps`, `wave`,
-            `sigma` and the ``wt*`` columns.
+            `sigma` and the coefficient columns.
         """
-        frame = pd.DataFrame(self.coefficients,
-                             columns=[f"wt{i}" for i in range(self.n_coeff)])
-        frame.insert(0, "gps", self.times)
-        frame.insert(1, "wave", list(self.waves) if self.waves else "")
-        frame.insert(2, "sigma", self.sigma)
-        frame.insert(3, "ifo", self.ifo)
-        return frame
+        pairs = [from_dense(row) for row in self.coefficients]
+        return pd.DataFrame(dict(
+            gps=self.times,
+            wave=list(self.waves) if self.waves else "",
+            sigma=self.sigma,
+            ifo=self.ifo,
+            n_coeff=self.n_coeff,
+            fs=self.fs,
+            wt_index=[index for index, _ in pairs],
+            wt_value=[value for _, value in pairs],
+        ))
 
 
 def iter_cluster_coefficients(labeled_triggers: pd.DataFrame, events: pd.DataFrame,
@@ -274,12 +242,11 @@ def iter_cluster_coefficients(labeled_triggers: pd.DataFrame, events: pd.DataFra
         return
 
     ifo = str(labeled_triggers["ifo"].iloc[0]) if "ifo" in labeled_triggers else ""
-    columns = coefficient_columns(labeled_triggers)
 
-    # The whole coefficient matrix is read once. Taking one cluster's rows out
-    # of the trigger frame instead costs a column-by-column extraction per
-    # event, and a segment holds hundreds of thousands of them.
-    coefficients = _coefficient_matrix(labeled_triggers, columns)
+    # The whole coefficient matrix is built once. Expanding one cluster's rows
+    # out of the trigger frame instead costs an allocation per event, and a
+    # segment holds hundreds of thousands of them.
+    coefficients = coefficient_matrix(labeled_triggers)
     gps = labeled_triggers["gps"].to_numpy(dtype=float)
     waves = (labeled_triggers["wave"].astype(str).to_numpy()
              if "wave" in labeled_triggers else None)

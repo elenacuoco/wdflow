@@ -2,9 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pytsa.tsa import WaveletTransform
+from _synth import forward, triggers_from_signal
 from wdf.analysis.reconstruction import combined_snr, inverse_transform, stitch
-from wdf.structures.array2SeqView import array2SeqView
 
 FS = 2048.0
 WINDOW, OVERLAP = 512, 128
@@ -13,31 +12,16 @@ WAVE = "DaubC12"
 SIGMA = 1.0
 
 
-def forward(samples, wave=WAVE):
-    """Wavelet coefficients of one window."""
-    view = array2SeqView(0.0, FS, len(samples))
-    view = view.Fill(0.0, np.asarray(samples, dtype=float).copy())
-    WaveletTransform(len(samples), getattr(WaveletTransform, wave)).Forward(view)
-    return np.array([view.GetY(0, i) for i in range(len(samples))])
-
-
 def triggers_from(signal, gps0=1000.0, wave=WAVE):
     """One trigger per analysis window covering `signal`, as WDF would emit."""
-    rows = []
-    for first in range(0, len(signal) - WINDOW + 1, STEP):
-        coefficients = forward(signal[first:first + WINDOW], wave)
-        row = dict(gps=gps0 + first / FS, gpsPeak=gps0 + first / FS,
-                   wave=wave, sigma=SIGMA,
-                   EnWDF=float(np.linalg.norm(coefficients) / SIGMA))
-        row.update({f"wt{i}": c for i, c in enumerate(coefficients)})
-        rows.append(row)
-    return pd.DataFrame(rows)
+    return triggers_from_signal(signal, FS, WINDOW, OVERLAP, gps0=gps0,
+                                wave=wave, sigma=SIGMA)
 
 
 def test_inverse_transform_round_trips():
     rng = np.random.default_rng(0)
     x = rng.standard_normal(WINDOW)
-    assert inverse_transform(forward(x), WAVE) == pytest.approx(x, rel=1e-3, abs=1e-6)
+    assert inverse_transform(forward(x, WAVE), WAVE) == pytest.approx(x, rel=1e-3, abs=1e-6)
 
 
 def test_stitching_recovers_the_signal_it_was_cut_from():
@@ -76,7 +60,7 @@ def test_a_single_window_signal_gains_nothing():
 
 def test_stitch_needs_coefficients():
     triggers = pd.DataFrame([dict(gps=1000.0, wave=WAVE, sigma=SIGMA, EnWDF=1.0)])
-    with pytest.raises(ValueError, match="wt"):
+    with pytest.raises(KeyError, match="n_coeff"):
         stitch(triggers, FS, WINDOW, OVERLAP)
 
 

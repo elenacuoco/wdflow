@@ -4,33 +4,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pytsa.tsa import WaveletTransform
+from _synth import triggers_from_signal
 from wdf.analysis.cluster_coefficients import (ClusterCoefficients,
-                                               coefficient_columns,
                                                collect_cluster_coefficients)
-from wdf.structures.array2SeqView import array2SeqView
 
 FS, WINDOW, OVERLAP, WAVE, SIGMA = 2048.0, 512, 128, "DaubC12", 1.0
 STEP = WINDOW - OVERLAP
 
 
-def forward(samples):
-    view = array2SeqView(0.0, FS, len(samples))
-    view = view.Fill(0.0, np.asarray(samples, dtype=float).copy())
-    WaveletTransform(len(samples), getattr(WaveletTransform, WAVE)).Forward(view)
-    return np.array([view.GetY(0, i) for i in range(len(samples))])
-
-
 def triggers_from(signal, gps0=1000.0, ifo="H1"):
-    rows = []
-    for first in range(0, len(signal) - WINDOW + 1, STEP):
-        coefficients = forward(signal[first:first + WINDOW])
-        row = dict(gps=gps0 + first / FS, gpsPeak=gps0 + first / FS, ifo=ifo,
-                   wave=WAVE, sigma=SIGMA,
-                   EnWDF=float(np.linalg.norm(coefficients) / SIGMA))
-        row.update({f"wt{i}": c for i, c in enumerate(coefficients)})
-        rows.append(row)
-    return pd.DataFrame(rows)
+    return triggers_from_signal(signal, FS, WINDOW, OVERLAP, gps0=gps0, ifo=ifo,
+                                wave=WAVE, sigma=SIGMA)
 
 
 def a_signal(n_windows=4, seed=0):
@@ -39,19 +23,6 @@ def a_signal(n_windows=4, seed=0):
     envelope = np.hanning(length)
     phase = 2 * np.pi * np.cumsum(np.linspace(80.0, 300.0, length)) / FS
     return 5.0 * envelope * np.sin(phase) + 1e-3 * rng.standard_normal(length)
-
-
-def test_coefficient_columns_are_in_index_order():
-    frame = triggers_from(a_signal())
-    columns = coefficient_columns(frame)
-    assert columns[0] == "wt0"
-    assert len(columns) == WINDOW
-    assert [int(c[2:]) for c in columns] == list(range(WINDOW))
-
-
-def test_missing_coefficients_are_reported():
-    with pytest.raises(ValueError, match="fullPrint"):
-        coefficient_columns(pd.DataFrame({"gps": [1.0]}))
 
 
 def test_matrix_has_one_row_per_window_and_one_column_per_coefficient():
@@ -120,9 +91,8 @@ def test_the_wavegram_shape_survives_a_change_of_amplitude():
     """The unit-normalised grid is what the cross-detector edge compares, so a
     signal seen at half the amplitude must still look like the same signal."""
     triggers = triggers_from(a_signal(n_windows=4))
-    columns = coefficient_columns(triggers)
     halved = triggers.copy()
-    halved[columns] = halved[columns] * 0.5
+    halved["wt_value"] = [0.5 * np.asarray(v) for v in halved["wt_value"]]
 
     a = ClusterCoefficients.from_triggers(triggers, FS, WINDOW, OVERLAP).wavegram().ravel()
     b = ClusterCoefficients.from_triggers(halved, FS, WINDOW, OVERLAP).wavegram().ravel()

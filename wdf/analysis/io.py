@@ -10,60 +10,54 @@ from __future__ import annotations
 import glob
 import os
 
+import numpy as np
 import pandas as pd
 
-# Columns written by wdf.observers.SingleEventPrintFileObserver for every
-# trigger (fullPrint=0); wt*/rw* wavelet-coefficient columns are appended at
-# fullPrint>=1/2 and are not required by wdfLib, so they aren't listed here.
-TRIGGER_COLUMNS = [
-    "gps", "gpsPeak", "duration", "EnWDF", "snrMean", "snrPeak",
-    "freqMin", "freqMean", "freqMax", "freqPeak", "wave",
-]
+from wdf.analysis.coefficients import (
+    COEFFICIENT_FIELDS,
+    META_FIELDS,
+    coefficient_matrix,
+    read_triggers,
+)
 
-_READERS = {".parquet": pd.read_parquet, ".csv": pd.read_csv}
-
-
-def _read_trigger_file(path: str) -> pd.DataFrame:
-    ext = os.path.splitext(path)[1].lower()
-    reader = _READERS.get(ext)
-    if reader is None:
-        raise ValueError(f"unsupported trigger file extension {ext!r}: {path}")
-    return reader(path)
+# Every column wdf.observers.SingleEventPrintFileObserver writes for a trigger.
+TRIGGER_COLUMNS = list(META_FIELDS) + ["wave", "n_coeff", "fs"] + list(COEFFICIENT_FIELDS)
 
 
-def triggers_from_csvs(csv_paths: list[str], ifo: str) -> pd.DataFrame:
-    """Concatenate WDF trigger files (`.parquet` or, for older runs, `.csv`)
-    for one detector into one DataFrame, tagging every row with the `ifo` it
-    came from.
+def triggers_from_files(paths: list[str], ifo: str) -> pd.DataFrame:
+    """Concatenate one detector's WDF trigger files, tagging each row with `ifo`.
+
+    :type paths: list[str]
+    :param paths: trigger files written by `TriggerWriter`.
+    :type ifo: str
+    :param ifo: detector name to tag the rows with.
+    :return: pandas.DataFrame -- one row per trigger.
+    :raises ValueError: if no paths are given, or a file is missing a column.
     """
-    if not csv_paths:
+    if not paths:
         raise ValueError(f"no trigger file paths given for ifo={ifo!r}")
-    frames = [_read_trigger_file(p) for p in csv_paths]
-    df = pd.concat(frames, ignore_index=True)
+    df = pd.concat([read_triggers(p) for p in paths], ignore_index=True)
 
-    # The coefficient columns dominate the frame -- one per coefficient, 512 of
-    # them at a typical window length -- and they are read as double precision.
-    # They carry seven significant digits' worth of information at most, so
-    # single precision halves the frame at no cost to anything downstream.
-    coefficient_columns = [c for c in df.columns
-                           if c[:2] in ("wt", "rw") and c[2:].isdigit()]
-    if coefficient_columns:
-        df[coefficient_columns] = df[coefficient_columns].astype("float32")
     missing = set(TRIGGER_COLUMNS) - set(df.columns)
     if missing:
-        raise ValueError(f"trigger files missing expected columns {sorted(missing)}: {csv_paths}")
+        raise ValueError(f"trigger files missing expected columns {sorted(missing)}: {paths}")
     df["ifo"] = ifo
     return df
 
 
 def load_triggers_dir(base_dir: str, ifo: str, pattern: str = "*.parquet") -> pd.DataFrame:
-    """Convenience wrapper: glob `base_dir` recursively for trigger files and
-    load them via `triggers_from_csvs`. `base_dir` is typically a WDF
-    `outdir`/`run`/`ifo` output tree (e.g. `<outdir>/out/offLine/H1/**/*.parquet`).
-    Pass `pattern="*.csv"` for output from a pre-Parquet WDF run.
+    """Glob a WDF output tree for trigger files and load them.
+
+    :type base_dir: str
+    :param base_dir: a WDF `outdir`/`run`/`ifo` tree.
+    :type ifo: str
+    :param ifo: detector name to tag the rows with.
+    :type pattern: str
+    :param pattern: file name pattern to match under `base_dir`.
+    :return: pandas.DataFrame -- one row per trigger.
     """
     paths = sorted(glob.glob(os.path.join(base_dir, "**", pattern), recursive=True))
-    return triggers_from_csvs(paths, ifo)
+    return triggers_from_files(paths, ifo)
 
 
 def clean_triggers(
@@ -90,86 +84,53 @@ def clean_triggers(
     return out.reset_index(drop=True)
 
 
-def add_wavelet_energy_diagnostics(
-    df,
-    sigma_column="sigma",
-):
+def add_wavelet_energy_diagnostics(df, sigma_column="sigma"):
+    """Add the coefficient energy and the statistic it implies, alongside `EnWDF`.
+
+    `EnWDF_from_coeff` is what the search's own statistic should be: the
+    coefficient norm on the noise scale. Keeping both makes the agreement
+    visible rather than assumed.
+
+    :type df: pandas.DataFrame
+    :param df: triggers carrying the coefficient columns.
+    :type sigma_column: str
+    :param sigma_column: column holding each trigger's noise scale.
+    :return: pandas.DataFrame -- `df` with `wavelet_l2`, `wavelet_energy`,
+        `nActiveCoeff`, and, where the noise scale is available,
+        `EnWDF_from_coeff` and `EnWDF_residual`.
     """
-    Add diagnostics computed from wt* without replacing EnWDF,
-    snrMean or snrPeak.
-
-    When the noise scale is available, enwdf_from_coeff can be compared
-    directly with the EnWDF produced by WDF2Classify.
-    """
-    import numpy as np
-
-    wt_cols = sorted(
-        (
-            column
-            for column in df.columns
-            if column.startswith("wt")
-            and column[2:].isdigit()
-        ),
-        key=lambda column: int(column[2:]),
-    )
-
-    if not wt_cols:
-        raise ValueError(
-            "No wt* columns: rerun WDF with fullPrint >= 1"
-        )
-
     out = df.copy()
-    coefficients = out[wt_cols].to_numpy(dtype=float)
+    coefficients = coefficient_matrix(out).astype(float)
+    coefficients = np.where(np.isfinite(coefficients), coefficients, 0.0)
+    energy = np.einsum("ij,ij->i", coefficients, coefficients)
 
-    coefficients = np.where(
-        np.isfinite(coefficients),
-        coefficients,
-        0.0,
-    )
-
-    sum_w2 = np.sum(coefficients * coefficients, axis=1)
-
-    out["wavelet_l2"] = np.sqrt(sum_w2)
-    out["wavelet_energy"] = sum_w2
-    out["nActiveCoeff"] = np.count_nonzero(
-        coefficients,
-        axis=1,
-    )
+    out["wavelet_l2"] = np.sqrt(energy)
+    out["wavelet_energy"] = energy
+    out["nActiveCoeff"] = np.count_nonzero(coefficients, axis=1)
 
     if sigma_column in out.columns:
         sigma = out[sigma_column].to_numpy(dtype=float)
-
-        valid = (
-            np.isfinite(sigma)
-            & (sigma > np.finfo(float).tiny)
-        )
-
-        reconstructed = np.full(len(out), np.nan)
-        reconstructed[valid] = (
-            out.loc[valid, "wavelet_l2"].to_numpy()
-            / sigma[valid]
-        )
-
-        out["EnWDF_from_coeff"] = reconstructed
-        out["EnWDF_residual"] = (
-            out["EnWDF_from_coeff"] - out["EnWDF"]
-        )
+        valid = np.isfinite(sigma) & (sigma > np.finfo(float).tiny)
+        statistic = np.full(len(out), np.nan)
+        statistic[valid] = out["wavelet_l2"].to_numpy()[valid] / sigma[valid]
+        out["EnWDF_from_coeff"] = statistic
+        out["EnWDF_residual"] = out["EnWDF_from_coeff"] - out["EnWDF"]
 
     return out
 
 
 def triggers_from_eventPE(events: list, ifo: str) -> pd.DataFrame:
-    """Vectorize a list of live `wdf.structures.eventPE.eventPE` objects
-    (e.g. collected via a custom Observer instead of round-tripping through
-    CSV) into the same DataFrame schema as `triggers_from_csvs`.
+    """Vectorise live `wdf.structures.eventPE.eventPE` objects into a frame.
 
-    Only touches wdf types at the boundary; downstream wdfLib code never
-    sees eventPE instances.
+    Collecting triggers through a custom Observer gives the same frame as
+    reading them back from disk, so downstream code never sees eventPE.
+
+    :type events: list
+    :param events: the trigger records.
+    :type ifo: str
+    :param ifo: detector name to tag the rows with.
+    :return: pandas.DataFrame -- the same schema `triggers_from_files` returns.
     """
-    rows = [
-        {col: getattr(ev, col) for col in TRIGGER_COLUMNS}
-        for ev in events
-    ]
-    df = pd.DataFrame(rows, columns=TRIGGER_COLUMNS)
+    df = pd.DataFrame([ev.record() for ev in events], columns=TRIGGER_COLUMNS)
     df["ifo"] = ifo
     return df

@@ -25,7 +25,7 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from wdf.analysis.wavelets import wavelet_coeff_tiles
+from wdf.analysis.clustering import collect_significant_pixels
 
 
 def _fig_to_b64(fig) -> str:
@@ -76,26 +76,17 @@ def _glitchgram_b64(ifo: str, df: pd.DataFrame, gps_reference: float | None) -> 
 
 def _tf_plot_b64(ifo: str, member_rows: pd.DataFrame, fs: float, sigma: float,
                   center_gps: float, snr_label: float) -> str | None:
-    wt_cols = sorted((c for c in member_rows.columns if c.startswith("wt") and c[2:].isdigit()),
-                      key=lambda c: int(c[2:]))
-    if not wt_cols:
+    pixels = collect_significant_pixels(member_rows, fs)
+    if pixels.empty:
         return None
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=110)
-    any_tile = False
-    for _, trig in member_rows.iterrows():
-        wt = trig[wt_cols].to_numpy(dtype=float)
-        gps0 = trig["gps"]
-        for t_lo, t_hi, f_lo, f_hi, mag in wavelet_coeff_tiles(wt, fs):
-            if mag <= 0:
-                continue
-            any_tile = True
-            ax.add_patch(plt.Rectangle(
-                (gps0 + t_lo - center_gps, f_lo), t_hi - t_lo, f_hi - f_lo,
-                color=plt.cm.viridis(min(mag / (10 * sigma), 1.0)), alpha=0.8,
-            ))
-    if not any_tile:
-        plt.close(fig)
-        return None
+    for tile in pixels.itertuples():
+        magnitude = np.sqrt(tile.energy)
+        ax.add_patch(plt.Rectangle(
+            (tile.t_lo - center_gps, tile.f_lo),
+            tile.t_hi - tile.t_lo, tile.f_hi - tile.f_lo,
+            color=plt.cm.viridis(min(magnitude / (10 * sigma), 1.0)), alpha=0.8,
+        ))
     ax.set_xlim(-0.3, 0.3)
     ax.set_ylim(0, fs / 2)
     ax.set_xlabel(f"time - {center_gps:.3f} [s]")
@@ -144,7 +135,7 @@ def build_run_report(
         per-cluster) if omitted.
     :type raw_triggers: dict[str, pandas.DataFrame] | None
     :param raw_triggers: {ifo: raw-trigger DataFrame with `wt*` columns}
-        (`fullPrint >= 1`) -- drives the time-frequency plot of each
+        -- drives the time-frequency plot of each
         detector's loudest surviving event. Skipped per-detector if omitted
         or missing `wt*` columns.
     :type par: dict | None

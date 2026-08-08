@@ -45,7 +45,7 @@ def inverse_transform(coefficients, wave):
     return np.array([view.GetY(0, i) for i in range(n)])
 
 
-def stitch(triggers, fs, window, overlap, coefficient_columns=None):
+def stitch(triggers, fs, window, overlap):
     """Stitch consecutive triggers into one reconstructed time series.
 
     Each trigger contributes the step region of its own window, so the pieces
@@ -54,19 +54,18 @@ def stitch(triggers, fs, window, overlap, coefficient_columns=None):
 
     :type triggers: pandas.DataFrame
     :param triggers: triggers of one cluster, carrying ``gps``, ``wave`` and the
-        wavelet-coefficient columns.
+        wavelet coefficients.
     :type fs: float
     :param fs: analysis sampling frequency, Hz.
     :type window: int
     :param window: analysis window length, samples.
     :type overlap: int
     :param overlap: overlap between consecutive windows, samples.
-    :type coefficient_columns: list[str] or None
-    :param coefficient_columns: the ``wt*`` columns; discovered from the frame
-        if None.
     :return: ``(gps_start, samples)`` -- GPS time of the first sample and the
         stitched reconstruction.
     """
+    from wdf.analysis.coefficients import coefficient_matrix
+
     if len(triggers) == 0:
         raise ValueError("no triggers to stitch")
 
@@ -74,28 +73,23 @@ def stitch(triggers, fs, window, overlap, coefficient_columns=None):
     if step <= 0:
         raise ValueError("overlap must be smaller than the window")
 
-    if coefficient_columns is None:
-        coefficient_columns = sorted(
-            (c for c in triggers.columns
-             if c.startswith("wt") and c[2:].isdigit()),
-            key=lambda c: int(c[2:]))
-    if not coefficient_columns:
-        raise ValueError("no wt* columns: rerun WDF with fullPrint >= 1")
-
     ordered = triggers.sort_values("gps")
-    gps_start = float(ordered.gps.iloc[0])
-    gps_end = float(ordered.gps.iloc[-1]) + window / float(fs)
+    coefficients = coefficient_matrix(ordered)
+    times = ordered["gps"].to_numpy(dtype=float)
+    waves = ordered["wave"].to_numpy()
+
+    gps_start = float(times[0])
+    gps_end = float(times[-1]) + window / float(fs)
     length = int(round((gps_end - gps_start) * fs))
 
     stitched = np.zeros(length)
-    for _, trigger in ordered.iterrows():
-        samples = inverse_transform(
-            trigger[coefficient_columns].to_numpy(dtype=float), trigger.wave)
-        first = int(round((float(trigger.gps) - gps_start) * fs))
+    for row in range(len(ordered)):
+        samples = inverse_transform(coefficients[row], waves[row])
+        first = int(round((times[row] - gps_start) * fs))
 
         # The step region of this window; the last one contributes to its end.
         stop = min(first + step, length)
-        if trigger.gps == ordered.gps.iloc[-1]:
+        if row == len(ordered) - 1:
             stop = min(first + len(samples), length)
         take = stop - first
         if take > 0:

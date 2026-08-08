@@ -17,7 +17,7 @@ from sklearn.cluster import DBSCAN
 CLUSTER_COL = "cluster_id"
 
 CLUSTERED_EVENT_COLUMNS = [
-    "cluster_id", "is_noise", "trigger_index", "ifo", "gpsStart", "gpsPeak", "snrMean", "EnWDF",
+    "cluster_id", "is_noise", "trigger_index", "ifo", "gpsStart", "gpsPeak", "EnWDF",
     "freqMean", "freqMax", "freqMin", "freqPeak", "duration", "wave",
     "n_triggers", "gps_span_s",
 ]
@@ -211,7 +211,6 @@ class TriggerClusterer:
                 ifo=g["ifo"].iloc[0] if "ifo" in g.columns else None,
                 gpsStart=float(g["gps"].min()) if "gps" in g.columns else float(g[self.time_col].min()),
                 gpsPeak=float(peak[self.time_col]),
-                snrMean=float(g["snrMean"].mean()) if "snrMean" in g.columns else float(g[self.stat_col].mean()),
                 EnWDF=float(peak[self.stat_col]),
                 freqMean=float(g["freqMean"].mean()) if "freqMean" in g.columns else float(peak[self.freq_col]),
                 freqMax=float(peak["freqMax"]) if "freqMax" in g.columns else float(peak[self.freq_col]),
@@ -236,41 +235,40 @@ PIXEL_CLUSTERED_EVENT_COLUMNS = [
 def collect_significant_pixels(triggers: pd.DataFrame, fs: float) -> pd.DataFrame:
     """Time-frequency tiles of the non-zero wavelet coefficients, in absolute GPS.
 
-    Each trigger's `wt*` coefficients are mapped to their tiles via
-    `wavelet_coeff_tiles` and shifted to absolute time by the trigger's `gps`.
-    `wt*` is expected in the form `WaveletThreshold` emits, where coefficients
-    that did not pass thresholding are exactly 0, so keeping the non-zero ones
-    selects exactly the tiles that survived it.
+    Each trigger's surviving coefficients are placed at their own tiles and
+    shifted to absolute time by the trigger's `gps`. A trigger carries exactly
+    the coefficients that passed thresholding, so every one of them is a tile.
 
     :type triggers: pandas.DataFrame
-    :param triggers: triggers carrying `gps` and `wt0..wtN` columns
-        (`fullPrint >= 1`); triggers without `wt*` columns are skipped.
+    :param triggers: triggers carrying `gps` and the coefficient columns;
+        triggers without coefficients are skipped.
     :type fs: float
     :param fs: sampling rate the coefficients were computed at, Hz.
     :return: pandas.DataFrame -- one row per tile with `PIXEL_COLUMNS`:
         `trigger_index`, `ifo`, `t_lo`, `t_hi`, `f_lo`, `f_hi`, `energy`.
     """
-    from wdf.analysis.wavelets import wavelet_coeff_tiles
+    from wdf.analysis.coefficients import SparseCoefficients
+
+    if "wt_index" not in triggers:
+        return pd.DataFrame(columns=PIXEL_COLUMNS)
 
     rows = []
     for idx, trig in triggers.iterrows():
-        wt_cols = sorted((c for c in trig.index if c.startswith("wt") and c[2:].isdigit()),
-                          key=lambda c: int(c[2:]))
-        if not wt_cols:
-            continue
-        wt = trig[wt_cols].to_numpy(dtype=float)
-        tiles = wavelet_coeff_tiles(wt, fs)
+        record = SparseCoefficients(
+            index=np.asarray(trig["wt_index"]), value=np.asarray(trig["wt_value"]),
+            n_coeff=int(trig["n_coeff"]), wave=str(trig.get("wave", "")),
+            sigma=float(trig.get("sigma", np.nan)), fs=fs)
+        tiles = record.tiles()
         gps0 = trig["gps"]
-        sigma = float(trig.get("sigma", np.nan))
-        for t_lo, t_hi, f_lo, f_hi, mag in tiles:
-            if mag == 0.0:
-                continue
+        for t_lo, t_hi, f_lo, f_hi, magnitude in zip(
+                tiles["t_lo"], tiles["t_hi"], tiles["f_lo"], tiles["f_hi"],
+                tiles["magnitude"]):
             rows.append(dict(
                 trigger_index=idx, ifo=trig.get("ifo"),
                 t_lo=gps0 + t_lo, t_hi=gps0 + t_hi,
                 f_lo=f_lo, f_hi=f_hi,
-                energy=mag ** 2,
-                sigma=sigma,
+                energy=magnitude ** 2,
+                sigma=record.sigma,
             ))
     return pd.DataFrame(rows, columns=PIXEL_COLUMNS)
 
@@ -280,7 +278,7 @@ class WaveletPixelClusterer:
     time-frequency tiles, instead of on each trigger's single (gpsPeak,
     freqPeak) point summary -- the same idea coherent WaveBurst (cWB) uses
     (percolation over connected pixels in a time-frequency map). WDF already
-    computes the full per-trigger tile map (`wt*` columns, `fullPrint>=1`);
+    computes the full per-trigger tile map;
     `TriggerClusterer` never sees it, only the scalar per-window stats
     (`freqPeak` etc.) that get written to the trigger CSV.
 
@@ -403,7 +401,7 @@ def wavegram_events(triggers: pd.DataFrame, fs: float, window: int, overlap: int
 
     :type triggers: pandas.DataFrame
     :param triggers: one detector's triggers, carrying `gps`, `sigma`, `wave`
-        and the `wt*` columns (`fullPrint >= 1`).
+        and the coefficient columns.
     :type fs: float
     :param fs: analysis sampling frequency, Hz.
     :type window: int
