@@ -118,6 +118,26 @@ def _overlap_fraction(a0, a1, b0, b1):
     return overlap / width
 
 
+def _shifted_overlap_fraction(a0, a1, b0, b1, tolerance):
+    """Overlap of two intervals, allowing one to shift by up to `tolerance`.
+
+    Normalised by the shorter of the two undilated widths, so an interval
+    contained in the other overlaps fully -- which is the case of a real
+    coincidence between detectors of unequal sensitivity, where the weaker one
+    keeps fewer coefficients and its support is a subset of the stronger one's.
+
+    :param a0: start of the first interval.
+    :param a1: end of the first interval.
+    :param b0: start of the second interval.
+    :param b1: end of the second interval.
+    :param tolerance: how far the second interval may shift either way.
+    :return: the overlap fraction, between 0 and 1.
+    """
+    width = np.maximum(np.minimum(a1 - a0, b1 - b0), EPS)
+    overlap = np.minimum(a1, b1 + tolerance) - np.maximum(a0, b0 - tolerance)
+    return np.clip(np.minimum(overlap, width) / width, 0.0, 1.0)
+
+
 def _neighbour_pairs(time: np.ndarray, time_eps: float):
     """Yield index pairs of triggers no further apart in time than `time_eps`.
 
@@ -267,6 +287,21 @@ def cluster_detector_triggers(
     peak_time = time[peak_at]
     span = np.maximum(0.0, gps_end - gps_start)
 
+    # The cluster's energy centroid and spread in time are the moments of the
+    # union of its members' tiles, which compose exactly from the members' own:
+    # the centroid is their energy-weighted mean, and the spread adds each
+    # member's spread to its distance from the common centroid.
+    member_centroid = _numeric(cleaned, ("gpsCentroid",), default=np.nan)
+    member_centroid = np.where(np.isfinite(member_centroid), member_centroid, time)
+    member_spread = _numeric(cleaned, ("tSpread",), default=0.0)
+    member_spread = np.where(np.isfinite(member_spread), member_spread, 0.0)
+
+    cluster_centroid = _group_weighted_mean(
+        member_centroid[by_cluster], weights, grouped, n_clusters)
+    offset = member_centroid[by_cluster] - cluster_centroid[grouped]
+    cluster_spread = np.sqrt(np.maximum(_group_weighted_mean(
+        member_spread[by_cluster] ** 2 + offset ** 2, weights, grouped, n_clusters), 0.0))
+
     snr_peak = _numeric(cleaned, ("snrPeak",), default=0.0)
     sigma = _numeric(cleaned, ("sigmaWin", "sigma", "mSigma"), default=np.nan)
     finite_sigma = np.isfinite(sigma) & (sigma > 0.0)
@@ -314,12 +349,11 @@ def cluster_detector_triggers(
             "gpsEnd": gps_end,
             "gpsMax": peak_time,
             "gpsPeak": peak_time,
-            # Coincidence time: use the actual time of the loudest WDF member.
-            # The energy centroid is retained only as a diagnostic because it
-            # can move by hundreds of milliseconds in long or contaminated
-            # clusters.
-            "gpsEnergyCentroid": _group_weighted_mean(
-                group_time, weights, grouped, n_clusters),
+            # Coincidence time. Which tile is loudest depends on the noise
+            # realisation and on which basis won, so the peak need not fall at
+            # the same instant in two detectors seeing the same signal.
+            "gpsCentroid": cluster_centroid,
+            "tSpread": cluster_spread,
             "duration": span,
             "gps_span_s": span,
             "freqMin": np.minimum.reduceat(fmin[by_cluster], starts),
@@ -380,9 +414,29 @@ def select_events_for_coincidence(
 
 @dataclass
 class CoincidenceConfig:
+    """How close two single-detector events have to be to form a candidate.
+
+    The timing tolerance is not a fixed number: it is the light travel time
+    between the detectors plus the two events' own declared timing spreads
+    combined in quadratura, which is what makes one window fit a blip of a few
+    milliseconds and a chirp of several seconds alike. `timing_jitter_s` is the
+    floor on a single event's spread -- an event living in one tile declares
+    zero spread, which is a statement about the tiling, not about the signal.
+
+    :param light_travel_time_s: largest arrival-time difference a real signal
+        can have between the two detectors.
+    :param timing_jitter_s: floor on an event's timing spread, seconds.
+    :param timing_sigma: how many combined spreads to accept.
+    :param minimum_frequency_overlap: least overlap of the two bands.
+    :param minimum_time_overlap: least overlap of the two time supports, once
+        one of them is allowed to shift by the light travel time.
+    """
+
     light_travel_time_s: float = 0.01001
     timing_jitter_s: float = 0.05
+    timing_sigma: float = 3.0
     minimum_frequency_overlap: float = 0.0
+    minimum_time_overlap: float = 0.0
     time_weight: float = 1.0
     frequency_weight: float = 1.0
     # Amplitude ratio is not a shape mismatch: the same signal reaches two
@@ -392,9 +446,16 @@ class CoincidenceConfig:
     # default; the frequency term already carries the shape test.
     morphology_weight: float = 0.0
 
-    @property
-    def window_s(self):
-        return self.light_travel_time_s + 2.0 * self.timing_jitter_s
+    def timing_tolerance(self, left_spread, right_spread):
+        """Largest time difference the two events may have and still pair.
+
+        :param left_spread: one event's timing spread, seconds.
+        :param right_spread: the other event's timing spread, seconds.
+        :return: the tolerance, seconds.
+        """
+        left = np.maximum(left_spread, self.timing_jitter_s)
+        right = np.maximum(right_spread, self.timing_jitter_s)
+        return self.light_travel_time_s + self.timing_sigma * np.hypot(left, right)
 
 
 class IndexedCoincidenceFinder:
@@ -409,30 +470,62 @@ class IndexedCoincidenceFinder:
             config = CoincidenceConfig(**kwargs)
         self.config = config
 
-    def coincidence_window(self, *_):
-        return self.config.window_s
+    def coincidence_window(self, left=None, right=None):
+        """The largest timing tolerance any pair of these events can claim.
+
+        :param left: one detector's events, or None for the configured floor.
+        :param right: the other detector's events, or None.
+        :return: the tolerance, seconds.
+        """
+        spreads = [self.config.timing_jitter_s]
+        for events in (left, right):
+            if events is not None and len(events):
+                spread = _numeric(events, ("tSpread",), default=0.0)
+                spread = spread[np.isfinite(spread)]
+                if spread.size:
+                    spreads.append(float(spread.max()))
+        widest = max(spreads)
+        return float(self.config.timing_tolerance(widest, widest))
 
     def _candidate_edges(self, left, right):
-        lt = _numeric(left, ("gpsPeak",))
-        rt = _numeric(right, ("gpsPeak",))
+        lt = _numeric(left, ("gpsCentroid", "gpsPeak"))
+        rt = _numeric(right, ("gpsCentroid", "gpsPeak"))
+        ls = _numeric(left, ("tSpread",), default=0.0)
+        rs = _numeric(right, ("tSpread",), default=0.0)
+        ls = np.where(np.isfinite(ls), ls, 0.0)
+        rs = np.where(np.isfinite(rs), rs, 0.0)
+        l_start = _numeric(left, ("gpsStart", "gpsCentroid", "gpsPeak"))
+        r_start = _numeric(right, ("gpsStart", "gpsCentroid", "gpsPeak"))
+        l_end = l_start + _numeric(left, ("duration",), default=0.0)
+        r_end = r_start + _numeric(right, ("duration",), default=0.0)
         lf0, lfm, lf1 = _frequency_interval(left)
         rf0, rfm, rf1 = _frequency_interval(right)
         le = np.maximum(_coefficient_energy(left), EPS)
         re = np.maximum(_coefficient_energy(right), EPS)
 
+        widest = self.coincidence_window(left, right)
         right_order = np.argsort(rt, kind="mergesort")
         rt_sorted = rt[right_order]
         edges = []
 
         for i, t in enumerate(lt):
-            lo = np.searchsorted(rt_sorted, t - self.config.window_s, side="left")
-            hi = np.searchsorted(rt_sorted, t + self.config.window_s, side="right")
+            lo = np.searchsorted(rt_sorted, t - widest, side="left")
+            hi = np.searchsorted(rt_sorted, t + widest, side="right")
             for position in range(lo, hi):
                 j = int(right_order[position])
+                tolerance = float(self.config.timing_tolerance(ls[i], rs[j]))
+                dt = t - rt[j]
+                if abs(dt) > tolerance:
+                    continue
                 overlap = _overlap_fraction(lf0[i], lf1[i], rf0[j], rf1[j])
                 if overlap < self.config.minimum_frequency_overlap:
                     continue
-                dt_cost = abs(t - rt[j]) / max(self.config.window_s, EPS)
+                time_overlap = _shifted_overlap_fraction(
+                    l_start[i], l_end[i], r_start[j], r_end[j],
+                    self.config.light_travel_time_s)
+                if time_overlap < self.config.minimum_time_overlap:
+                    continue
+                dt_cost = abs(dt) / max(tolerance, EPS)
                 scale = max(lf1[i] - lf0[i], rf1[j] - rf0[j], 1.0)
                 df_cost = abs(lfm[i] - rfm[j]) / scale
                 morphology_cost = abs(np.log(le[i] / re[j]))
@@ -441,7 +534,7 @@ class IndexedCoincidenceFinder:
                     + self.config.frequency_weight * df_cost
                     + self.config.morphology_weight * morphology_cost
                 )
-                edges.append((i, j, cost, t - rt[j], overlap))
+                edges.append((i, j, cost, dt, overlap, time_overlap))
         return edges
 
     @staticmethod
@@ -476,10 +569,10 @@ class IndexedCoincidenceFinder:
             cost = np.full((len(left_ids), len(right_ids)), np.inf)
             metadata = {}
 
-            for i, j, value, dt, overlap in component:
+            for i, j, value, dt, overlap, time_overlap in component:
                 if value < cost[li[i], rj[j]]:
                     cost[li[i], rj[j]] = value
-                    metadata[(i, j)] = (dt, overlap)
+                    metadata[(i, j)] = (dt, overlap, time_overlap)
 
             finite = np.isfinite(cost)
             if not finite.any():
@@ -492,16 +585,16 @@ class IndexedCoincidenceFinder:
                 if not finite[a, b]:
                     continue
                 i, j = left_ids[a], right_ids[b]
-                dt, overlap = metadata[(i, j)]
-                selected.append((i, j, cost[a, b], dt, overlap))
+                dt, overlap, time_overlap = metadata[(i, j)]
+                selected.append((i, j, cost[a, b], dt, overlap, time_overlap))
 
         rows = []
-        for i, j, cost, dt, overlap in selected:
+        for i, j, cost, dt, overlap, time_overlap in selected:
             a, b = left.iloc[i], right.iloc[j]
             sa = float(a.get("EnWDF", a.get("snrMax", 0.0)))
             sb = float(b.get("EnWDF", b.get("snrMax", 0.0)))
-            ta = float(a.get("gpsMax", a.get("gpsPeak")))
-            tb = float(b.get("gpsMax", b.get("gpsPeak")))
+            ta = float(a.get("gpsCentroid", a.get("gpsPeak")))
+            tb = float(b.get("gpsCentroid", b.get("gpsPeak")))
             rows.append(
                 {
                     f"index_{left_ifo}": int(i),
@@ -514,6 +607,7 @@ class IndexedCoincidenceFinder:
                     "delta_t": float(dt),
                     "dt_s": float(dt),
                     "frequency_overlap": float(overlap),
+                    "time_overlap": float(time_overlap),
                     "coincidence_cost": float(cost),
                     "network_enwdf": float(np.hypot(sa, sb)),
                     "network_min_enwdf": float(min(sa, sb)),
@@ -583,7 +677,7 @@ class TimeSlideFAR:
             shifts.append(shift)
 
             shifted = events_by_ifo[shifted_ifo].copy()
-            for column in ("gpsMax", "gpsPeak", "gpsStart", "gpsEnd"):
+            for column in ("gpsMax", "gpsPeak", "gpsCentroid", "gpsStart", "gpsEnd"):
                 if column in shifted:
                     shifted[column] = start + (
                         (pd.to_numeric(shifted[column], errors="coerce") - start + shift)
