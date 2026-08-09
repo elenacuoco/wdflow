@@ -572,39 +572,45 @@ class IndexedCoincidenceFinder:
                 dt, overlap, time_overlap = metadata[(i, j)]
                 selected.append((i, j, cost[a, b], dt, overlap, time_overlap))
 
-        rows = []
-        for i, j, cost, dt, overlap, time_overlap in selected:
-            a, b = left.iloc[i], right.iloc[j]
-            sa = float(a.get("EnWDF", a.get("snrMax", 0.0)))
-            sb = float(b.get("EnWDF", b.get("snrMax", 0.0)))
-            ta = float(a.get("gpsCentroid", a.get("gpsPeak")))
-            tb = float(b.get("gpsCentroid", b.get("gpsPeak")))
-            rows.append(
-                {
-                    f"index_{left_ifo}": int(i),
-                    f"index_{right_ifo}": int(j),
-                    f"EnWDF_{left_ifo}": sa,
-                    f"EnWDF_{right_ifo}": sb,
-                    f"snr_{left_ifo}": sa,
-                    f"snr_{right_ifo}": sb,
-                    "gps_candidate": 0.5 * (ta + tb),
-                    "delta_t": float(dt),
-                    "dt_s": float(dt),
-                    "frequency_overlap": float(overlap),
-                    "time_overlap": float(time_overlap),
-                    "coincidence_cost": float(cost),
-                    "network_enwdf": float(np.hypot(sa, sb)),
-                    "network_min_enwdf": float(min(sa, sb)),
-                    "network_geometric_enwdf": float(np.sqrt(max(sa * sb, 0.0))),
-                    "network_snr": float(np.hypot(sa, sb)),
-                    "ifos_involved": f"{left_ifo},{right_ifo}",
-                    "n_ifos": 2,
-                }
-            )
-
-        if not rows:
+        if not selected:
             return pd.DataFrame()
-        out = pd.DataFrame(rows).sort_values(
+
+        # Built column by column. Taking one row per candidate through .iloc
+        # costs a pandas row materialisation each time, which at the event rates
+        # a search without a per-detector threshold produces is most of the run.
+        chosen = np.asarray(selected, dtype=float)
+        i = chosen[:, 0].astype(int)
+        j = chosen[:, 1].astype(int)
+        cost, dt = chosen[:, 2], chosen[:, 3]
+        overlap, time_overlap = chosen[:, 4], chosen[:, 5]
+
+        sa = _numeric(left, ("EnWDF", "snrMax"), default=0.0)[i]
+        sb = _numeric(right, ("EnWDF", "snrMax"), default=0.0)[j]
+        ta = _numeric(left, ("gpsCentroid", "gpsPeak"))[i]
+        tb = _numeric(right, ("gpsCentroid", "gpsPeak"))[j]
+
+        out = pd.DataFrame({
+            f"index_{left_ifo}": i,
+            f"index_{right_ifo}": j,
+            f"EnWDF_{left_ifo}": sa,
+            f"EnWDF_{right_ifo}": sb,
+            f"snr_{left_ifo}": sa,
+            f"snr_{right_ifo}": sb,
+            "gps_candidate": 0.5 * (ta + tb),
+            "delta_t": dt,
+            "dt_s": dt,
+            "frequency_overlap": overlap,
+            "time_overlap": time_overlap,
+            "coincidence_cost": cost,
+            "network_enwdf": np.hypot(sa, sb),
+            "network_min_enwdf": np.minimum(sa, sb),
+            "network_geometric_enwdf": np.sqrt(np.maximum(sa * sb, 0.0)),
+            "network_snr": np.hypot(sa, sb),
+            "ifos_involved": f"{left_ifo},{right_ifo}",
+            "n_ifos": 2,
+        })
+        out = out.sort_values(
+
             ["network_enwdf", "coincidence_cost"],
             ascending=[False, True],
         ).reset_index(drop=True)

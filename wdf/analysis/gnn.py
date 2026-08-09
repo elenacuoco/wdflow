@@ -321,25 +321,39 @@ class DetectorEdgeScorer(nn.Module):
         self.register_buffer("feature_scale", torch.ones(node_dim))
         self.to(self.device)
 
-    def _logits(self, graph):
+    def upload(self, graph):
+        """Move a graph onto the device once, for reuse across epochs.
+
+        Rebuilding the tensors inside the training loop copies the whole node
+        feature matrix from host to device on every step, which at realistic
+        graph sizes is most of the training time and none of the arithmetic.
+
+        :param graph: a `wdf.analysis.detector_graph.DetectorGraph`.
+        :return: tuple -- the device tensors `_logits` reads.
+        """
         x = torch.as_tensor(graph.node_features, dtype=torch.float32, device=self.device)
-        x = (x - self.feature_mean) / self.feature_scale
         edge_attr = torch.as_tensor(graph.edge_features, dtype=torch.float32,
                                     device=self.device)
         if not len(graph.edges):
-            return torch.zeros(0, device=self.device)
-        edges = torch.as_tensor(graph.edges.T, dtype=torch.long, device=self.device)
+            return x, edge_attr, None, None, None
+        edges = torch.as_tensor(np.ascontiguousarray(graph.edges.T),
+                                dtype=torch.long, device=self.device)
         # Messages travel both ways: the relation between two triggers is
         # symmetric, and a directed edge set would make the first of a pair
         # blind to the second.
         both = torch.cat([edges, edges.flip(0)], dim=1)
         both_attr = torch.cat([edge_attr, edge_attr], dim=0)
+        return x, edge_attr, edges, both, both_attr
 
-        h = self.encoder(x)
+    def _logits(self, uploaded):
+        x, edge_attr, edges, both, both_attr = uploaded
+        if edges is None:
+            return torch.zeros(0, device=self.device)
+        h = self.encoder((x - self.feature_mean) / self.feature_scale)
         for round_ in self.rounds:
             h = round_(h, both, both_attr)
-        i, j = edges[0], edges[1]
-        return self.edge_head(torch.cat([h[i], h[j], edge_attr], dim=1)).squeeze(-1)
+        return self.edge_head(
+            torch.cat([h[edges[0]], h[edges[1]], edge_attr], dim=1)).squeeze(-1)
 
     def score(self, graph) -> pd.DataFrame:
         """The model's opinion on each admissible edge.
@@ -350,7 +364,7 @@ class DetectorEdgeScorer(nn.Module):
             transient.
         """
         with torch.no_grad():
-            logits = self._logits(graph)
+            logits = self._logits(self.upload(graph))
             raw = logits.cpu().numpy() if logits.numel() else np.array([])
             probability = torch.sigmoid(logits).cpu().numpy() if logits.numel() \
                 else np.array([])
@@ -380,21 +394,29 @@ class DetectorEdgeScorer(nn.Module):
         self.feature_mean = torch.as_tensor(mean, dtype=torch.float32, device=self.device)
         self.feature_scale = torch.as_tensor(scale, dtype=torch.float32, device=self.device)
 
+        # Uploaded once, outside the epoch loop: the graphs do not change while
+        # the weights do.
+        prepared = []
+        for example in usable:
+            labels = np.asarray(example[1], dtype=float)
+            mask = example[2] if len(example) > 2 else np.ones(len(labels), dtype=bool)
+            mask = torch.as_tensor(np.asarray(mask, dtype=bool), device=self.device)
+            if not bool(mask.any()):
+                continue
+            prepared.append((
+                self.upload(example[0]),
+                torch.as_tensor(labels, dtype=torch.float32, device=self.device),
+                mask,
+            ))
+
         opt = torch.optim.Adam(self.parameters(), lr=lr)
         loss_fn = nn.BCEWithLogitsLoss()
         history = []
         for _ in range(epochs):
             opt.zero_grad()
             total, contributing = torch.tensor(0.0, device=self.device), 0
-            for example in usable:
-                graph, labels = example[0], np.asarray(example[1], dtype=float)
-                mask = example[2] if len(example) > 2 else np.ones(len(labels), dtype=bool)
-                mask = torch.as_tensor(np.asarray(mask, dtype=bool), device=self.device)
-                if not bool(mask.any()):
-                    continue
-                logits = self._logits(graph)
-                target = torch.as_tensor(labels, dtype=torch.float32, device=self.device)
-                total = total + loss_fn(logits[mask], target[mask])
+            for uploaded, target, mask in prepared:
+                total = total + loss_fn(self._logits(uploaded)[mask], target[mask])
                 contributing += 1
             if contributing:
                 total.backward()
