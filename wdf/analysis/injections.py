@@ -9,23 +9,59 @@ import pandas as pd
 MATCH_COLUMNS = ["found", "candidate_index", "dt_s", "recovered_snr"]
 
 
+def candidate_spans(candidates, candidate_time="gpsPeak"):
+    """The time each candidate covers, as a `(start, end)` pair of arrays.
+
+    A candidate assembled from several analysis windows covers a stretch, and an
+    injection belongs to it when it falls anywhere in that stretch: a chirp is
+    recovered by the event that spans it, whose energy centroid sits well before
+    the merger. A candidate with no recorded extent covers the single instant it
+    reports, so one rule serves both.
+
+    :type candidates: pandas.DataFrame
+    :param candidates: search output, one row per candidate.
+    :type candidate_time: str
+    :param candidate_time: column holding the candidate time, used when the
+        candidate records no extent.
+    :return: tuple -- `(start, end)`, each an array over the candidates.
+    """
+    instant = pd.to_numeric(candidates[candidate_time], errors="coerce").to_numpy(float)
+    if "gpsStart" not in candidates:
+        return instant, instant
+
+    start = pd.to_numeric(candidates["gpsStart"], errors="coerce").to_numpy(float)
+    if "gpsEnd" in candidates:
+        end = pd.to_numeric(candidates["gpsEnd"], errors="coerce").to_numpy(float)
+    elif "duration" in candidates:
+        end = start + pd.to_numeric(candidates["duration"], errors="coerce").to_numpy(float)
+    else:
+        end = start
+
+    start = np.where(np.isfinite(start), start, instant)
+    end = np.where(np.isfinite(end), end, start)
+    return np.minimum(start, end), np.maximum(start, end)
+
+
 def match_injections(candidates, injections, window_s=0.5, candidate_time="gpsPeak",
                      candidate_statistic="EnWDF", injection_time="gps"):
-    """Associate each injection with the loudest candidate falling near it in time.
+    """Associate each injection with the loudest candidate covering it in time.
 
-    An injection counts as found when at least one candidate lies within
-    `window_s` of its time; among those, the loudest is the one recorded.
-    Candidates may match more than one injection only if the injections
-    themselves overlap in time.
+    An injection counts as found when its time falls inside the stretch a
+    candidate covers, widened by `window_s`; among those, the loudest is the one
+    recorded. Matching against the candidate's own instant instead would miss a
+    long signal recovered correctly, because the event's time sits where its
+    energy is and a chirp carries most of its energy before the merger.
 
     :type candidates: pandas.DataFrame
     :param candidates: search output, one row per candidate.
     :type injections: pandas.DataFrame
     :param injections: ground truth, one row per injection.
     :type window_s: float
-    :param window_s: half-width of the association window, seconds.
+    :param window_s: how far outside its own extent a candidate still matches,
+        seconds.
     :type candidate_time: str
-    :param candidate_time: column of `candidates` holding the candidate time.
+    :param candidate_time: column of `candidates` holding the candidate time,
+        used for `dt_s` and when a candidate records no extent.
     :type candidate_statistic: str
     :param candidate_statistic: column of `candidates` ranking candidates within the window.
     :type injection_time: str
@@ -42,15 +78,23 @@ def match_injections(candidates, injections, window_s=0.5, candidate_time="gpsPe
 
     times = candidates[candidate_time].to_numpy(dtype=float)
     snrs = candidates[candidate_statistic].to_numpy(dtype=float)
-    order = np.argsort(times)
-    times_sorted, index_sorted = times[order], candidates.index.to_numpy()[order]
+    start, end = candidate_spans(candidates, candidate_time=candidate_time)
+
+    order = np.argsort(start)
+    start_sorted = start[order]
+    longest = float(np.nanmax(end - start)) if len(start) else 0.0
 
     for i, t_inj in enumerate(out[injection_time].to_numpy(dtype=float)):
-        lo = np.searchsorted(times_sorted, t_inj - window_s, side="left")
-        hi = np.searchsorted(times_sorted, t_inj + window_s, side="right")
+        # Candidates starting before the injection can still reach it, but no
+        # further back than the longest extent any of them has.
+        lo = np.searchsorted(start_sorted, t_inj - window_s - longest, side="left")
+        hi = np.searchsorted(start_sorted, t_inj + window_s, side="right")
         if hi <= lo:
             continue
         local = order[lo:hi]
+        local = local[end[local] >= t_inj - window_s]
+        if not len(local):
+            continue
         best = local[np.argmax(snrs[local])]
         out.at[i, "found"] = True
         out.at[i, "candidate_index"] = int(candidates.index.to_numpy()[best])
@@ -68,23 +112,26 @@ def false_alarms(candidates, injections, window_s=0.5, candidate_time="gpsPeak",
     :type injections: pandas.DataFrame
     :param injections: ground truth, one row per injection.
     :type window_s: float
-    :param window_s: half-width of the association window, seconds.
+    :param window_s: how far outside its own extent a candidate still counts as
+        accounted for, seconds.
     :type candidate_time: str
-    :param candidate_time: column of `candidates` holding the candidate time.
+    :param candidate_time: column of `candidates` holding the candidate time,
+        used when a candidate records no extent.
     :type injection_time: str
     :param injection_time: column of `injections` holding the injection time.
-    :return: pandas.DataFrame -- the subset of `candidates` with no injection
-        within `window_s`.
+    :return: pandas.DataFrame -- the subset of `candidates` covering no injection.
     """
     if candidates.empty or injections.empty:
         return candidates.copy()
     inj = np.sort(injections[injection_time].to_numpy(dtype=float))
-    times = candidates[candidate_time].to_numpy(dtype=float)
-    idx = np.clip(np.searchsorted(inj, times), 1, len(inj) - 1)
-    nearest = np.minimum(np.abs(times - inj[idx - 1]), np.abs(times - inj[idx]))
-    if len(inj) == 1:
-        nearest = np.abs(times - inj[0])
-    return candidates[nearest > window_s].copy()
+    start, end = candidate_spans(candidates, candidate_time=candidate_time)
+
+    # An injection anywhere in the widened extent makes the candidate accounted
+    # for; the nearest one is the only one that can be.
+    reaches = np.searchsorted(inj, start - window_s, side="left")
+    reaches = np.clip(reaches, 0, len(inj) - 1)
+    accounted = (inj[reaches] >= start - window_s) & (inj[reaches] <= end + window_s)
+    return candidates[~accounted].copy()
 
 
 def efficiency(matched, bins=None, injected_snr_column="network_snr", group_column=None):

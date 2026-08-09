@@ -86,3 +86,63 @@ def test_efficiency_can_be_grouped_by_class():
     by_class = curve.set_index("subclass")["efficiency"]
     assert by_class["bbh"] == pytest.approx(1.0)
     assert by_class["blip"] == pytest.approx(0.0)
+
+
+def test_a_long_event_is_matched_by_its_extent_not_by_its_time():
+    """A chirp's energy sits well before its merger, so an event that spans the
+    signal correctly reports a time seconds away from the injection. Matching
+    the instant would call that a miss."""
+    from wdf.analysis.injections import match_injections
+
+    merger = 1000.0
+    event = pd.DataFrame([{
+        "gpsPeak": merger - 4.0,
+        "gpsCentroid": merger - 4.0,
+        "gpsStart": merger - 8.0,
+        "duration": 9.0,
+        "EnWDF": 12.0,
+    }])
+    injections = pd.DataFrame([{"gps": merger}])
+
+    matched = match_injections(event, injections, window_s=0.5,
+                               candidate_time="gpsCentroid")
+    assert bool(matched.found.iloc[0])
+    assert matched.recovered_snr.iloc[0] == 12.0
+
+
+def test_an_event_that_ends_before_the_injection_is_not_a_match():
+    from wdf.analysis.injections import match_injections
+
+    event = pd.DataFrame([{
+        "gpsPeak": 990.0, "gpsCentroid": 990.0,
+        "gpsStart": 988.0, "duration": 2.0, "EnWDF": 12.0,
+    }])
+    injections = pd.DataFrame([{"gps": 1000.0}])
+
+    assert not bool(match_injections(event, injections, window_s=0.5,
+                                     candidate_time="gpsCentroid").found.iloc[0])
+
+
+def test_a_candidate_with_no_extent_still_matches_on_its_instant():
+    """One rule covers both: no extent means the candidate covers its own time."""
+    from wdf.analysis.injections import match_injections
+
+    event = pd.DataFrame([{"gpsPeak": 1000.2, "EnWDF": 9.0}])
+    injections = pd.DataFrame([{"gps": 1000.0}])
+
+    assert bool(match_injections(event, injections, window_s=0.5).found.iloc[0])
+    assert not bool(match_injections(event, injections, window_s=0.1).found.iloc[0])
+
+
+def test_a_long_event_covering_an_injection_is_not_a_false_alarm():
+    from wdf.analysis.injections import false_alarms
+
+    candidates = pd.DataFrame([
+        {"gpsPeak": 996.0, "gpsStart": 992.0, "duration": 9.0, "EnWDF": 12.0},
+        {"gpsPeak": 500.0, "gpsStart": 499.0, "duration": 1.0, "EnWDF": 7.0},
+    ])
+    injections = pd.DataFrame([{"gps": 1000.0}])
+
+    remaining = false_alarms(candidates, injections, window_s=0.5)
+    assert len(remaining) == 1
+    assert float(remaining.gpsPeak.iloc[0]) == 500.0

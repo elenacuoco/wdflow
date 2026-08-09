@@ -215,6 +215,13 @@ def cluster_detector_triggers(
 
     Edges require temporal adjacency tied to the real WDF stride, compatible
     frequency intervals and no discontinuous coefficient-energy jump.
+
+    Adjacency is measured between the analysis windows themselves, on `gps`,
+    which advances by exactly one stride. Measuring it between the windows'
+    peaks cannot work: a peak sits anywhere inside its own window, the stride is
+    shorter than the window by the overlap, so two adjacent windows' peaks can
+    differ by more than a stride and the pair is refused although the windows
+    are consecutive.
     """
     config = ClusterConfig() if config is None else config
     cleaned = clean_triggers_robust(
@@ -226,21 +233,25 @@ def cluster_detector_triggers(
     if cleaned.empty:
         return cleaned.assign(cluster_id=pd.Series(dtype=int)), pd.DataFrame()
 
-    time = _numeric(cleaned, ("gpsPeak", "gpsMax", "gps"))
-    order = np.argsort(time, kind="mergesort")
+    window_time = _numeric(cleaned, ("gps", "gpsPeak", "gpsMax"))
+    order = np.argsort(window_time, kind="mergesort")
     cleaned = cleaned.iloc[order].reset_index(drop=True)
-    time = time[order]
+    window_time = window_time[order]
+    time = _numeric(cleaned, ("gpsPeak", "gpsMax", "gps"))
 
     fmin, fmean, fmax = _frequency_interval(cleaned)
     energy = np.maximum(_coefficient_energy(cleaned), EPS)
     rank = _numeric(cleaned, ("EnWDF", "mSNR"), default=0.0)
 
     stride = stride_seconds(parameters)
-    time_eps = stride * (1 + int(config.max_missing_windows))
+    # The window origins sit on an exact grid, so this is a count of windows
+    # rather than a tolerance: half a stride of slack keeps the comparison
+    # clear of rounding without ever reaching the next window.
+    time_eps = stride * (1.5 + int(config.max_missing_windows))
     uf = _UnionFind(len(cleaned))
     log_energy = np.log(energy)
 
-    for left, right in _neighbour_pairs(time, time_eps):
+    for left, right in _neighbour_pairs(window_time, time_eps):
         keep_pair = (
             _overlap_fraction(fmin[left], fmax[left], fmin[right], fmax[right])
             >= config.minimum_frequency_overlap
@@ -263,17 +274,13 @@ def cluster_detector_triggers(
 
     weights = np.maximum(energy, EPS)[by_cluster]
     group_rank = rank[by_cluster]
-    group_time = time[by_cluster]
 
     # The peak member of each cluster is the loudest, so ordering by cluster and
     # then by decreasing rank puts it first in every group.
     peak_at = np.lexsort((-rank, cluster_ids))[starts]
 
-    if "gpsStart" in cleaned or "gps" in cleaned:
-        start_time = _numeric(cleaned, ("gpsStart", "gps"))
-        start_time = np.where(np.isfinite(start_time), start_time, time)
-    else:
-        start_time = time
+    start_time = _numeric(cleaned, ("gpsStart", "gps"))
+    start_time = np.where(np.isfinite(start_time), start_time, window_time)
     gps_start = np.minimum.reduceat(start_time[by_cluster], starts)
 
     if "gpsEnd" in cleaned:
@@ -281,7 +288,7 @@ def cluster_detector_triggers(
     elif "duration" in cleaned:
         end_time = start_time + _numeric(cleaned, ("duration",), default=0.0)
     else:
-        end_time = time + float(parameters.window) / float(parameters.resampling)
+        end_time = window_time + float(parameters.window) / float(parameters.resampling)
     gps_end = np.maximum.reduceat(np.nan_to_num(end_time[by_cluster], nan=-np.inf), starts)
 
     peak_time = time[peak_at]

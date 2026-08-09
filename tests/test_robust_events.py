@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from wdf.analysis.robust_events import (
+    ClusterConfig,
     FARConfig,
     IndexedCoincidenceFinder,
     TimeSlideFAR,
@@ -181,3 +182,65 @@ def test_the_background_slides_the_time_the_coincidence_is_measured_on():
     foreground = finder.find({"H1": left, "L1": right})
     if len(background) and len(foreground):
         assert set(foreground.columns) <= set(background.columns)
+
+
+def _windows_on_the_grid(n_windows, stride, window_s, peak_offsets, gps0=1000.0):
+    """Consecutive analysis windows, with the peak placed inside each one."""
+    gps = gps0 + stride * np.arange(n_windows)
+    return pd.DataFrame({
+        "gps": gps,
+        "gpsPeak": gps + np.asarray(peak_offsets, dtype=float),
+        "gpsStart": gps,
+        "gpsEnd": gps + window_s,
+        "duration": window_s,
+        "freqMin": 64.0,
+        "freqMean": 128.0,
+        "freqMax": 256.0,
+        "freqPeak": 128.0,
+        "EnWDF": np.full(n_windows, 6.0),
+        "snrPeak": 3.0,
+        "sigma": 1.0,
+        "ifo": "H1",
+    })
+
+
+def test_consecutive_windows_link_wherever_their_peaks_fall():
+    """The peak sits anywhere inside its own window, and the stride is shorter
+    than the window by the overlap, so peak-to-peak differences reach beyond one
+    stride while the windows are still consecutive. Linking is a statement about
+    the windows, so it must not depend on where the energy landed in them."""
+    parameters = SimpleNamespace(window=512, overlap=128, resampling=2048)
+    stride = (512 - 128) / 2048.0
+    window_s = 512 / 2048.0
+
+    rng = np.random.default_rng(0)
+    n = 12
+    # The worst case the tiling allows: peaks at opposite ends of adjacent windows.
+    alternating = np.where(np.arange(n) % 2 == 0, 0.0, window_s)
+    scattered = rng.uniform(0.0, window_s, n)
+
+    for offsets in (np.zeros(n), alternating, scattered):
+        triggers = _windows_on_the_grid(n, stride, window_s, offsets)
+        _, events = cluster_detector_triggers(
+            triggers, parameters, config=ClusterConfig(max_missing_windows=0))
+        assert len(events) == 1
+        assert int(events.iloc[0].n_triggers) == n
+
+
+def test_a_missing_window_breaks_the_chain_unless_it_is_allowed():
+    """max_missing_windows counts windows, which is what it can mean once the
+    origins sit on an exact grid."""
+    parameters = SimpleNamespace(window=512, overlap=128, resampling=2048)
+    stride = (512 - 128) / 2048.0
+    window_s = 512 / 2048.0
+
+    triggers = _windows_on_the_grid(6, stride, window_s, np.zeros(6))
+    with_gap = triggers.drop(index=3).reset_index(drop=True)
+
+    _, strict = cluster_detector_triggers(
+        with_gap, parameters, config=ClusterConfig(max_missing_windows=0))
+    _, lenient = cluster_detector_triggers(
+        with_gap, parameters, config=ClusterConfig(max_missing_windows=1))
+
+    assert len(strict) == 2
+    assert len(lenient) == 1
