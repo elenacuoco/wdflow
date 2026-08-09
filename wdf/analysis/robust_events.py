@@ -9,12 +9,9 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
+from wdf.analysis.pairs import neighbour_pairs
 
 EPS = np.finfo(float).tiny
-
-# Candidate neighbour pairs are formed a block of triggers at a time, so a
-# dense stretch of the segment cannot allocate one array per pair of the run.
-_PAIR_BLOCK = 4096
 
 
 def _first_existing(frame: pd.DataFrame, names: Iterable[str], default=None):
@@ -138,33 +135,6 @@ def _shifted_overlap_fraction(a0, a1, b0, b1, tolerance):
     return np.clip(np.minimum(overlap, width) / width, 0.0, 1.0)
 
 
-def _neighbour_pairs(time: np.ndarray, time_eps: float):
-    """Yield index pairs of triggers no further apart in time than `time_eps`.
-
-    `time` must be sorted. Pairs come in blocks so that a dense stretch of the
-    segment does not allocate one array element per pair of the whole run.
-
-    :param time: sorted trigger times, seconds.
-    :param time_eps: largest gap that still joins two triggers, seconds.
-    :return: iterator of (left, right) integer index arrays, left < right.
-    """
-    n = len(time)
-    stop = np.searchsorted(time, time + time_eps, side="right")
-    counts = stop - np.arange(n) - 1
-
-    for begin in range(0, n, _PAIR_BLOCK):
-        end = min(begin + _PAIR_BLOCK, n)
-        block = counts[begin:end]
-        total = int(block.sum())
-        if total == 0:
-            continue
-        index = np.arange(begin, end)
-        left = np.repeat(index, block)
-        offset = np.repeat(np.cumsum(block) - block, block)
-        right = np.arange(total) - offset + left + 1
-        yield left, right
-
-
 def _group_bounds(size: np.ndarray) -> np.ndarray:
     return np.concatenate(([0], np.cumsum(size)[:-1]))
 
@@ -251,7 +221,7 @@ def cluster_detector_triggers(
     uf = _UnionFind(len(cleaned))
     log_energy = np.log(energy)
 
-    for left, right in _neighbour_pairs(window_time, time_eps):
+    for left, right in neighbour_pairs(window_time, time_eps):
         keep_pair = (
             _overlap_fraction(fmin[left], fmax[left], fmin[right], fmax[right])
             >= config.minimum_frequency_overlap

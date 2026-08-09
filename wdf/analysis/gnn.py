@@ -30,6 +30,8 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from wdf.analysis.pairs import cross_pairs, neighbour_pairs
+
 try:
     import torch
     import torch.nn as nn
@@ -78,22 +80,23 @@ class TriggerGraph:
         CoincidenceFinder.find's output (gps_candidate/dt_s/network_enwdf/
         n_ifos in common), so ROCCurve can be run on either interchangeably.
         """
-        rows = []
-        for k, (i, j) in enumerate(self.cross_edges):
-            ni, nj = self.nodes.iloc[int(i)], self.nodes.iloc[int(j)]
-            dt, similarity = self.cross_edge_features[k]
-            rows.append(dict(
-                candidate_id=k,
-                gps_candidate=float((ni["gpsPeak"] + nj["gpsPeak"]) / 2),
-                ifos_involved=f"{ni['ifo']},{nj['ifo']}",
-                dt_s=float(dt),
-                wavegram_similarity=float(similarity),
-                network_enwdf=float(np.sqrt(ni["EnWDF"] ** 2 + nj["EnWDF"] ** 2)),
-                n_ifos=2,
-                node_i=int(i),
-                node_j=int(j),
-            ))
-        return pd.DataFrame(rows)
+        i, j = self.cross_edges[:, 0], self.cross_edges[:, 1]
+        gps = self.nodes["gpsPeak"].to_numpy(dtype=float)
+        enwdf = self.nodes["EnWDF"].to_numpy(dtype=float)
+        ifo = self.nodes["ifo"].to_numpy()
+        return pd.DataFrame(dict(
+            candidate_id=np.arange(len(i)),
+            gps_candidate=(gps[i] + gps[j]) / 2,
+            ifos_involved=np.char.add(np.char.add(ifo[i].astype(str), ","),
+                                      ifo[j].astype(str)),
+            dt_s=self.cross_edge_features[:, 0].astype(float),
+            wavegram_similarity=self.cross_edge_features[:, 1].astype(float),
+            network_enwdf=np.hypot(enwdf[i], enwdf[j]),
+            network_min_enwdf=np.minimum(enwdf[i], enwdf[j]),
+            n_ifos=2,
+            node_i=i,
+            node_j=j,
+        ))
 
 
 class TriggerGraphBuilder:
@@ -124,21 +127,20 @@ class TriggerGraphBuilder:
         :raises KeyError: if an event has no coefficients.
         """
         ifos = self.ifos or list(clustered.keys())
-        nodes, node_ifo, grids = [], [], []
+        frames, grids = [], []
         for ifo in ifos:
             per_cluster = coefficients[ifo]
-            for _, row in clustered[ifo].reset_index(drop=True).iterrows():
-                label = int(row["cluster_id"])
-                if label not in per_cluster:
-                    raise KeyError(
-                        f"no coefficients for cluster {label} of {ifo}; the graph is "
-                        "built from the wavelet coefficients, so every event needs them"
-                    )
-                nodes.append(row)
-                node_ifo.append(ifo)
-                grids.append(per_cluster[label].wavegram(self.wavegram_time_bins).ravel())
-        nodes_df = pd.DataFrame(nodes).reset_index(drop=True)
-        nodes_df["ifo"] = node_ifo
+            events = clustered[ifo].reset_index(drop=True)
+            missing = set(events["cluster_id"].astype(int)) - set(per_cluster)
+            if missing:
+                raise KeyError(
+                    f"no coefficients for cluster {min(missing)} of {ifo}; the graph is "
+                    "built from the wavelet coefficients, so every event needs them"
+                )
+            frames.append(events.assign(ifo=ifo))
+            grids.extend(per_cluster[label].wavegram(self.wavegram_time_bins).ravel()
+                         for label in events["cluster_id"].astype(int))
+        nodes_df = pd.concat(frames, ignore_index=True)
 
         # |coefficient|/sigma spans decades, so compress before standardising;
         # log1p leaves the empty cells of the grid at exactly zero.
@@ -159,41 +161,35 @@ class TriggerGraphBuilder:
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
         gps = nodes_df["gpsPeak"].to_numpy(dtype=float)
 
-        # Vectorized replacement for a pure-Python itertools.combinations /
-        # nested-for-loop pairwise scan: with clustered_events keeping every
-        # DBSCAN singleton as its own node, real segments can have thousands
-        # of nodes per IFO, so an O(n^2) Python loop (here, and worse, inside
-        # a 100s-of-time-slides background loop that rebuilds the graph from
-        # scratch each slide) dominates runtime. A numpy pairwise-distance
-        # matrix does the same O(n^2) comparisons in C, not Python.
+        # Only the pairs inside the window are ever formed, by searching a
+        # sorted time axis. A pairwise-difference matrix asks the same question
+        # in O(n^2) memory, which a search carrying no per-detector threshold
+        # exhausts: 10^5 events in one detector is 10^10 matrix entries.
+        sorted_by_ifo = {
+            ifo: idxs[np.argsort(gps[idxs], kind="mergesort")]
+            for ifo, idxs in idx_by_ifo.items()
+        }
+
         intra_edges, intra_feats = [], []
-        for idxs in idx_by_ifo.values():
-            n = len(idxs)
-            if n < 2:
-                continue
-            dt_mat = gps[idxs][:, None] - gps[idxs][None, :]
-            iu, ju = np.triu_indices(n, k=1)
-            dt = dt_mat[iu, ju]
-            keep = np.abs(dt) <= self.intra_ifo_window_s
-            i_sel, j_sel, dt_sel = idxs[iu[keep]], idxs[ju[keep]], dt[keep]
-            intra_edges.append(np.column_stack([i_sel, j_sel]))
-            intra_edges.append(np.column_stack([j_sel, i_sel]))
-            intra_feats.append(dt_sel[:, None])
-            intra_feats.append(-dt_sel[:, None])
+        for idxs in sorted_by_ifo.values():
+            for left, right in neighbour_pairs(gps[idxs], self.intra_ifo_window_s):
+                i_sel, j_sel = idxs[left], idxs[right]
+                dt_sel = gps[i_sel] - gps[j_sel]
+                intra_edges.append(np.column_stack([i_sel, j_sel]))
+                intra_edges.append(np.column_stack([j_sel, i_sel]))
+                intra_feats.append(dt_sel[:, None])
+                intra_feats.append(-dt_sel[:, None])
 
         cross_edges, cross_feats = [], []
         for ifo_a, ifo_b in combinations(ifos, 2):
-            idx_a, idx_b = idx_by_ifo[ifo_a], idx_by_ifo[ifo_b]
-            if len(idx_a) == 0 or len(idx_b) == 0:
-                continue
-            dt_mat = gps[idx_a][:, None] - gps[idx_b][None, :]
-            keep = np.abs(dt_mat) <= self.cross_ifo_window_s
-            ia, jb = np.nonzero(keep)  # row-major -> same (i outer, j inner) order as the old nested loop
-            i_sel, j_sel = idx_a[ia], idx_b[jb]
-            dt_sel = dt_mat[ia, jb]
-            similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
-            cross_edges.append(np.column_stack([i_sel, j_sel]))
-            cross_feats.append(np.column_stack([dt_sel, similarity]))
+            idx_a, idx_b = sorted_by_ifo[ifo_a], sorted_by_ifo[ifo_b]
+            for left, right in cross_pairs(gps[idx_a], gps[idx_b],
+                                           self.cross_ifo_window_s):
+                i_sel, j_sel = idx_a[left], idx_b[right]
+                dt_sel = gps[i_sel] - gps[j_sel]
+                similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
+                cross_edges.append(np.column_stack([i_sel, j_sel]))
+                cross_feats.append(np.column_stack([dt_sel, similarity]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)
         intra_feats = np.concatenate(intra_feats) if intra_feats else np.zeros((0, 1), dtype=np.float32)
