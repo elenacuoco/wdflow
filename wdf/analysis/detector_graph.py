@@ -52,11 +52,6 @@ DETECTOR_EVENT_COLUMNS = [
 
 WAVEGRAM_TIME_BINS = 64
 
-# One column of an event's map stands for this long, wherever it is drawn, so a
-# column means the same thing in both detectors and the lag that best aligns two
-# maps is a time. At 2048 Hz it is the stride of the shortest window in use.
-WAVEGRAM_BIN_SECONDS = 0.09375
-
 
 @dataclass
 class DetectorGraphConfig:
@@ -104,6 +99,49 @@ def band_grid(scales, fs: float) -> np.ndarray:
         f_lo, f_hi = coeff_freq_bands(int(scale), fs)
         edges.update(zip(np.round(f_lo, 9), np.round(f_hi, 9)))
     return np.array(sorted(edges))
+
+
+def window_strides(triggers: pd.DataFrame) -> dict:
+    """How far the search advanced between consecutive windows of each length.
+
+    The stride is `(window - overlap) / sampling`, a property of the run.
+    `wdf.analysis.io.triggers_from_files` writes it onto every trigger from the
+    configuration beside the file. Triggers that carry no stride fall back to
+    their window's own duration, which is the stride of a search with no
+    overlap.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers carrying `n_coeff`, `fs` and, where the run
+        recorded it, `stride`.
+    :return: dict -- ``{n_coeff: stride}`` in seconds.
+    """
+    if triggers.empty:
+        return {}
+    scale = triggers["n_coeff"].to_numpy(dtype=float)
+    fs = np.maximum(triggers["fs"].to_numpy(dtype=float), EPS)
+    declared = (triggers["stride"].to_numpy(dtype=float) if "stride" in triggers
+                else np.full(len(triggers), np.nan))
+    declared = np.where(np.isfinite(declared) & (declared > 0.0),
+                        declared, scale / fs)
+
+    lengths, first = np.unique(scale, return_index=True)
+    return {float(length): float(declared[row]) for length, row in zip(lengths, first)}
+
+
+def wavegram_bin_seconds(triggers: pd.DataFrame) -> float:
+    """The duration one column of an event's map stands for.
+
+    A column means the same time wherever it is drawn, so that two maps
+    compared across the network are not stretched onto each other and the lag
+    that best aligns them is a time. The finest the search can resolve is the
+    stride of its shortest window, which is what this is.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers carrying `gps`, `n_coeff` and `fs`.
+    :return: float -- seconds per column.
+    """
+    strides = window_strides(triggers)
+    return min(strides.values()) if strides else 1.0
 
 
 def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
@@ -283,7 +321,16 @@ def build_detector_graph(triggers: pd.DataFrame,
     fs = nodes["fs"].to_numpy(dtype=float)
     start = nodes["gps"].to_numpy(dtype=float)
     span = scale / np.maximum(fs, EPS)
-    end = start + span
+    # Continuity is between one window's energy and the next window's, not
+    # between the windows: the window is the same length whatever it holds, and
+    # consecutive windows overlap by construction, so a gap measured on them is
+    # negative almost everywhere and joins triggers that share nothing. The
+    # surviving tiles are where the energy is.
+    onset = nodes["gpsStart"].to_numpy(dtype=float) if "gpsStart" in nodes else start
+    extent = nodes["duration"].to_numpy(dtype=float) if "duration" in nodes else span
+    onset = np.where(np.isfinite(onset), onset, start)
+    extent = np.where(np.isfinite(extent), extent, span)
+    end = onset + extent
     f_lo = nodes["freqMin"].to_numpy(dtype=float)
     f_hi = nodes["freqMax"].to_numpy(dtype=float)
     energy = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
@@ -303,10 +350,12 @@ def build_detector_graph(triggers: pd.DataFrame,
         np.column_stack([significance, np.log1p(energy), span, f_hi - f_lo]),
     ]).astype(np.float32)
 
-    reach = float((span * (1.0 + config.time_tolerance)).max())
+    # The pairs are searched on the window start, which the nodes are sorted by,
+    # so the reach has to cover a tile sitting anywhere inside its window.
+    reach = float((2.0 * span.max()) * (1.0 + config.time_tolerance))
     edges, features = [], []
     for left, right in neighbour_pairs(start, reach):
-        gap = np.maximum(start[right] - end[left], start[left] - end[right])
+        gap = np.maximum(onset[right] - end[left], onset[left] - end[right])
         allowed = config.time_tolerance * 0.5 * (span[left] + span[right])
         shared = np.minimum(f_hi[left], f_hi[right]) - np.maximum(f_lo[left], f_lo[right])
         narrower = np.maximum(np.minimum(f_hi[left] - f_lo[left],
@@ -327,11 +376,12 @@ def build_detector_graph(triggers: pd.DataFrame,
         if not join.any():
             continue
         i, j = left[join], right[join]
-        covered = np.minimum(end[i], end[j]) - np.maximum(start[i], start[j])
+        covered = np.minimum(end[i], end[j]) - np.maximum(onset[i], onset[j])
         edges.append(np.column_stack([i, j]))
         features.append(np.column_stack([
-            start[i] - start[j],
-            np.clip(covered / np.maximum(np.minimum(span[i], span[j]), EPS), 0.0, 1.0),
+            onset[i] - onset[j],
+            np.clip(covered / np.maximum(np.minimum(extent[i], extent[j]), EPS),
+                    0.0, 1.0),
             overlap[join],
             np.log(scale[i] / scale[j]),
             np.log(energy[i] / energy[j]),
@@ -386,7 +436,14 @@ def detector_events(graph: DetectorGraph, significance=None,
     gps = column("gps")
     scale = column("n_coeff")
     fs = np.maximum(column("fs", 1.0), EPS)
-    window_end = gps + scale / fs
+    # The event's extent is the extent of its energy, from the first surviving
+    # tile to the last. Taking the windows' extent instead adds up to one whole
+    # window at each end, whatever the transient inside them was.
+    onset = column("gpsStart", np.nan)
+    onset = np.where(np.isfinite(onset), onset, gps)
+    extent = column("duration", np.nan)
+    extent = np.where(np.isfinite(extent), extent, scale / fs)
+    tile_end = onset + extent
 
     # Grouped by reduction over a sorted label, not by a Python pass per cluster.
     # A search carrying no per-detector threshold produces tens of thousands of
@@ -435,6 +492,7 @@ def detector_events(graph: DetectorGraph, significance=None,
         counted, out=np.full(n_events, np.nan), where=counted > 0)
 
     start = lowest(gps)
+    first_tile = lowest(onset)
     scales_seen = np.array([len(np.unique(scale[order][a:a + n]))
                             for a, n in zip(starts, sizes)])
 
@@ -442,11 +500,11 @@ def detector_events(graph: DetectorGraph, significance=None,
         "cluster_id": np.arange(n_events),
         "ifo": nodes["ifo"].to_numpy()[peak] if "ifo" in nodes else "",
         "gps": start,
-        "gpsStart": lowest(column("gpsStart", np.inf)) if "gpsStart" in nodes else start,
+        "gpsStart": first_tile,
         "gpsCentroid": centroid,
         "tSpread": spread,
         "gpsPeak": column("gpsPeak", np.nan)[peak] if "gpsPeak" in nodes else centroid,
-        "duration": highest(window_end) - start,
+        "duration": highest(tile_end) - first_tile,
         "freqMin": lowest(column("freqMin", np.inf)),
         "freqMean": weighted(column("freqMean", np.nan)),
         "freqMax": highest(column("freqMax", -np.inf)),
@@ -500,10 +558,28 @@ class EventWavegram:
     whatever length produced them.
 
     :param grid: (n_bands, n_time_bins) of summed coefficient magnitude.
+    :param bin_seconds: duration one column stands for, seconds. Carried with
+        the grid so that a lag between two maps can be read as a time.
+    :param bands: (n_bands, 2) frequency edges of the rows, Hz.
+    :param gps_first: GPS time of the left edge of the first column. With
+        `bin_seconds` and `bands` this places the map in time and frequency; a
+        map that cannot be placed is not a map, and rederiving the placement at
+        the point of use puts two copies of the same arithmetic in the code.
     """
 
-    def __init__(self, grid: np.ndarray):
+    def __init__(self, grid: np.ndarray, bin_seconds: float = 1.0,
+                 bands: np.ndarray | None = None, gps_first: float = 0.0):
         self.grid = grid
+        self.bin_seconds = float(bin_seconds)
+        self.bands = np.zeros((len(grid), 2)) if bands is None else np.asarray(bands)
+        self.gps_first = float(gps_first)
+
+    def times(self) -> np.ndarray:
+        """The left edge of every column, in GPS seconds.
+
+        :return: numpy.ndarray -- one entry per column.
+        """
+        return self.gps_first + self.bin_seconds * np.arange(self.grid.shape[1])
 
     def wavegram(self, n_time_bins: int | None = None) -> np.ndarray:
         """The event's band-by-time grid.
@@ -518,7 +594,7 @@ class EventWavegram:
 
 def event_coefficients(graph: DetectorGraph, labels=None,
                        time_bins: int = WAVEGRAM_TIME_BINS,
-                       bin_seconds: float = WAVEGRAM_BIN_SECONDS) -> dict:
+                       bin_seconds: float | None = None) -> dict:
     """Each level-one event's coefficients, assembled into one map.
 
     The members are laid out in absolute time, not at their position inside
@@ -539,14 +615,17 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     :param labels: component label per node, or None to take every edge.
     :type time_bins: int
     :param time_bins: columns of the map.
-    :type bin_seconds: float
-    :param bin_seconds: duration one column stands for, seconds.
+    :type bin_seconds: float | None
+    :param bin_seconds: duration one column stands for, seconds; measured from
+        the triggers with `wavegram_bin_seconds` when None.
     :return: dict -- ``{cluster_id: EventWavegram}``.
     """
     nodes = graph.nodes
     if nodes.empty:
         return {}
     labels = graph.components() if labels is None else np.asarray(labels)
+    bin_seconds = (wavegram_bin_seconds(nodes) if bin_seconds is None
+                   else float(bin_seconds))
 
     fs = np.maximum(nodes["fs"].to_numpy(dtype=float), EPS)
     scale = nodes["n_coeff"].to_numpy(dtype=int)
@@ -603,7 +682,7 @@ def event_coefficients(graph: DetectorGraph, labels=None,
             np.add.at(grid, (rows[index[keep]][inside], column[inside]),
                       (np.abs(np.asarray(value_of[node], dtype=float))[keep]
                        / sigma)[inside])
-        out[int(label)] = EventWavegram(grid)
+        out[int(label)] = EventWavegram(grid, bin_seconds, bands, first)
     return out
 
 
@@ -631,29 +710,29 @@ def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
 
     fs = np.maximum(nodes["fs"].to_numpy(dtype=float), EPS)
     scale = nodes["n_coeff"].to_numpy(dtype=float)
-    sigma = nodes["sigma"].to_numpy(dtype=float)
-    sigma = np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, 1.0)
-    energy = (nodes["EnWDF"].to_numpy(dtype=float) * sigma) ** 2
 
     # The fraction of a window that is its own step region, which is what it
     # contributes without repeating what a neighbour already carried.
-    stride = np.full(len(nodes), np.nan)
-    for length in np.unique(scale):
-        here = scale == length
-        spacing = np.diff(np.unique(np.round(nodes["gps"].to_numpy(dtype=float)[here], 6)))
-        spacing = spacing[spacing > 0]
-        stride[here] = float(np.median(spacing)) if spacing.size else length / fs[here][0]
+    strides = window_strides(nodes)
+    stride = np.array([strides[length] for length in scale])
     share = np.clip(stride / (scale / fs), 0.0, 1.0)
 
     # A window's step region is what it contributes without repeating what a
     # neighbour carried; a window with no neighbour repeats nothing, so an event
     # is never quieter than its loudest single window.
     best = np.zeros(n_events)
-    np.maximum.at(best, labels, nodes["EnWDF"].to_numpy(dtype=float))
-    frame = pd.DataFrame(dict(label=labels, scale=scale, energy=energy * share,
-                              sigma=sigma))
-    for (label, _), group in frame.groupby(["label", "scale"], sort=False):
-        value = float(np.sqrt(group.energy.sum()) / group.sigma.mean())
-        if value > best[int(label)]:
-            best[int(label)] = value
-    return best
+    enwdf = nodes["EnWDF"].to_numpy(dtype=float)
+    np.maximum.at(best, labels, enwdf)
+
+    # Each window is already on its own noise scale --- EnWDF is |c|/sigma for
+    # the sigma measured in that window --- so the event's statistic is the sum
+    # of its members' squares over the step regions. Summing the unnormalised
+    # energy and dividing by an average sigma instead is only the same quantity
+    # when the noise does not change between windows, which is what a search
+    # over a long stretch cannot assume.
+    lengths, scale_index = np.unique(scale, return_inverse=True)
+    group = labels * len(lengths) + scale_index
+    summed = np.bincount(group, weights=share * enwdf ** 2,
+                         minlength=n_events * len(lengths))
+    per_length = np.sqrt(summed).reshape(n_events, len(lengths))
+    return np.maximum(best, per_length.max(axis=1))

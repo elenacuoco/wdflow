@@ -15,6 +15,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from wdf.analysis.detector_graph import WAVEGRAM_TIME_BINS
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import (
     EPS,
@@ -27,12 +28,12 @@ from wdf.analysis.robust_events import (
 
 
 # A node is described by the wavelet coefficients of its cluster, rendered on a
-# fixed octave-by-time grid (`ClusterCoefficients.wavegram`), not by scalar
-# summaries. Scoring a coincidence on peak time, peak frequency and the
-# statistic is what the classical finder already does; the coefficients carry
-# the transient's time-frequency pattern, which is the information a learned
-# combiner can use and a time window cannot.
-WAVEGRAM_TIME_BINS = 32
+# fixed octave-by-time grid, not by scalar summaries. Scoring a coincidence on
+# peak time, peak frequency and the statistic is what the classical finder
+# already does; the coefficients carry the transient's time-frequency pattern,
+# which is the information a learned combiner can use and a time window cannot.
+# The grid's width is level one's, imported rather than restated: two constants
+# for the shape of one object drift apart.
 
 # What a candidate edge carries: the arrival-time difference, the agreement
 # between the two wavegrams, the shared fraction of band and of time support,
@@ -41,9 +42,7 @@ WAVEGRAM_TIME_BINS = 32
 # amplitudes differing by a factor of a few, so an unequal pair is physical.
 EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
                  "time_overlap", "log_energy_ratio",
-                 "wavegram_similarity_aligned", "wavegram_lag_bins",
-                 "wavegram_overlap", "wavegram_overlap_aligned",
-                 "energy_band_overlap", "dt_over_tolerance",
+                 "wavegram_overlap", "energy_band_overlap", "dt_over_tolerance",
                  "network_correlation", "coherent_statistic"]
 
 # The coherent energy alone is large wherever two events are loud together,
@@ -67,33 +66,12 @@ EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
 # coherent energy of the pair, in the units the wavegram carries.
 
 # A real signal reaches the two detectors up to the light travel time apart, so
-# two wavegrams anchored each at its own event's time are compared misaligned.
-# The morphologies are therefore also compared at the lag that best aligns them,
-# searched over this many time bins either way. That the two agree at zero lag
-# and that they agree at some lag are different statements, and both are carried.
-MAX_LAG_BINS = 3
+# two maps anchored each at its own event's time are offset by that much. No
+# alignment is searched for here and none is precomputed as a feature: on a map
+# whose columns are finer than the light travel time the offset is visible in
+# the maps themselves, and the pair carries its own dt, so the correspondence
+# between the two morphologies in time is left for the network to learn.
 N_EDGE_FEATURES = len(EDGE_FEATURES)
-
-
-def _aligned_similarity(left, right, max_lag: int = None):
-    """Agreement between two wavegrams at the lag that best aligns them.
-
-    :param left: (n, n_bands, n_bins) unit-norm grids.
-    :param right: (n, n_bands, n_bins) unit-norm grids.
-    :param max_lag: bins to search either way; default MAX_LAG_BINS.
-    :return: (best agreement, lag in bins) -- the lag is positive when the
-        right grid had to move later to match the left.
-    """
-    max_lag = MAX_LAG_BINS if max_lag is None else max_lag
-    if left.size == 0:
-        return np.zeros(len(left)), np.zeros(len(left))
-    lags = np.arange(-max_lag, max_lag + 1)
-    scores = np.stack([
-        np.einsum("ijk,ijk->i", left, np.roll(right, shift, axis=2))
-        for shift in lags
-    ], axis=1)
-    best = scores.argmax(axis=1)
-    return scores[np.arange(len(best)), best], lags[best].astype(float)
 
 
 class TriggerGraph:
@@ -155,7 +133,17 @@ class TriggerGraph:
         # what keeps the antenna responses from penalising a real signal seen
         # unequally in the two detectors, which normalising by amplitude does.
         table["network_shape_weighted"] = (
-            table["network_enwdf"] * table["wavegram_similarity_aligned"])
+            table["network_enwdf"] * table["wavegram_similarity"])
+
+        # Admissibility is on the events' extents, so a pair may now be admitted
+        # seconds apart when both events are long. The arrival times of one
+        # signal still differ by at most the light travel time, and dt is
+        # measured on every pair -- so a candidate that used none of the
+        # tolerance it was allowed keeps its full statistic, and one that used
+        # all of it is discounted. This puts dt where GstLAL puts it, in the
+        # ranking rather than in the gate.
+        table["network_min_enwdf_timed"] = (
+            table["network_min_enwdf"] / (1.0 + table["dt_over_tolerance"]))
         return table
 
 
@@ -202,23 +190,16 @@ class TriggerGraphBuilder:
         self.ifos = ifos
         self.wavegram_time_bins = wavegram_time_bins
 
-    def build(self, clustered: dict[str, pd.DataFrame],
-              coefficients: dict[str, dict]) -> TriggerGraph:
-        """Assemble the graph from each detector's events and their coefficients.
+    def _stack(self, clustered, coefficients, ifos):
+        """Every event's map, in the detector order given.
 
-        :type clustered: dict[str, pandas.DataFrame]
-        :param clustered: ``{ifo: event catalogue}``, each row carrying at
-            least `cluster_id` and `gpsPeak`.
-        :type coefficients: dict[str, dict]
-        :param coefficients: ``{ifo: {cluster_id: ClusterCoefficients}}``, as
-            `wdf.analysis.cluster_coefficients.collect_cluster_coefficients`
-            returns. Every event must have an entry.
-        :return: TriggerGraph
-        :raises KeyError: if an event has no coefficients.
+        :return: tuple -- (frames, grids, grid_shape, bin_seconds).
         """
-        ifos = self.ifos or list(clustered.keys())
         frames, grids = [], []
         grid_shape = (0, self.wavegram_time_bins)
+        # Like the width, the duration of a column comes from the grids that
+        # arrived: level one measures it from the data the search was run on.
+        bin_seconds = 1.0
         for ifo in ifos:
             per_cluster = coefficients[ifo]
             events = clustered[ifo].reset_index(drop=True)
@@ -230,9 +211,44 @@ class TriggerGraphBuilder:
                 )
             frames.append(events.assign(ifo=ifo))
             for label in events["cluster_id"].astype(int):
-                grid = np.asarray(per_cluster[label].wavegram(self.wavegram_time_bins))
+                rendered = per_cluster[label]
+                grid = np.asarray(rendered.wavegram(self.wavegram_time_bins))
                 grid_shape = grid.shape
+                bin_seconds = getattr(rendered, "bin_seconds", bin_seconds)
                 grids.append(grid.ravel())
+        return frames, grids, grid_shape, bin_seconds
+
+    def build(self, clustered: dict[str, pd.DataFrame],
+              coefficients: dict[str, dict],
+              comparison: dict[str, dict] | None = None) -> TriggerGraph:
+        """Assemble the graph from each detector's events and their coefficients.
+
+        Two renderings of the same events answer two different questions and
+        want opposite resolutions. The map that assembles an event needs wide
+        columns and a long span, so that windows seconds apart describe one
+        transient. The map two detectors are compared on needs columns finer
+        than the light travel time, or a real delay moves no cell and no
+        comparison --- computed here or learned downstream --- can see it.
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: ``{ifo: event catalogue}``, each row carrying at
+            least `cluster_id` and `gpsPeak`.
+        :type coefficients: dict[str, dict]
+        :param coefficients: ``{ifo: {cluster_id: EventWavegram}}``, the
+            assembly map. Every event must have an entry.
+        :type comparison: dict[str, dict] | None
+        :param comparison: the same events rendered for the cross-detector
+            comparison; the assembly map when None.
+        :return: TriggerGraph
+        :raises KeyError: if an event has no coefficients.
+        """
+        ifos = self.ifos or list(clustered.keys())
+        frames, grids, grid_shape, bin_seconds = self._stack(
+            clustered, coefficients, ifos)
+        if comparison is None:
+            fine, fine_shape, fine_bin = grids, grid_shape, bin_seconds
+        else:
+            _, fine, fine_shape, fine_bin = self._stack(clustered, comparison, ifos)
         nodes_df = pd.concat(frames, ignore_index=True)
 
         # |coefficient|/sigma spans decades, so compress before standardising;
@@ -245,16 +261,19 @@ class TriggerGraphBuilder:
         # Unit-norm grids, so the similarity between two of them is a shape
         # comparison and not an amplitude one: the same signal reaches two
         # detectors with amplitudes set by their antenna responses.
-        norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
+        # The comparison is made on the fine rendering, where the light travel
+        # time is several columns wide.
+        raw = np.vstack(fine) if fine else np.zeros((0, 1))
+        compressed = np.log1p(raw)
+        norms = np.linalg.norm(compressed, axis=1, keepdims=True)
         norms[norms == 0.0] = 1.0
-        shapes = wavegrams / norms
-        raw = np.vstack(grids) if grids else np.zeros((0, 1))
+        shapes = compressed / norms
         # The width comes from the grids that arrived, not from this builder's
         # own constant: a multi-window event is rendered on the shared band grid
         # by its own level, which need not have chosen the same number of bins.
-        panels = shapes.reshape(len(shapes), *grid_shape) if shapes.size else \
+        panels = shapes.reshape(len(shapes), *fine_shape) if shapes.size else \
             shapes.reshape(len(shapes), 0, self.wavegram_time_bins)
-        energy_panels = raw.reshape(len(raw), *grid_shape) if raw.size else \
+        energy_panels = raw.reshape(len(raw), *fine_shape) if raw.size else \
             raw.reshape(len(raw), 0, self.wavegram_time_bins)
 
         energy = _coefficient_energy(nodes_df)
@@ -304,17 +323,17 @@ class TriggerGraphBuilder:
                               for i, j, _, dt, f_overlap, t_overlap in admissible])
             i_sel = idx_a[local[:, 0].astype(int)]
             j_sel = idx_b[local[:, 1].astype(int)]
+            # No alignment is applied and none is precomputed. The maps are
+            # rendered finely enough that a real delay moves several columns,
+            # and the pair carries its own dt, so how the two morphologies
+            # correspond in time is left for the network to learn rather than
+            # answered here.
             similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
-            aligned, lag = _aligned_similarity(panels[i_sel], panels[j_sel])
-            overlap = np.sqrt(np.maximum(np.einsum(
-                "ij,ij->i", raw[i_sel], raw[j_sel]), 0.0))
-            cross_aligned, _ = _aligned_similarity(
-                energy_panels[i_sel], energy_panels[j_sel])
-            cross_aligned = np.maximum(cross_aligned, 0.0)
-            overlap_aligned = np.sqrt(cross_aligned)
+            coherent = np.maximum(np.einsum("ij,ij->i", raw[i_sel], raw[j_sel]), 0.0)
+            overlap = np.sqrt(coherent)
             present = (np.einsum("ij,ij->i", raw[i_sel], raw[i_sel])
                        + np.einsum("ij,ij->i", raw[j_sel], raw[j_sel]))
-            correlation = np.clip(2.0 * cross_aligned / np.maximum(present, EPS),
+            correlation = np.clip(2.0 * coherent / np.maximum(present, EPS),
                                   0.0, 1.0)
             cross_edges.append(np.column_stack([i_sel, j_sel]))
             cross_feats.append(np.column_stack([
@@ -324,20 +343,18 @@ class TriggerGraphBuilder:
                 local[:, 4],                                   # time overlap
                 np.log(np.maximum(energy[i_sel], EPS)
                        / np.maximum(energy[j_sel], EPS)),      # log energy ratio
-                aligned,                                       # agreement, best aligned
-                lag,                                           # bins it took to align
                 overlap,                                       # coherent energy
-                overlap_aligned,                               # the same, best aligned
                 _overlap_fraction(band_lo[i_sel], band_hi[i_sel],
                                   band_lo[j_sel], band_hi[j_sel]),
                 # How far apart they are relative to what this pair may claim:
                 # a long event is allowed a wide tolerance, and should not be
                 # ranked as if it had used none of it.
                 np.abs(local[:, 2]) / np.maximum(
-                    self.coincidence.timing_tolerance(spread[i_sel], spread[j_sel]),
+                    self.coincidence.timing_tolerance(spread[i_sel], spread[j_sel],
+                                                      (ifo_a, ifo_b)),
                     EPS),
                 correlation,
-                overlap_aligned * correlation,
+                overlap * correlation,
             ]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)

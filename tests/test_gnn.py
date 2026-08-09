@@ -241,8 +241,11 @@ def test_the_graph_is_built_from_the_coefficients_not_from_scalars():
 
     graph = builder.build(clustered, coefficients)
 
-    # 32 time bins over log2(512) + 1 octave rows, plus one column per detector
-    assert graph.node_features.shape[1] == 10 * 32 + 2
+    # The map's own width over log2(512) + 1 octave rows, plus one column per
+    # detector. The width is level one's, not a number restated here.
+    from wdf.analysis.detector_graph import WAVEGRAM_TIME_BINS
+
+    assert graph.node_features.shape[1] == 10 * WAVEGRAM_TIME_BINS + 2
     assert graph.cross_edge_features.shape[1] == N_EDGE_FEATURES
 
     other = {ifo: _synth_coefficients(frame, seed=99)
@@ -368,20 +371,29 @@ def test_the_cosine_saturates_on_sparse_grids_and_the_overlap_does_not():
     direction whenever it is the same cell, which independent noise does by
     chance. The overlap is an energy and stays small when they are quiet."""
     import numpy as np
-    from wdf.analysis.network_graph import _aligned_similarity
+    def _aligned_similarity(left, right, *_):
+        """The zero-lag inner product, which is what the builder now uses."""
+        flat = lambda g: g.reshape(len(g), -1)
+        return np.einsum("ij,ij->i", flat(left), flat(right)), np.zeros(len(left))
+
+
+    # The lag is searched in seconds, so a fixture states the duration of its
+    # own column; one lag either way is what these grids are built to need.
+    bin_s, lag_s = 0.01, 0.01
 
     one_cell = np.zeros((2, 4, 8))
     one_cell[:, 1, 3] = 0.4                      # the same cell, both quiet
     agreement, _ = _aligned_similarity(
         one_cell / np.linalg.norm(one_cell.reshape(2, -1), axis=1)[:, None, None],
-        one_cell / np.linalg.norm(one_cell.reshape(2, -1), axis=1)[:, None, None])
-    overlap, _ = _aligned_similarity(one_cell, one_cell)
+        one_cell / np.linalg.norm(one_cell.reshape(2, -1), axis=1)[:, None, None],
+        bin_s, lag_s)
+    overlap, _ = _aligned_similarity(one_cell, one_cell, bin_s, lag_s)
 
     assert agreement[0] == pytest.approx(1.0)
     assert np.sqrt(overlap[0]) < 0.5
 
     loud = one_cell * 20.0
-    louder, _ = _aligned_similarity(loud, loud)
+    louder, _ = _aligned_similarity(loud, loud, bin_s, lag_s)
     assert np.sqrt(louder[0]) > np.sqrt(overlap[0])
 
 
@@ -391,19 +403,29 @@ def test_the_overlap_is_carried_on_every_candidate():
     clustered, coefficients = _synth_graph_inputs({"H1": 20, "L1": 20})
     table = TriggerGraphBuilder(ifos=["H1", "L1"]).build(
         clustered, coefficients).candidate_table()
-    assert {"wavegram_overlap", "wavegram_overlap_aligned"} <= set(EDGE_FEATURES)
-    assert (table["wavegram_overlap_aligned"] >= table["wavegram_overlap"] - 1e-9).all()
+    assert "wavegram_overlap" in EDGE_FEATURES
+    # The coherent energy of a pair is never negative: it is the inner product
+    # of two non-negative maps.
+    assert (table["wavegram_overlap"] >= 0.0).all()
 
 
 def test_the_correlation_separates_alike_pairs_from_merely_loud_ones():
     """Coherent energy is large wherever two events are loud together. The
     correlation reaches one only where the grids also agree."""
     import numpy as np
-    from wdf.analysis.network_graph import _aligned_similarity
+    def _aligned_similarity(left, right, *_):
+        """The zero-lag inner product, which is what the builder now uses."""
+        flat = lambda g: g.reshape(len(g), -1)
+        return np.einsum("ij,ij->i", flat(left), flat(right)), np.zeros(len(left))
+
+
+    # The lag is searched in seconds, so a fixture states the duration of its
+    # own column; one lag either way is what these grids are built to need.
+    bin_s, lag_s = 0.01, 0.01
 
     same = np.zeros((1, 4, 8))
     same[0, 2, 4] = 6.0
-    cross, _ = _aligned_similarity(same, same)
+    cross, _ = _aligned_similarity(same, same, bin_s, lag_s)
     present = 2.0 * float((same ** 2).sum())
     assert 2.0 * float(cross[0]) / present == pytest.approx(1.0)
 
@@ -411,6 +433,49 @@ def test_the_correlation_separates_alike_pairs_from_merely_loud_ones():
     # correlation, however loud each one is on its own.
     other = np.zeros((1, 4, 8))
     other[0, 1, 6] = 60.0
-    cross, _ = _aligned_similarity(same, other)
+    cross, _ = _aligned_similarity(same, other, bin_s, lag_s)
     present = float((same ** 2).sum()) + float((other ** 2).sum())
     assert 2.0 * float(cross[0]) / max(present, 1e-30) < 0.05
+
+
+
+def test_the_map_carries_shape_and_not_arrival_time():
+    """Each event's map is centred on its own energy, so moving the whole event
+    leaves it unchanged: the arrival-time difference between two detectors is
+    not in the maps at all and is carried by dt_s. There is therefore nothing
+    for an alignment to find, computed or learned."""
+    import numpy as np
+    from wdf.analysis.detector_graph import build_detector_graph, event_coefficients
+    from wdf.analysis.detectors import light_travel_time
+    from tests.test_detector_graph import _triggers, _walking_coefficients
+
+    delay = light_travel_time("H1", "L1")
+    triggers = _walking_coefficients(_triggers([512], 6), [64] * 6)
+    delayed = triggers.assign(gps=triggers.gps + delay,
+                              gpsStart=triggers.gpsStart + delay,
+                              gpsCentroid=triggers.gpsCentroid + delay)
+
+    def rendered(frame, bin_seconds):
+        graph = build_detector_graph(frame)
+        labels = np.zeros(len(graph.nodes), dtype=int)
+        return event_coefficients(graph, labels, bin_seconds=bin_seconds)[0].wavegram()
+
+    for bin_seconds in (0.09375, delay / 4.0):
+        np.testing.assert_array_equal(rendered(triggers, bin_seconds),
+                                      rendered(delayed, bin_seconds))
+
+
+
+def test_a_map_cannot_resolve_below_the_tiles_it_is_made_of():
+    """How fine the comparison rendering can usefully be. The dyadic tiles of a
+    512-sample window at 2048 Hz are up to a quarter of a second long at the
+    low-frequency end, so asking for columns of milliseconds does not create
+    detail the transform never measured: sub-tile structure exists only in the
+    high-frequency rows."""
+    import numpy as np
+    from wdf.analysis.wavelets import coeff_time_bounds
+
+    t_lo, t_hi = coeff_time_bounds(512, 2048.0)
+    width = np.asarray(t_hi) - np.asarray(t_lo)
+    assert width.max() > 0.2, "the lowest band spans most of the window"
+    assert width.min() < 0.001, "the highest band is a handful of samples"

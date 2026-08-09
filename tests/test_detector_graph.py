@@ -236,12 +236,42 @@ def test_a_sweeping_transient_is_not_broken_by_the_continuity_test():
     assert labels.max() + 1 < len(sweeping) / 2
 
 
+def test_the_event_extends_as_far_as_its_energy():
+    """A window is the same length whatever it holds, so measuring the event
+    across the windows adds up to one whole window at each end."""
+    triggers = _fixed_coefficients(_triggers([512], 4), [64])
+    window = triggers.n_coeff.to_numpy(dtype=float) / triggers.fs.to_numpy(dtype=float)
+    tile = window / triggers.n_coeff.to_numpy(dtype=float)
+    triggers = triggers.assign(gpsStart=triggers.gps + 0.25 * window, duration=tile)
+
+    events = detector_events(build_detector_graph(triggers))
+    covered = (triggers.gpsStart + triggers.duration).max() - triggers.gpsStart.min()
+    assert events["duration"].max() == pytest.approx(covered)
+    assert events["gpsStart"].min() == pytest.approx(triggers.gpsStart.min())
+
+
+def test_continuity_is_between_the_energy_not_between_the_windows():
+    """Consecutive windows overlap by construction, so a gap measured on them
+    is negative almost everywhere. What has to continue is the surviving
+    tiles: one window's energy ending where the next window's begins."""
+    triggers = _fixed_coefficients(_triggers([512], 6), [64])
+    stride = float(np.diff(np.sort(triggers.gps.to_numpy())).min())
+
+    # Every window overlaps its neighbour, but each holds a tile of one
+    # millisecond sitting at the window's own start, so the energy is apart by
+    # the whole stride.
+    touching = triggers.assign(gpsStart=triggers.gps, duration=stride)
+    apart = triggers.assign(gpsStart=triggers.gps, duration=0.001)
+
+    assert len(build_detector_graph(apart).edges) < \
+        len(build_detector_graph(touching).edges)
+
+
 def test_two_events_of_different_length_share_one_time_base():
     """A column stands for the same duration wherever it is drawn, so two maps
     compared across the network are not stretched onto each other."""
     import numpy as np
-    from wdf.analysis.detector_graph import (WAVEGRAM_BIN_SECONDS,
-                                             event_coefficients)
+    from wdf.analysis.detector_graph import event_coefficients
 
     short = _walking_coefficients(_triggers([512], 3), [64, 64, 64])
     long = _walking_coefficients(_triggers([512], 24), [64] * 24)
@@ -257,6 +287,26 @@ def test_two_events_of_different_length_share_one_time_base():
     # per column means the map records how long the transient actually was.
     assert int((grids[1] > 0).sum(axis=0).astype(bool).sum()) > \
         int((grids[0] > 0).sum(axis=0).astype(bool).sum())
+
+
+def test_the_time_base_follows_the_data_and_is_not_written_in_the_source():
+    """A column is as long as the search's shortest stride, which is a property
+    of the data analysed. Writing it into the module fixes the map to one
+    sampling rate and fails silently on any other."""
+    import numpy as np
+    from wdf.analysis.detector_graph import event_coefficients, wavegram_bin_seconds
+
+    triggers = _walking_coefficients(_triggers([512], 6), [64] * 6)
+    faster = triggers.assign(fs=triggers.fs * 4.0,
+                             gps=triggers.gps.min()
+                             + (triggers.gps - triggers.gps.min()) / 4.0)
+
+    assert wavegram_bin_seconds(faster) == pytest.approx(
+        wavegram_bin_seconds(triggers) / 4.0)
+
+    rendered = event_coefficients(build_detector_graph(faster),
+                                  np.zeros(len(faster), dtype=int))
+    assert rendered[0].bin_seconds == pytest.approx(wavegram_bin_seconds(faster))
 
 
 def test_the_map_keeps_the_part_that_carries_the_energy():
@@ -275,3 +325,25 @@ def test_the_map_keeps_the_part_that_carries_the_energy():
 
     occupied = np.flatnonzero((grid > 0).any(axis=0))
     assert occupied.size, "the loud end must fall inside the map"
+
+
+def test_the_map_can_be_placed_in_time_and_frequency():
+    """A grid without its axes is not a map. The rows carry their band edges and
+    the columns their GPS times, so a plot and a comparison read the same
+    placement instead of each recomputing it."""
+    import numpy as np
+    from wdf.analysis.detector_graph import band_grid, event_coefficients
+
+    triggers = _walking_coefficients(_triggers([512], 8), [64] * 8)
+    graph = build_detector_graph(triggers)
+    labels = np.zeros(len(graph.nodes), dtype=int)
+    rendered = event_coefficients(graph, labels)[0]
+
+    assert rendered.bands.shape == (rendered.grid.shape[0], 2)
+    np.testing.assert_allclose(rendered.bands, band_grid([512], FS))
+
+    times = rendered.times()
+    assert times.shape == (rendered.grid.shape[1],)
+    assert np.allclose(np.diff(times), rendered.bin_seconds)
+    # The map is centred on the event, so the transient falls inside its span.
+    assert times[0] < triggers.gpsCentroid.mean() < times[-1]
