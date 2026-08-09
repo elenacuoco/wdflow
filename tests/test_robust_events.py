@@ -126,21 +126,36 @@ def test_a_pair_further_apart_than_its_own_tolerance_is_not_a_candidate():
     assert len(finder.find({"H1": left, "L1": far})) == 0
 
 
-def test_no_pair_claims_more_than_a_signal_can_produce():
-    """One signal reaches the two detectors within the light travel time. An
-    event's spread is uncertainty on its own centroid, and for a signal seen in
-    both it is largely common and cancels in the difference, so a long event
-    does not buy a wider window: without the cap the accidental rate would grow
-    with the events' duration."""
+def test_a_long_pair_is_admitted_on_its_extent_and_not_on_an_instant():
+    """An extended transient has no arrival time. Two detectors seeing one
+    chirp put their centroids far further apart than the light travel time,
+    because which instant each calls the centre depends on its own noise and
+    antenna response --- so the test is that the stretches of time they cover
+    meet, which for a transient shorter than the light travel time is the same
+    statement."""
     finder = IndexedCoincidenceFinder(light_travel_time_s=0.01, timing_jitter_s=0.001,
                                       timing_sigma=3.0, maximum_tolerance_s=0.025)
     long_left = _timed_events([100.0], [0.5], [4.0], [10.0], "H1")
     long_right = _timed_events([100.3], [0.5], [4.0], [9.0], "L1")
-    assert len(finder.find({"H1": long_left, "L1": long_right})) == 0
+    assert len(finder.find({"H1": long_left, "L1": long_right})) == 1
 
-    # Inside the cap the same long pair is admitted.
-    near_right = _timed_events([100.02], [0.5], [4.0], [9.0], "L1")
-    assert len(finder.find({"H1": long_left, "L1": near_right})) == 1
+    # Extents that never meet are refused however long the events are.
+    elsewhere = _timed_events([120.0], [0.5], [4.0], [9.0], "L1")
+    assert len(finder.find({"H1": long_left, "L1": elsewhere})) == 0
+
+
+def test_two_instants_are_still_held_to_the_light_travel_time():
+    """Events of no measured extent have nothing but their instant, so the
+    shift that has to reconcile them is the light travel time plus what each is
+    uncertain about its own timing --- the extent test does not loosen that."""
+    finder = IndexedCoincidenceFinder(light_travel_time_s=0.01, timing_jitter_s=0.001,
+                                      timing_sigma=3.0)
+    left = _timed_events([100.0], [0.001], [0.0], [10.0], "H1")
+    near = _timed_events([100.005], [0.001], [0.0], [9.0], "L1")
+    far = _timed_events([100.5], [0.001], [0.0], [9.0], "L1")
+
+    assert len(finder.find({"H1": left, "L1": near})) == 1
+    assert len(finder.find({"H1": left, "L1": far})) == 0
 
 
 def test_supports_that_do_not_overlap_are_refused_however_close_the_centroids():
@@ -245,3 +260,68 @@ def test_a_missing_window_breaks_the_chain_unless_it_is_allowed():
 
     assert len(strict) == 2
     assert len(lenient) == 1
+
+
+
+def test_a_time_slide_moves_an_event_without_tearing_it_apart():
+    """An event that straddles the seam of a circular slide must arrive whole:
+    wrapping each of its times on its own leaves the start after the end and
+    the extent as long as the segment."""
+    import numpy as np
+    import pandas as pd
+    from wdf.analysis.robust_events import FARConfig, TimeSlideFAR
+
+    start, span = 1000.0, 100.0
+    events = pd.DataFrame(dict(
+        cluster_id=[0], ifo=["L1"], gps=[start + span - 0.5],
+        gpsStart=[start + span - 0.5], gpsCentroid=[start + span - 0.4],
+        gpsPeak=[start + span - 0.4], gpsEnd=[start + span - 0.2],
+        tSpread=[0.01], duration=[0.3], freqMin=[20.0], freqMean=[100.0],
+        freqMax=[400.0], EnWDF=[10.0], sigma=[1.0]))
+
+    seen = []
+
+    class Recorder:
+        def find(self, events_by_ifo):
+            seen.append(events_by_ifo["L1"].copy())
+            return pd.DataFrame()
+
+    slider = TimeSlideFAR(Recorder(), config=FARConfig(n_slides=20, seed=3))
+    slider.background_distribution({"H1": events.assign(ifo="H1"), "L1": events},
+                                   segment_bounds={"H1": (start, start + span),
+                                    "L1": (start, start + span)})
+
+    assert seen, "the slide must reach the finder"
+    for frame in seen:
+        extent = float(frame.gpsEnd.iloc[0] - frame.gpsStart.iloc[0])
+        assert extent == pytest.approx(0.3), "the event arrived torn apart"
+
+
+def test_an_empty_background_keeps_its_columns():
+    """A background with no candidates still has to say what a candidate is.
+    A DataFrame with neither rows nor columns reports a missing background as a
+    missing statistic, which sends the reader looking for the wrong fault."""
+    import numpy as np
+    import pandas as pd
+    from wdf.analysis.robust_events import FARConfig, TimeSlideFAR
+
+    columns = ["candidate_id", "gps_candidate", "network_enwdf",
+               "network_min_enwdf"]
+
+    class NeverFinds:
+        def find(self, events_by_ifo):
+            return pd.DataFrame(columns=columns)
+
+    events = pd.DataFrame(dict(
+        cluster_id=[0], ifo=["L1"], gps=[1000.0], gpsStart=[1000.0],
+        gpsCentroid=[1000.0], gpsPeak=[1000.0], tSpread=[0.01], duration=[0.1],
+        freqMin=[20.0], freqMean=[100.0], freqMax=[400.0], EnWDF=[10.0],
+        sigma=[1.0]))
+
+    background = TimeSlideFAR(
+        NeverFinds(), FARConfig(n_slides=5, seed=0)).background_distribution(
+        {"H1": events.assign(ifo="H1"), "L1": events},
+        segment_bounds={"H1": (900.0, 1100.0), "L1": (900.0, 1100.0)})
+
+    assert len(background) == 0
+    assert list(background.columns) == columns

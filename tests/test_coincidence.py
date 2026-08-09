@@ -38,9 +38,11 @@ def test_no_coincidence_when_far_apart():
 
 
 def test_unknown_ifo_pair_raises():
+    """The baselines follow from the detectors' positions, so a pair is known
+    whenever both sites are; a name that is no detector is not."""
     cf = CoincidenceFinder()
     try:
-        cf.coincidence_window("H1", "K1")
+        cf.coincidence_window("H1", "XX")
         assert False, "expected KeyError for unknown baseline"
     except KeyError:
         pass

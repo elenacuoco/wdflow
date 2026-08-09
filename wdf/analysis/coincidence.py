@@ -14,12 +14,13 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-# Fixed light-travel-time baselines between LIGO/Virgo sites, seconds --
-# geocentric great-circle distance between detector vertices / c.
+from wdf.analysis.detectors import DETECTOR_VERTEX, light_travel_time
+
+# Derived from the detectors' positions rather than tabulated: a baseline is a
+# distance, and a table of times has to be extended by hand for every pair.
 LIGHT_TRAVEL_TIME_S = {
-    frozenset(("H1", "L1")): 0.0100,
-    frozenset(("H1", "V1")): 0.0273,
-    frozenset(("L1", "V1")): 0.0264,
+    frozenset((a, b)): light_travel_time(a, b)
+    for i, a in enumerate(DETECTOR_VERTEX) for b in list(DETECTOR_VERTEX)[i + 1:]
 }
 
 CANDIDATE_COLUMNS_BASE = [

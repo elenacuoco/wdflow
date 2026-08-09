@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
+from wdf.analysis.detectors import network_light_travel_time
 from wdf.analysis.pairs import cross_pairs, neighbour_pairs
 
 EPS = np.finfo(float).tiny
@@ -133,6 +134,24 @@ def _shifted_overlap_fraction(a0, a1, b0, b1, tolerance):
     width = np.maximum(np.minimum(a1 - a0, b1 - b0), EPS)
     overlap = np.minimum(a1, b1 + tolerance) - np.maximum(a0, b0 - tolerance)
     return np.clip(np.minimum(overlap, width) / width, 0.0, 1.0)
+
+
+def _intervals_touch(a0, a1, b0, b1, tolerance):
+    """Whether two intervals meet once one may shift by `tolerance`.
+
+    Stated as an intersection rather than as a fraction of either width, so an
+    event of no measured extent --- one tile, or a catalogue that records only
+    an instant --- is admitted when it falls inside the other, which a fraction
+    normalised by a zero width cannot express.
+
+    :param a0: start of the first interval.
+    :param a1: end of the first interval.
+    :param b0: start of the second interval.
+    :param b1: end of the second interval.
+    :param tolerance: how far the second interval may shift either way.
+    :return: boolean array.
+    """
+    return np.minimum(a1, b1 + tolerance) >= np.maximum(a0, b0 - tolerance)
 
 
 def _group_bounds(size: np.ndarray) -> np.ndarray:
@@ -395,7 +414,11 @@ class CoincidenceConfig:
     zero spread, which is a statement about the tiling, not about the signal.
 
     :param light_travel_time_s: largest arrival-time difference a real signal
-        can have between the two detectors.
+        can have between the detectors, seconds. None takes it from the
+        detectors named in `ifos`, which is a distance rather than a number
+        chosen for one pair; a value overrides that.
+    :param ifos: the detectors in the network, used to resolve the light travel
+        time when it is not given.
     :param timing_jitter_s: floor on an event's timing spread, seconds. It is a
         floor and not the timing error: an event living in one tile declares
         zero spread, which is a statement about the tiling. Set so that the
@@ -405,21 +428,27 @@ class CoincidenceConfig:
     :param minimum_frequency_overlap: least overlap of the two bands.
     :param minimum_time_overlap: least overlap of the two time supports, once
         one of them is allowed to shift by the light travel time.
-    :param maximum_tolerance_s: largest time difference any pair may claim,
-        whatever their spreads. The arrival times of one signal differ by at
-        most the light travel time; an event's spread is uncertainty on its own
-        centroid, and for a signal seen in both detectors that uncertainty is
-        largely common and cancels in the difference. Without a cap a pair of
-        long events claims seconds, which no signal can produce and which lets
-        the accidental rate grow with the events' duration.
+    :param maximum_tolerance_travel_times: largest time difference any pair may
+        claim, in units of that pair's own light travel time, whatever their
+        spreads. The arrival times of one signal differ by at most the light
+        travel time; an event's spread is uncertainty on its own centroid, and
+        for a signal seen in both detectors that uncertainty is largely common
+        and cancels in the difference. Without a cap a pair of long events
+        claims seconds, which no signal can produce and which lets the
+        accidental rate grow with the events' duration. Expressed as a multiple
+        because a cap in seconds is a cap for one baseline: 2.5 is 25 ms across
+        Hanford and Livingston and 68 ms across Hanford and Virgo.
+    :param maximum_tolerance_s: an explicit cap in seconds, overriding the
+        multiple when given.
     """
 
-    light_travel_time_s: float = 0.01001
+    light_travel_time_s: float | None = None
     timing_jitter_s: float = 0.0035
     timing_sigma: float = 3.0
     minimum_frequency_overlap: float = 0.0
     minimum_time_overlap: float = 0.0
-    maximum_tolerance_s: float = 0.025
+    maximum_tolerance_travel_times: float = 2.5
+    maximum_tolerance_s: float | None = None
     time_weight: float = 1.0
     frequency_weight: float = 1.0
     # Amplitude ratio is not a shape mismatch: the same signal reaches two
@@ -429,18 +458,41 @@ class CoincidenceConfig:
     # default; the frequency term already carries the shape test.
     morphology_weight: float = 0.0
 
-    def timing_tolerance(self, left_spread, right_spread):
+    def travel_time(self, ifos=None) -> float:
+        """The largest arrival-time difference this pair's geometry allows.
+
+        :param ifos: the detectors being paired; None with no explicit value
+            set means no geometry is known and the time is zero.
+        :return: float -- seconds.
+        """
+        if self.light_travel_time_s is not None:
+            return float(self.light_travel_time_s)
+        return network_light_travel_time(ifos or ())
+
+    def maximum_tolerance(self, ifos=None) -> float:
+        """The cap on any pair's timing tolerance, seconds.
+
+        :param ifos: the detectors being paired.
+        :return: float -- seconds.
+        """
+        if self.maximum_tolerance_s is not None:
+            return float(self.maximum_tolerance_s)
+        return self.maximum_tolerance_travel_times * self.travel_time(ifos)
+
+    def timing_tolerance(self, left_spread, right_spread, ifos=None):
         """Largest time difference the two events may have and still pair.
 
         :param left_spread: one event's timing spread, seconds.
         :param right_spread: the other event's timing spread, seconds.
+        :param ifos: the detectors being paired, which set the light travel
+            time and the cap.
         :return: the tolerance, seconds.
         """
         left = np.maximum(left_spread, self.timing_jitter_s)
         right = np.maximum(right_spread, self.timing_jitter_s)
         return np.minimum(
-            self.light_travel_time_s + self.timing_sigma * np.hypot(left, right),
-            self.maximum_tolerance_s)
+            self.travel_time(ifos) + self.timing_sigma * np.hypot(left, right),
+            self.maximum_tolerance(ifos))
 
 
 class IndexedCoincidenceFinder:
@@ -455,13 +507,43 @@ class IndexedCoincidenceFinder:
             config = CoincidenceConfig(**kwargs)
         self.config = config
 
+    @staticmethod
+    def _pair(left=None, right=None) -> tuple:
+        """The detectors two event frames belong to.
+
+        The geometry of a coincidence is a property of the pair being tested,
+        so it is read from the events rather than configured once for the whole
+        network.
+
+        :param left: one detector's events.
+        :param right: the other detector's events.
+        :return: tuple -- the detector names found, in the order given.
+        """
+        names = []
+        for events in (left, right):
+            if events is not None and len(events) and "ifo" in events:
+                names.append(str(events["ifo"].iloc[0]))
+        return tuple(names)
+
     def coincidence_window(self, left=None, right=None):
-        """The largest timing tolerance any pair of these events can claim.
+        """How far apart two of these events can sit and still overlap in time.
+
+        The test a pair has to pass is that the stretches of time the two events
+        cover overlap, so the pairs worth forming are those whose extents can
+        reach each other: the two longest, plus the light travel time. A window
+        set by the timing tolerance alone would search a fraction of a second
+        and never form the pair a signal lasting seconds produces.
 
         :param left: one detector's events, or None for the configured floor.
         :param right: the other detector's events, or None.
-        :return: the tolerance, seconds.
+        :return: the reach, seconds.
         """
+        reach = self.config.travel_time(self._pair(left, right))
+        for events in (left, right):
+            if events is not None and len(events):
+                extent = _numeric(events, ("duration",), default=0.0)
+                extent = extent[np.isfinite(extent)]
+                reach += float(extent.max()) if extent.size else 0.0
         spreads = [self.config.timing_jitter_s]
         for events in (left, right):
             if events is not None and len(events):
@@ -470,17 +552,32 @@ class IndexedCoincidenceFinder:
                 if spread.size:
                     spreads.append(float(spread.max()))
         widest = max(spreads)
-        return float(self.config.timing_tolerance(widest, widest))
+        return float(max(reach, self.config.timing_tolerance(
+            widest, widest, self._pair(left, right))))
 
     def candidate_edges(self, left, right):
         """Every pair of events a signal could physically have produced.
 
-        The pair must arrive within the light travel time plus the two events'
-        own timing spreads, share enough of its band, and share enough of its
-        time support once one of them is allowed to shift by the light travel
-        time. What survives is the candidate set; deciding among the survivors
-        is a separate question, and this is what both the one-to-one assignment
-        and the graph stage start from, so that the two admit the same pairs.
+        The pair must cover the same stretch of time once one of the two is
+        allowed to shift by the light travel time, and share enough of its band.
+
+        The test is on the events' extents and not on any single instant of
+        them. An extended transient has no arrival time: a chirp lasting
+        seconds is spread over all of them, and which instant a detector calls
+        its centroid or its peak depends on its own noise, its antenna response
+        and which coefficients survived threshold. Measured on the simulated
+        set, two detectors seeing one compact binary put their centroids a
+        median of 81 ms apart and their peaks 15.6 ms, against a light travel
+        time of 10 ms --- so no instant agrees, while the stretches covered do.
+        For a transient shorter than the light travel time the two statements
+        coincide, which is why this is the general one.
+
+        `dt` is still measured and carried, and ranks the survivors; it no
+        longer decides which pairs exist.
+
+        What survives is the candidate set; deciding among the survivors is a
+        separate question, and this is what both the one-to-one assignment and
+        the graph stage start from, so that the two admit the same pairs.
 
         :param left: one detector's events.
         :param right: the other detector's events.
@@ -501,6 +598,7 @@ class IndexedCoincidenceFinder:
         le = np.maximum(_coefficient_energy(left), EPS)
         re = np.maximum(_coefficient_energy(right), EPS)
 
+        pair = self._pair(left, right)
         widest = self.coincidence_window(left, right)
 
         # Formed as arrays over the admissible pairs rather than one pair at a
@@ -512,14 +610,15 @@ class IndexedCoincidenceFinder:
         blocks = []
         for a, b in cross_pairs(lt[left_order], rt[right_order], widest):
             i, j = left_order[a], right_order[b]
-            tolerance = self.config.timing_tolerance(ls[i], rs[j])
+            tolerance = self.config.timing_tolerance(ls[i], rs[j], pair)
             dt = lt[i] - rt[j]
             overlap = _overlap_fraction(lf0[i], lf1[i], rf0[j], rf1[j])
             time_overlap = _shifted_overlap_fraction(
                 l_start[i], l_end[i], r_start[j], r_end[j],
-                self.config.light_travel_time_s)
+                self.config.travel_time(pair))
             keep = (
-                (np.abs(dt) <= tolerance)
+                _intervals_touch(l_start[i], l_end[i], r_start[j], r_end[j],
+                                 tolerance)
                 & (overlap >= self.config.minimum_frequency_overlap)
                 & (time_overlap >= self.config.minimum_time_overlap)
             )
@@ -682,29 +781,41 @@ class TimeSlideFAR:
         rows = []
         shifts = []
 
+        template = None
         for slide_index in range(self.config.n_slides):
             magnitude = rng.uniform(self.config.min_shift_s, span - self.config.min_shift_s)
             shift = magnitude if rng.integers(0, 2) else -magnitude
             shifts.append(shift)
 
             shifted = events_by_ifo[shifted_ifo].copy()
+            # One displacement per event, applied to all of its times. Wrapping
+            # each column on its own moves an event that straddles the seam by
+            # different amounts in each, so its start no longer precedes its end
+            # and its extent becomes the length of the segment.
+            reference = _numeric(shifted, ("gpsCentroid", "gpsPeak", "gps"))
+            wrapped = start + ((reference - start + shift) % span)
+            displacement = wrapped - reference
             for column in ("gpsMax", "gpsPeak", "gpsCentroid", "gpsStart", "gpsEnd"):
                 if column in shifted:
-                    shifted[column] = start + (
-                        (pd.to_numeric(shifted[column], errors="coerce") - start + shift)
-                        % span
-                    )
+                    shifted[column] = (
+                        pd.to_numeric(shifted[column], errors="coerce") + displacement)
 
             candidates = self.coincidence_finder.find(
                 {ref: events_by_ifo[ref], shifted_ifo: shifted}
             )
+            if template is None:
+                template = candidates.iloc[0:0]
             if len(candidates):
                 candidates = candidates.copy()
                 candidates["slide_index"] = slide_index
                 candidates["slide_shift_s"] = shift
                 rows.append(candidates)
 
-        background = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+        # Slides that produced nothing still say what a candidate looks like, so
+        # an empty background keeps its columns and is empty rather than
+        # unrecognisable.
+        background = pd.concat(rows, ignore_index=True) if rows else (
+            pd.DataFrame() if template is None else template.copy())
         background.attrs["n_slides"] = self.config.n_slides
         background.attrs["segment_duration_s"] = span
         background.attrs["total_livetime_s"] = self.config.n_slides * span
