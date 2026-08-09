@@ -220,6 +220,16 @@ class ZeroPhaseWhitening(object):
         """
         self.filter.Output(dataw)
 
+    def DataNeeded(self):
+        """How many more input samples are needed before output is available.
+
+        Zero or less means a whitened block can be read out without feeding
+        anything in, which is what tells a drain when the buffer is empty.
+
+        :return: int -- samples still needed.
+        """
+        return int(self.filter.GetDataNeeded())
+
     def SetOutputSize(self, output_size, extra_size):
         """Change the output block size and the lookahead.
 

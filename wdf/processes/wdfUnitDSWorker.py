@@ -295,10 +295,11 @@ class wdfUnitDSWorker(object):
             # emitted, so the filters still hold analysable data when the last
             # read is refused. Draining it costs the segment nothing; leaving it
             # costs a span set by the filters rather than by the segment.
-            while dataw.GetStart() <= self.par.gpsEnd:
+            while (whitening.DataNeeded() <= 0
+                   and dataw.GetStart() <= self.par.gpsEnd):
                 emitted = dataw.GetStart()
                 whitening.Output(dataw)
-                if dataw.GetSize() == 0 or dataw.GetStart() <= emitted:
+                if dataw.GetStart() <= emitted:
                     break
                 for search in searches:
                     search.SetData(dataw)
