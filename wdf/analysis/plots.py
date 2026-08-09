@@ -59,9 +59,16 @@ def plot_trigger_tiles(ax, triggers, fs, t0=0.0, sigma=None, cmap="viridis"):
     return ax
 
 
-def plot_glitchgram(ax, triggers, statistic="EnWDF", frequency="freqPeak",
+def plot_glitchgram(ax, triggers, statistic="EnWDF", frequency="freqMean",
                     t0=None, cmap="viridis", colorbar=True):
     """Time against frequency, coloured by the statistic.
+
+    The frequency defaults to `freqMean`, the spectral moment over every
+    surviving tile. `freqPeak` is time-localised, and for the median trigger
+    only one coefficient overlaps its peak tile in time, so it can only return
+    that tile's own frequency: plotted, it draws the octave ladder as horizontal
+    lines rather than the distribution of the data. `freqPeak` remains the
+    sharper answer on a transient that sweeps, and stays available here.
 
     :type ax: matplotlib.axes.Axes
     :param ax: axes to draw on.

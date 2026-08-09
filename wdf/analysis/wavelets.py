@@ -310,23 +310,29 @@ def peak_frequency(wt: np.ndarray, fs: float) -> float:
     coarser scale that captured more of it -- so the single largest coefficient
     sits below the true carrier.
 
-    The estimate is the energy-weighted frequency of the tiles whose centres
-    fall inside the loudest tile's own time span. That span is wide exactly
-    when the loudest coefficient sits at a coarse scale, which is the case the
-    bias comes from, so the average then reaches the finer tiles living inside
-    it and pulls the estimate back up; when the loudest coefficient is already
-    fine the span is narrow and the estimate barely moves. The time
-    localisation is kept -- which is the reason for asking the question in the
-    wavelet domain rather than of the periodogram -- and the answer is no
-    longer confined to one value per octave. The mean is geometric, since the
-    tiling is uniform in log frequency.
+    The estimate is the energy-weighted geometric mean of the tile frequencies,
+    each tile weighted also by how much of its time support the loudest tile
+    covers. Nothing is admitted or excluded by a test, so the estimate moves
+    continuously as the coefficients do rather than jumping when a tile crosses
+    a boundary, and no level is privileged. The loudest tile dominates, the
+    tiles sharing its time contribute in proportion to how much they share, and
+    tiles elsewhere in the window fall away.
 
-    On simulated narrowband bursts this halves the high-frequency bias of the
-    single loudest tile and removes the quantisation, but it remains a poorer
-    estimator of a carrier frequency than ``freqMean``: a spectral moment is
-    the right instrument when the signal *has* one carrier. ``freqPeak``
-    earns its place on transients that sweep, where ``freqMean`` answers a
-    different question.
+    Weighting rather than selecting is what lets the answer leave the dyadic
+    ladder. A tile is an octave wide, so a rule that picks tiles can only ever
+    return one of a handful of frequencies; a rule that weights them returns a
+    value between, and moves it as the energy shifts. The mean is geometric
+    because the tiling is uniform in log frequency.
+
+    What it cannot do: when every surviving coefficient sits at one octave
+    level, there is nothing to interpolate between and the honest answer is that
+    level's own frequency. The ladder is then the transform's real resolution,
+    not an artefact of this function.
+
+    ``freqPeak`` remains a poorer estimator of a carrier than ``freqMean``,
+    which is a spectral moment and the right instrument when the signal *has*
+    one carrier. It earns its place on transients that sweep, where
+    ``freqMean`` answers a different question.
 
     :type wt: numpy.ndarray
     :param wt: wavelet coefficients of one analysis window.
@@ -346,14 +352,13 @@ def peak_frequency(wt: np.ndarray, fs: float) -> float:
 
     t_lo, t_hi = coeff_time_bounds(wt.size, fs)
     f_lo, f_hi = coeff_freq_bands(wt.size, fs)
-    t_mid = 0.5 * (t_lo + t_hi)
     f_mid = np.array([tile_frequency(a, b) for a, b in zip(f_lo, f_hi)])
 
-    overlapping = (t_mid >= t_lo[k]) & (t_mid <= t_hi[k])
-    weight = magnitude[overlapping] ** 2
+    shared = np.maximum(0.0, np.minimum(t_hi, t_hi[k]) - np.maximum(t_lo, t_lo[k]))
+    weight = magnitude ** 2 * shared / np.maximum(t_hi - t_lo, np.finfo(float).tiny)
     total = float(weight.sum())
     if total <= 0.0:
         return float(f_mid[k])
 
-    frequency = np.maximum(f_mid[overlapping], np.finfo(float).tiny)
+    frequency = np.maximum(f_mid, np.finfo(float).tiny)
     return float(np.exp(float(weight @ np.log(frequency)) / total))
