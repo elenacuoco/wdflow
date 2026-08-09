@@ -101,18 +101,18 @@ def _timed_events(centroids, spreads, durations, strengths, ifo):
     )
 
 
-def test_the_timing_tolerance_comes_from_the_events_not_from_a_constant():
-    """A chirp lasting seconds and a blip lasting milliseconds cannot share one
-    window: the tolerance is the light travel time plus the two events' own
-    spreads in quadrature."""
+def test_the_tolerance_follows_the_events_up_to_what_a_signal_can_produce():
+    """It is the light travel time plus the two events' own spreads in
+    quadrature, and never more than a signal can produce however uncertain the
+    events are about their own centroids."""
     finder = IndexedCoincidenceFinder(light_travel_time_s=0.01, timing_jitter_s=0.001,
-                                      timing_sigma=3.0)
+                                      timing_sigma=3.0, maximum_tolerance_s=0.025)
     tight = finder.config.timing_tolerance(0.001, 0.001)
     loose = finder.config.timing_tolerance(1.0, 1.0)
 
-    assert tight < 0.02
-    assert loose > 4.0
     assert tight == pytest.approx(0.01 + 3.0 * np.hypot(0.001, 0.001))
+    assert tight < loose <= 0.025
+    assert loose == pytest.approx(0.025)
 
 
 def test_a_pair_further_apart_than_its_own_tolerance_is_not_a_candidate():
@@ -126,18 +126,21 @@ def test_a_pair_further_apart_than_its_own_tolerance_is_not_a_candidate():
     assert len(finder.find({"H1": left, "L1": far})) == 0
 
 
-def test_the_same_pair_pairs_once_its_spread_says_it_may():
-    """Two long events sit further apart in centroid than two short ones may,
-    and still describe the same transient."""
+def test_no_pair_claims_more_than_a_signal_can_produce():
+    """One signal reaches the two detectors within the light travel time. An
+    event's spread is uncertainty on its own centroid, and for a signal seen in
+    both it is largely common and cancels in the difference, so a long event
+    does not buy a wider window: without the cap the accidental rate would grow
+    with the events' duration."""
     finder = IndexedCoincidenceFinder(light_travel_time_s=0.01, timing_jitter_s=0.001,
-                                      timing_sigma=3.0)
-    short_left = _timed_events([100.0], [0.001], [0.01], [10.0], "H1")
-    short_right = _timed_events([100.3], [0.001], [0.01], [9.0], "L1")
+                                      timing_sigma=3.0, maximum_tolerance_s=0.025)
     long_left = _timed_events([100.0], [0.5], [4.0], [10.0], "H1")
     long_right = _timed_events([100.3], [0.5], [4.0], [9.0], "L1")
+    assert len(finder.find({"H1": long_left, "L1": long_right})) == 0
 
-    assert len(finder.find({"H1": short_left, "L1": short_right})) == 0
-    assert len(finder.find({"H1": long_left, "L1": long_right})) == 1
+    # Inside the cap the same long pair is admitted.
+    near_right = _timed_events([100.02], [0.5], [4.0], [9.0], "L1")
+    assert len(finder.find({"H1": long_left, "L1": near_right})) == 1
 
 
 def test_supports_that_do_not_overlap_are_refused_however_close_the_centroids():

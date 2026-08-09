@@ -405,6 +405,13 @@ class CoincidenceConfig:
     :param minimum_frequency_overlap: least overlap of the two bands.
     :param minimum_time_overlap: least overlap of the two time supports, once
         one of them is allowed to shift by the light travel time.
+    :param maximum_tolerance_s: largest time difference any pair may claim,
+        whatever their spreads. The arrival times of one signal differ by at
+        most the light travel time; an event's spread is uncertainty on its own
+        centroid, and for a signal seen in both detectors that uncertainty is
+        largely common and cancels in the difference. Without a cap a pair of
+        long events claims seconds, which no signal can produce and which lets
+        the accidental rate grow with the events' duration.
     """
 
     light_travel_time_s: float = 0.01001
@@ -412,6 +419,7 @@ class CoincidenceConfig:
     timing_sigma: float = 3.0
     minimum_frequency_overlap: float = 0.0
     minimum_time_overlap: float = 0.0
+    maximum_tolerance_s: float = 0.025
     time_weight: float = 1.0
     frequency_weight: float = 1.0
     # Amplitude ratio is not a shape mismatch: the same signal reaches two
@@ -430,7 +438,9 @@ class CoincidenceConfig:
         """
         left = np.maximum(left_spread, self.timing_jitter_s)
         right = np.maximum(right_spread, self.timing_jitter_s)
-        return self.light_travel_time_s + self.timing_sigma * np.hypot(left, right)
+        return np.minimum(
+            self.light_travel_time_s + self.timing_sigma * np.hypot(left, right),
+            self.maximum_tolerance_s)
 
 
 class IndexedCoincidenceFinder:
