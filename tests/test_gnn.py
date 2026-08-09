@@ -362,3 +362,35 @@ def test_no_injections_makes_every_pair_a_negative():
     clustered, coefficients = _synth_graph_inputs({"H1": 10, "L1": 10})
     graph = TriggerGraphBuilder(ifos=["H1", "L1"]).build(clustered, coefficients)
     assert edge_labels_from_injections(graph, []).sum() == 0
+
+
+def test_the_cosine_saturates_on_sparse_grids_and_the_overlap_does_not():
+    """Two events each occupying one cell of the plane agree perfectly in
+    direction whenever it is the same cell, which independent noise does by
+    chance. The overlap is an energy and stays small when they are quiet."""
+    import numpy as np
+    from wdf.analysis.network_graph import _aligned_similarity
+
+    one_cell = np.zeros((2, 4, 8))
+    one_cell[:, 1, 3] = 0.4                      # the same cell, both quiet
+    agreement, _ = _aligned_similarity(
+        one_cell / np.linalg.norm(one_cell.reshape(2, -1), axis=1)[:, None, None],
+        one_cell / np.linalg.norm(one_cell.reshape(2, -1), axis=1)[:, None, None])
+    overlap, _ = _aligned_similarity(one_cell, one_cell)
+
+    assert agreement[0] == pytest.approx(1.0)
+    assert np.sqrt(overlap[0]) < 0.5
+
+    loud = one_cell * 20.0
+    louder, _ = _aligned_similarity(loud, loud)
+    assert np.sqrt(louder[0]) > np.sqrt(overlap[0])
+
+
+def test_the_overlap_is_carried_on_every_candidate():
+    from wdf.analysis.network_graph import EDGE_FEATURES
+
+    clustered, coefficients = _synth_graph_inputs({"H1": 20, "L1": 20})
+    table = TriggerGraphBuilder(ifos=["H1", "L1"]).build(
+        clustered, coefficients).candidate_table()
+    assert {"wavegram_overlap", "wavegram_overlap_aligned"} <= set(EDGE_FEATURES)
+    assert (table["wavegram_overlap_aligned"] >= table["wavegram_overlap"] - 1e-9).all()

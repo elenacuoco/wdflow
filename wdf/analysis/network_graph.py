@@ -39,7 +39,15 @@ WAVEGRAM_TIME_BINS = 32
 # amplitudes differing by a factor of a few, so an unequal pair is physical.
 EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
                  "time_overlap", "log_energy_ratio",
-                 "wavegram_similarity_aligned", "wavegram_lag_bins"]
+                 "wavegram_similarity_aligned", "wavegram_lag_bins",
+                 "wavegram_overlap", "wavegram_overlap_aligned"]
+
+# A cosine between two unit-normalised grids is a statement about direction and
+# not about evidence: two events each occupying one cell of the plane reach
+# exactly one whenever that cell is the same, which independent noise does by
+# chance. The overlap is the inner product of the grids before normalisation,
+# so it is large only where the two are loud together and aligned --- the
+# coherent energy of the pair, in the units the wavegram carries.
 
 # A real signal reaches the two detectors up to the light travel time apart, so
 # two wavegrams anchored each at its own event's time are compared misaligned.
@@ -215,11 +223,14 @@ class TriggerGraphBuilder:
         norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
         norms[norms == 0.0] = 1.0
         shapes = wavegrams / norms
+        raw = np.vstack(grids) if grids else np.zeros((0, 1))
         # The width comes from the grids that arrived, not from this builder's
         # own constant: a multi-window event is rendered on the shared band grid
         # by its own level, which need not have chosen the same number of bins.
         panels = shapes.reshape(len(shapes), *grid_shape) if shapes.size else \
             shapes.reshape(len(shapes), 0, self.wavegram_time_bins)
+        energy_panels = raw.reshape(len(raw), *grid_shape) if raw.size else \
+            raw.reshape(len(raw), 0, self.wavegram_time_bins)
 
         energy = _coefficient_energy(nodes_df)
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
@@ -262,6 +273,11 @@ class TriggerGraphBuilder:
             j_sel = idx_b[local[:, 1].astype(int)]
             similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
             aligned, lag = _aligned_similarity(panels[i_sel], panels[j_sel])
+            overlap = np.sqrt(np.maximum(np.einsum(
+                "ij,ij->i", raw[i_sel], raw[j_sel]), 0.0))
+            overlap_aligned, _ = _aligned_similarity(
+                energy_panels[i_sel], energy_panels[j_sel])
+            overlap_aligned = np.sqrt(np.maximum(overlap_aligned, 0.0))
             cross_edges.append(np.column_stack([i_sel, j_sel]))
             cross_feats.append(np.column_stack([
                 local[:, 2],                                   # dt
@@ -272,6 +288,8 @@ class TriggerGraphBuilder:
                        / np.maximum(energy[j_sel], EPS)),      # log energy ratio
                 aligned,                                       # agreement, best aligned
                 lag,                                           # bins it took to align
+                overlap,                                       # coherent energy
+                overlap_aligned,                               # the same, best aligned
             ]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)

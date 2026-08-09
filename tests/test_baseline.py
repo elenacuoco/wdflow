@@ -25,6 +25,8 @@ def _table(n, seed=0, separable=True):
         "network_enwdf": rng.uniform(5, 20, n),
         "wavegram_similarity_aligned": rng.uniform(0, 1, n) * 0.5 + 0.5 * shift,
         "wavegram_lag_bins": rng.integers(-3, 4, n).astype(float),
+        "wavegram_overlap": rng.uniform(0, 30, n) + 20.0 * shift,
+        "wavegram_overlap_aligned": rng.uniform(0, 30, n) + 20.0 * shift,
     }), labels
 
 
