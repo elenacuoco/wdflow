@@ -188,11 +188,10 @@ def test_fit_batches_multiple_segments_together():
     """
     examples = []
     for seed, (n_h1, n_l1) in enumerate([(15, 15), (8, 12), (20, 5)]):
-        clustered = {
-            "H1": _synth_clustered("H1", n_h1, 1000.0 + seed * 200, seed * 2),
-            "L1": _synth_clustered("L1", n_l1, 1000.0 + seed * 200, seed * 2 + 1),
-        }
-        coefficients = {ifo: _synth_coefficients(frame) for ifo, frame in clustered.items()}
+        # Shared arrival times, so pairs exist to batch: with the tolerance set
+        # by the light travel time, independently drawn events do not coincide.
+        clustered, coefficients = _synth_graph_inputs(
+            {"H1": n_h1, "L1": n_l1}, t0=1000.0 + seed * 200, seed=seed + 1)
         graph = TriggerGraphBuilder().build(clustered, coefficients)
         rng = np.random.default_rng(seed)
         labels = (rng.uniform(0, 1, len(graph.cross_edges)) > 0.8).astype(float)
