@@ -43,7 +43,21 @@ EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
                  "time_overlap", "log_energy_ratio",
                  "wavegram_similarity_aligned", "wavegram_lag_bins",
                  "wavegram_overlap", "wavegram_overlap_aligned",
-                 "energy_band_overlap", "dt_over_tolerance"]
+                 "energy_band_overlap", "dt_over_tolerance",
+                 "network_correlation", "coherent_statistic"]
+
+# The coherent energy alone is large wherever two events are loud together,
+# which a strong instrumental transient in one detector paired with a strong
+# noise event in the other satisfies. The correlation normalises it by the
+# energy present,
+#
+#     cc = 2 <w1, w2> / (<w1, w1> + <w2, w2>),
+#
+# so it reaches one only where the two grids agree in shape *and* in amplitude,
+# and a pair that is merely loud does not. The ranking statistic is the coherent
+# amplitude weighted by it, after coherent WaveBurst's construction
+# \cite{klimenko2016cwb}: loud alone is not enough, and consistent alone is not
+# enough.
 
 # A cosine between two unit-normalised grids is a statement about direction and
 # not about evidence: two events each occupying one cell of the plane reach
@@ -134,6 +148,14 @@ class TriggerGraph:
         ))
         for column, name in enumerate(EDGE_FEATURES):
             table[name] = self.cross_edge_features[:, column].astype(float)
+
+        # How loud the pair is, weighted by how alike the two grids are. The
+        # weight carries no amplitude of its own -- the cosine is invariant to
+        # scale -- so the loudness is not counted twice, and that invariance is
+        # what keeps the antenna responses from penalising a real signal seen
+        # unequally in the two detectors, which normalising by amplitude does.
+        table["network_shape_weighted"] = (
+            table["network_enwdf"] * table["wavegram_similarity_aligned"])
         return table
 
 
@@ -286,9 +308,14 @@ class TriggerGraphBuilder:
             aligned, lag = _aligned_similarity(panels[i_sel], panels[j_sel])
             overlap = np.sqrt(np.maximum(np.einsum(
                 "ij,ij->i", raw[i_sel], raw[j_sel]), 0.0))
-            overlap_aligned, _ = _aligned_similarity(
+            cross_aligned, _ = _aligned_similarity(
                 energy_panels[i_sel], energy_panels[j_sel])
-            overlap_aligned = np.sqrt(np.maximum(overlap_aligned, 0.0))
+            cross_aligned = np.maximum(cross_aligned, 0.0)
+            overlap_aligned = np.sqrt(cross_aligned)
+            present = (np.einsum("ij,ij->i", raw[i_sel], raw[i_sel])
+                       + np.einsum("ij,ij->i", raw[j_sel], raw[j_sel]))
+            correlation = np.clip(2.0 * cross_aligned / np.maximum(present, EPS),
+                                  0.0, 1.0)
             cross_edges.append(np.column_stack([i_sel, j_sel]))
             cross_feats.append(np.column_stack([
                 local[:, 2],                                   # dt
@@ -309,6 +336,8 @@ class TriggerGraphBuilder:
                 np.abs(local[:, 2]) / np.maximum(
                     self.coincidence.timing_tolerance(spread[i_sel], spread[j_sel]),
                     EPS),
+                correlation,
+                overlap_aligned * correlation,
             ]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)

@@ -29,6 +29,8 @@ def _table(n, seed=0, separable=True):
         "wavegram_overlap_aligned": rng.uniform(0, 30, n) + 20.0 * shift,
         "energy_band_overlap": rng.uniform(0, 1, n),
         "dt_over_tolerance": rng.uniform(0, 1, n),
+        "network_correlation": rng.uniform(0, 1, n) * 0.5 + 0.4 * shift,
+        "coherent_statistic": rng.uniform(0, 20, n) + 25.0 * shift,
     }), labels
 
 

@@ -394,3 +394,24 @@ def test_the_overlap_is_carried_on_every_candidate():
         clustered, coefficients).candidate_table()
     assert {"wavegram_overlap", "wavegram_overlap_aligned"} <= set(EDGE_FEATURES)
     assert (table["wavegram_overlap_aligned"] >= table["wavegram_overlap"] - 1e-9).all()
+
+
+def test_the_correlation_separates_alike_pairs_from_merely_loud_ones():
+    """Coherent energy is large wherever two events are loud together. The
+    correlation reaches one only where the grids also agree."""
+    import numpy as np
+    from wdf.analysis.network_graph import _aligned_similarity
+
+    same = np.zeros((1, 4, 8))
+    same[0, 2, 4] = 6.0
+    cross, _ = _aligned_similarity(same, same)
+    present = 2.0 * float((same ** 2).sum())
+    assert 2.0 * float(cross[0]) / present == pytest.approx(1.0)
+
+    # Both loud, in different cells: the coherent energy is zero and so is the
+    # correlation, however loud each one is on its own.
+    other = np.zeros((1, 4, 8))
+    other[0, 1, 6] = 60.0
+    cross, _ = _aligned_similarity(same, other)
+    present = float((same ** 2).sum()) + float((other ** 2).sum())
+    assert 2.0 * float(cross[0]) / max(present, 1e-30) < 0.05
