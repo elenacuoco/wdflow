@@ -6,18 +6,26 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from wdf.analysis.gnn import TriggerGraphBuilder, GNNCoincidenceScorer
+from wdf.analysis.gnn import (
+    N_EDGE_FEATURES,
+    GNNCoincidenceScorer,
+    TriggerGraphBuilder,
+)
 
 
 FS, WINDOW, OVERLAP, N_COEFF = 2048.0, 512, 128, 512
 
 
-def _synth_clustered(ifo, n, t0, seed):
+def _synth_clustered(ifo, n, t0, seed, times=None):
     rng = np.random.default_rng(seed)
+    if times is None:
+        times = np.sort(rng.uniform(0, 100, n))
+    peak = t0 + times
     return pd.DataFrame(dict(
         cluster_id=range(n), ifo=ifo,
-        gpsStart=t0 + np.sort(rng.uniform(0, 100, n)),
-        gpsPeak=t0 + np.sort(rng.uniform(0, 100, n)),
+        gpsStart=peak - rng.uniform(0.0, 0.05, n),
+        gpsCentroid=peak, tSpread=rng.uniform(0.005, 0.05, n),
+        gpsPeak=peak,
         EnWDF=rng.uniform(1, 20, n),
         freqMean=rng.uniform(50, 300, n), freqMax=rng.uniform(300, 500, n),
         freqMin=rng.uniform(20, 50, n), duration=rng.uniform(0.05, 0.5, n),
@@ -52,25 +60,62 @@ def _synth_coefficients(clustered, seed=0):
 
 
 def _synth_graph_inputs(sizes, t0=1000.0, seed=1):
-    clustered = {ifo: _synth_clustered(ifo, n, t0, seed + i)
-                 for i, (ifo, n) in enumerate(sizes.items())}
+    # Every detector sees the same arrival times, jittered within the timing
+    # tolerance, so physically admissible pairs exist to be scored.
+    jitter = np.random.default_rng(seed)
+    common = np.sort(jitter.uniform(0, 100, max(sizes.values())))
+    clustered = {
+        ifo: _synth_clustered(ifo, n, t0, seed + i,
+                              times=common[:n] + jitter.uniform(-0.005, 0.005, n))
+        for i, (ifo, n) in enumerate(sizes.items())}
     coefficients = {ifo: _synth_coefficients(frame, seed + i)
                     for i, (ifo, frame) in enumerate(clustered.items())}
     return clustered, coefficients
 
 
 def test_graph_builder_produces_edges():
-    clustered = {"H1": _synth_clustered("H1", 20, 1000.0, 1), "L1": _synth_clustered("L1", 20, 1000.0, 2)}
-    coefficients = {ifo: _synth_coefficients(frame) for ifo, frame in clustered.items()}
-    graph = TriggerGraphBuilder(intra_ifo_window_s=5.0, cross_ifo_window_s=2.0).build(clustered, coefficients)
+    clustered, coefficients = _synth_graph_inputs({"H1": 20, "L1": 20})
+    graph = TriggerGraphBuilder(intra_ifo_window_s=5.0).build(clustered, coefficients)
     assert graph.node_features.shape[0] == 40
     assert graph.cross_edges.shape[1] == 2
+    assert len(graph.cross_edges) > 0
+
+
+def test_the_cross_edges_are_exactly_the_physically_admissible_pairs():
+    """The graph has no admissibility rule of its own: an edge exists where and
+    only where the classical finder admits the pair, so the two stages rank the
+    same candidates."""
+    from wdf.analysis.robust_events import IndexedCoincidenceFinder
+
+    clustered, coefficients = _synth_graph_inputs({"H1": 40, "L1": 30})
+    builder = TriggerGraphBuilder(ifos=["H1", "L1"])
+    graph = builder.build(clustered, coefficients)
+
+    finder = IndexedCoincidenceFinder(builder.coincidence)
+    admissible = finder.candidate_edges(
+        clustered["H1"].reset_index(drop=True),
+        clustered["L1"].reset_index(drop=True))
+    offset = len(clustered["H1"])
+    expected = {(i, j + offset) for i, j, *_ in admissible}
+    assert {tuple(e) for e in graph.cross_edges.tolist()} == expected
+
+
+def test_an_impossible_pair_never_becomes_an_edge():
+    """Two events further apart than any signal could put them share no edge,
+    however alike their morphology."""
+    clustered, coefficients = _synth_graph_inputs({"H1": 15, "L1": 15})
+    clustered["L1"] = clustered["L1"].assign(
+        gpsCentroid=clustered["L1"]["gpsCentroid"] + 3600.0,
+        gpsPeak=clustered["L1"]["gpsPeak"] + 3600.0,
+        gpsStart=clustered["L1"]["gpsStart"] + 3600.0)
+    graph = TriggerGraphBuilder(ifos=["H1", "L1"]).build(clustered, coefficients)
+    assert len(graph.cross_edges) == 0
 
 
 def test_scorer_forward_and_fit_reduce_loss():
     clustered = {"H1": _synth_clustered("H1", 15, 1000.0, 3), "L1": _synth_clustered("L1", 15, 1000.0, 4)}
     coefficients = {ifo: _synth_coefficients(frame) for ifo, frame in clustered.items()}
-    graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered, coefficients)
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
     model = GNNCoincidenceScorer(node_dim=graph.node_features.shape[1], hidden=8, seed=0,
                                  cross_edge_dim=graph.cross_edge_features.shape[1])
 
@@ -114,40 +159,24 @@ def _reference_build(builder, clustered, coefficients):
             if abs(dt) <= builder.intra_ifo_window_s:
                 intra_edges.append((i, j)); intra_feats.append([dt])
                 intra_edges.append((j, i)); intra_feats.append([-dt])
-    cross_edges, cross_feats = [], []
-    for ifo_a, ifo_b in combinations(ifos, 2):
-        for i in idx_by_ifo[ifo_a]:
-            for j in idx_by_ifo[ifo_b]:
-                dt = float(nodes_df.at[i, "gpsPeak"] - nodes_df.at[j, "gpsPeak"])
-                if abs(dt) <= builder.cross_ifo_window_s:
-                    similarity = float(shapes[i] @ shapes[j])
-                    cross_edges.append((i, j)); cross_feats.append([dt, similarity])
     return (np.array(intra_edges, dtype=np.int64).reshape(-1, 2),
-            np.array(intra_feats).reshape(-1, 1),
-            np.array(cross_edges, dtype=np.int64).reshape(-1, 2),
-            np.array(cross_feats).reshape(-1, 2))
+            np.array(intra_feats).reshape(-1, 1))
 
 
 def test_vectorized_build_matches_reference_loop():
-    clustered = {"H1": _synth_clustered("H1", 60, 1000.0, 1), "L1": _synth_clustered("L1", 45, 1000.0, 2)}
-    coefficients = {ifo: _synth_coefficients(frame) for ifo, frame in clustered.items()}
-    builder = TriggerGraphBuilder(intra_ifo_window_s=5.0, cross_ifo_window_s=2.0, ifos=["H1", "L1"])
+    clustered, coefficients = _synth_graph_inputs({"H1": 60, "L1": 45})
+    builder = TriggerGraphBuilder(intra_ifo_window_s=5.0, ifos=["H1", "L1"])
 
-    ref_intra_e, ref_intra_f, ref_cross_e, ref_cross_f = _reference_build(
-        builder, clustered, coefficients)
+    ref_intra_e, ref_intra_f = _reference_build(builder, clustered, coefficients)
     graph = builder.build(clustered, coefficients)
 
     def edge_set(edges):
         return set(map(tuple, edges.tolist()))
 
     assert edge_set(ref_intra_e) == edge_set(graph.intra_edges)
-    assert edge_set(ref_cross_e) == edge_set(graph.cross_edges)
 
     ref_map = {tuple(e): f for e, f in zip(ref_intra_e, ref_intra_f)}
     for e, f in zip(graph.intra_edges, graph.intra_edge_features):
-        np.testing.assert_allclose(f, ref_map[tuple(e.tolist())], rtol=1e-5, atol=1e-5)
-    ref_map = {tuple(e): f for e, f in zip(ref_cross_e, ref_cross_f)}
-    for e, f in zip(graph.cross_edges, graph.cross_edge_features):
         np.testing.assert_allclose(f, ref_map[tuple(e.tolist())], rtol=1e-5, atol=1e-5)
 
 
@@ -164,7 +193,7 @@ def test_fit_batches_multiple_segments_together():
             "L1": _synth_clustered("L1", n_l1, 1000.0 + seed * 200, seed * 2 + 1),
         }
         coefficients = {ifo: _synth_coefficients(frame) for ifo, frame in clustered.items()}
-        graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered, coefficients)
+        graph = TriggerGraphBuilder().build(clustered, coefficients)
         rng = np.random.default_rng(seed)
         labels = (rng.uniform(0, 1, len(graph.cross_edges)) > 0.8).astype(float)
         examples.append((graph, labels))
@@ -187,7 +216,7 @@ def test_fit_batches_multiple_segments_together():
 def test_scorer_device_selection():
     clustered = {"H1": _synth_clustered("H1", 5, 1000.0, 1), "L1": _synth_clustered("L1", 5, 1000.0, 2)}
     coefficients = {ifo: _synth_coefficients(frame) for ifo, frame in clustered.items()}
-    graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered, coefficients)
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
 
     default_model = GNNCoincidenceScorer(node_dim=graph.node_features.shape[1], hidden=4, seed=0,
                                      cross_edge_dim=graph.cross_edge_features.shape[1])
@@ -206,17 +235,16 @@ def test_the_graph_is_built_from_the_coefficients_not_from_scalars():
     """Two events with identical scalar summaries but different coefficients
     must give different node features, which is the whole reason the graph
     reads the coefficient matrices."""
-    clustered = {"H1": _synth_clustered("H1", 6, 1000.0, 1),
-                 "L1": _synth_clustered("L1", 6, 1000.0, 2)}
+    clustered, _ = _synth_graph_inputs({"H1": 6, "L1": 6})
     coefficients = {ifo: _synth_coefficients(frame, seed=7)
                     for ifo, frame in clustered.items()}
-    builder = TriggerGraphBuilder(cross_ifo_window_s=5.0, ifos=["H1", "L1"])
+    builder = TriggerGraphBuilder(ifos=["H1", "L1"])
 
     graph = builder.build(clustered, coefficients)
 
     # 32 time bins over log2(512) + 1 octave rows, plus one column per detector
     assert graph.node_features.shape[1] == 10 * 32 + 2
-    assert graph.cross_edge_features.shape[1] == 2
+    assert graph.cross_edge_features.shape[1] == N_EDGE_FEATURES
 
     other = {ifo: _synth_coefficients(frame, seed=99)
              for ifo, frame in clustered.items()}
@@ -229,7 +257,7 @@ def test_a_candidate_carries_the_agreement_between_the_two_wavegrams():
                  "L1": _synth_clustered("L1", 8, 1000.0, 4)}
     coefficients = {ifo: _synth_coefficients(frame, seed=11)
                     for ifo, frame in clustered.items()}
-    graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered, coefficients)
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
 
     table = graph.candidate_table()
     assert "wavegram_similarity" in table.columns
@@ -241,11 +269,10 @@ def test_a_candidate_carries_the_agreement_between_the_two_wavegrams():
 def test_fit_only_learns_from_the_masked_edges():
     """A model trained on half the edges must not have fitted the other half:
     scoring on the edges it was trained on reports memory, not performance."""
-    clustered = {"H1": _synth_clustered("H1", 25, 1000.0, 5),
-                 "L1": _synth_clustered("L1", 25, 1000.0, 6)}
+    clustered, _ = _synth_graph_inputs({"H1": 25, "L1": 25})
     coefficients = {ifo: _synth_coefficients(frame, seed=13)
                     for ifo, frame in clustered.items()}
-    graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered, coefficients)
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
 
     n_edges = len(graph.cross_edges)
     rng = np.random.default_rng(0)
@@ -278,7 +305,7 @@ def test_an_all_false_mask_trains_on_nothing():
                  "L1": _synth_clustered("L1", 6, 1000.0, 8)}
     coefficients = {ifo: _synth_coefficients(frame, seed=17)
                     for ifo, frame in clustered.items()}
-    graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered, coefficients)
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
 
     model = GNNCoincidenceScorer(node_dim=graph.node_features.shape[1], hidden=4, seed=0,
                                  cross_edge_dim=graph.cross_edge_features.shape[1])
@@ -293,7 +320,7 @@ def test_the_logit_is_kept_because_the_probability_saturates():
                  "L1": _synth_clustered("L1", 10, 1000.0, 22)}
     coefficients = {ifo: _synth_coefficients(frame, seed=23)
                     for ifo, frame in clustered.items()}
-    graph = TriggerGraphBuilder(cross_ifo_window_s=5.0).build(clustered, coefficients)
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
 
     model = GNNCoincidenceScorer(node_dim=graph.node_features.shape[1], hidden=8, seed=0,
                                  cross_edge_dim=graph.cross_edge_features.shape[1])

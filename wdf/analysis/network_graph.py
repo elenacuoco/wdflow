@@ -1,0 +1,252 @@
+"""The network graph: single-detector events as nodes, physically possible
+coincidences as cross-detector edges.
+
+Plain numpy and pandas. The graph is the structure a network statistic is
+computed on, whether that statistic is learned or not, so it must not require
+the learning machinery to exist: `wdf.analysis.baseline` fits a deterministic
+ranking on exactly this graph without torch, and `wdf.analysis.gnn` fits a
+learned one on the same graph with it. Comparing the two at a fixed false alarm
+rate is only meaningful because both start from the same candidate set.
+"""
+from __future__ import annotations
+
+from itertools import combinations
+
+import numpy as np
+import pandas as pd
+
+from wdf.analysis.pairs import neighbour_pairs
+from wdf.analysis.robust_events import (
+    EPS,
+    CoincidenceConfig,
+    IndexedCoincidenceFinder,
+    _coefficient_energy,
+)
+
+
+# A node is described by the wavelet coefficients of its cluster, rendered on a
+# fixed octave-by-time grid (`ClusterCoefficients.wavegram`), not by scalar
+# summaries. Scoring a coincidence on peak time, peak frequency and the
+# statistic is what the classical finder already does; the coefficients carry
+# the transient's time-frequency pattern, which is the information a learned
+# combiner can use and a time window cannot.
+WAVEGRAM_TIME_BINS = 32
+
+# What a candidate edge carries: the arrival-time difference, the agreement
+# between the two wavegrams, the shared fraction of band and of time support,
+# and the log ratio of the two energies. The ratio is a feature and not a
+# penalty: the antenna responses make the same signal reach two detectors with
+# amplitudes differing by a factor of a few, so an unequal pair is physical.
+EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
+                 "time_overlap", "log_energy_ratio"]
+N_EDGE_FEATURES = len(EDGE_FEATURES)
+
+
+class TriggerGraph:
+    """Node = clustered per-IFO event. Intra-IFO edges = temporally-close
+    same-detector clusters (local-density context). Cross-IFO edges =
+    candidate coincidence pairs across detectors (both true and accidental,
+    deliberately, since the GNN needs negative examples to learn from).
+
+    Plain numpy/pandas container -- the public shape callers (this module's
+    own GNNCoincidenceScorer, but also notebooks) build/inspect directly.
+    `GNNCoincidenceScorer` converts it to a `torch_geometric.data.Data`
+    internally; nothing about this class depends on torch_geometric.
+    """
+
+    def __init__(
+        self, nodes, node_features, intra_edges, intra_edge_features,
+        cross_edges, cross_edge_features, ifos,
+    ):
+        self.nodes = nodes
+        self.node_features = node_features
+        self.intra_edges = intra_edges
+        self.intra_edge_features = intra_edge_features
+        self.cross_edges = cross_edges
+        self.cross_edge_features = cross_edge_features
+        self.ifos = ifos
+
+    def candidate_table(self) -> pd.DataFrame:
+        """Cross-detector candidate edges as a table.
+
+        Shares its schema with `IndexedCoincidenceFinder.find`'s output, so the
+        classical and the learned statistic can be ranked and compared through
+        the same machinery. Every edge feature is carried through, which is what
+        a deterministic baseline is fitted on.
+
+        :return: pandas.DataFrame -- one row per candidate edge.
+        """
+        i, j = self.cross_edges[:, 0], self.cross_edges[:, 1]
+        gps = self.nodes["gpsCentroid"].to_numpy(dtype=float) \
+            if "gpsCentroid" in self.nodes else self.nodes["gpsPeak"].to_numpy(dtype=float)
+        enwdf = self.nodes["EnWDF"].to_numpy(dtype=float)
+        ifo = self.nodes["ifo"].to_numpy()
+        table = pd.DataFrame(dict(
+            candidate_id=np.arange(len(i)),
+            gps_candidate=(gps[i] + gps[j]) / 2,
+            ifos_involved=np.char.add(np.char.add(ifo[i].astype(str), ","),
+                                      ifo[j].astype(str)),
+            network_enwdf=np.hypot(enwdf[i], enwdf[j]),
+            network_min_enwdf=np.minimum(enwdf[i], enwdf[j]),
+            n_ifos=2,
+            node_i=i,
+            node_j=j,
+        ))
+        for column, name in enumerate(EDGE_FEATURES):
+            table[name] = self.cross_edge_features[:, column].astype(float)
+        return table
+
+
+class TriggerGraphBuilder:
+    """The network graph: single-detector events as nodes, physically possible
+    coincidences as cross-detector edges.
+
+    The edges are not the graph's own invention. They are the candidate pairs
+    the classical finder admits -- within the light travel time plus the events'
+    own timing spreads, overlapping in band, overlapping in time once the
+    travel time is allowed for -- so that the learned and the classical
+    statistic rank the same candidate set and can be compared at a fixed false
+    alarm rate. What the graph decides is which of those survivors are coherent,
+    not which pairs are geometrically possible: that is known physics, and it is
+    imposed rather than learned.
+
+    A node carries the cluster's wavegram, not only its scalar summary, so the
+    morphology that the coefficients measured reaches the model. The detector's
+    identity is carried explicitly, because the antenna responses make unequal
+    amplitudes between detectors physical rather than suspicious.
+    """
+
+    def __init__(
+        self,
+        intra_ifo_window_s: float = 5.0,
+        coincidence: "CoincidenceConfig | None" = None,
+        ifos: list[str] | None = None,
+        wavegram_time_bins: int = WAVEGRAM_TIME_BINS,
+    ):
+        """
+        :type intra_ifo_window_s: float
+        :param intra_ifo_window_s: how far apart two events of the same detector
+            may be and still be joined, as local-density context.
+        :type coincidence: wdf.analysis.robust_events.CoincidenceConfig | None
+        :param coincidence: the physical admissibility rule the cross-detector
+            edges obey. Default: the classical finder's own configuration.
+        :type ifos: list[str] | None
+        :param ifos: detector order; default, the order of the events given.
+        :type wavegram_time_bins: int
+        :param wavegram_time_bins: time bins per octave in a node's wavegram.
+        """
+        self.intra_ifo_window_s = intra_ifo_window_s
+        self.coincidence = CoincidenceConfig() if coincidence is None else coincidence
+        self.ifos = ifos
+        self.wavegram_time_bins = wavegram_time_bins
+
+    def build(self, clustered: dict[str, pd.DataFrame],
+              coefficients: dict[str, dict]) -> TriggerGraph:
+        """Assemble the graph from each detector's events and their coefficients.
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: ``{ifo: event catalogue}``, each row carrying at
+            least `cluster_id` and `gpsPeak`.
+        :type coefficients: dict[str, dict]
+        :param coefficients: ``{ifo: {cluster_id: ClusterCoefficients}}``, as
+            `wdf.analysis.cluster_coefficients.collect_cluster_coefficients`
+            returns. Every event must have an entry.
+        :return: TriggerGraph
+        :raises KeyError: if an event has no coefficients.
+        """
+        ifos = self.ifos or list(clustered.keys())
+        frames, grids = [], []
+        for ifo in ifos:
+            per_cluster = coefficients[ifo]
+            events = clustered[ifo].reset_index(drop=True)
+            missing = set(events["cluster_id"].astype(int)) - set(per_cluster)
+            if missing:
+                raise KeyError(
+                    f"no coefficients for cluster {min(missing)} of {ifo}; the graph is "
+                    "built from the wavelet coefficients, so every event needs them"
+                )
+            frames.append(events.assign(ifo=ifo))
+            grids.extend(per_cluster[label].wavegram(self.wavegram_time_bins).ravel()
+                         for label in events["cluster_id"].astype(int))
+        nodes_df = pd.concat(frames, ignore_index=True)
+
+        # |coefficient|/sigma spans decades, so compress before standardising;
+        # log1p leaves the empty cells of the grid at exactly zero.
+        wavegrams = np.log1p(np.vstack(grids)) if grids else np.zeros((0, 1))
+        onehot = pd.get_dummies(nodes_df["ifo"]).reindex(columns=ifos, fill_value=0).to_numpy(dtype=float)
+        X = np.hstack([wavegrams, onehot])
+        X = X.astype(np.float32)
+
+        # Unit-norm grids, so the similarity between two of them is a shape
+        # comparison and not an amplitude one: the same signal reaches two
+        # detectors with amplitudes set by their antenna responses.
+        norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        shapes = wavegrams / norms
+
+        energy = _coefficient_energy(nodes_df)
+        idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
+        gps = nodes_df["gpsPeak"].to_numpy(dtype=float)
+
+        # Only the pairs inside the window are ever formed, by searching a
+        # sorted time axis. A pairwise-difference matrix asks the same question
+        # in O(n^2) memory, which a search carrying no per-detector threshold
+        # exhausts: 10^5 events in one detector is 10^10 matrix entries.
+        sorted_by_ifo = {
+            ifo: idxs[np.argsort(gps[idxs], kind="mergesort")]
+            for ifo, idxs in idx_by_ifo.items()
+        }
+
+        intra_edges, intra_feats = [], []
+        for idxs in sorted_by_ifo.values():
+            for left, right in neighbour_pairs(gps[idxs], self.intra_ifo_window_s):
+                i_sel, j_sel = idxs[left], idxs[right]
+                dt_sel = gps[i_sel] - gps[j_sel]
+                intra_edges.append(np.column_stack([i_sel, j_sel]))
+                intra_edges.append(np.column_stack([j_sel, i_sel]))
+                intra_feats.append(dt_sel[:, None])
+                intra_feats.append(-dt_sel[:, None])
+
+        # The physically possible pairs, from the classical finder's own rule:
+        # the graph ranks the survivors of known physics rather than rediscovering
+        # that two events a second apart cannot be one gravitational wave.
+        finder = IndexedCoincidenceFinder(self.coincidence)
+        cross_edges, cross_feats = [], []
+        for ifo_a, ifo_b in combinations(ifos, 2):
+            idx_a, idx_b = idx_by_ifo[ifo_a], idx_by_ifo[ifo_b]
+            admissible = finder.candidate_edges(
+                nodes_df.iloc[idx_a].reset_index(drop=True),
+                nodes_df.iloc[idx_b].reset_index(drop=True))
+            if not admissible:
+                continue
+            local = np.array([(i, j, dt, f_overlap, t_overlap)
+                              for i, j, _, dt, f_overlap, t_overlap in admissible])
+            i_sel = idx_a[local[:, 0].astype(int)]
+            j_sel = idx_b[local[:, 1].astype(int)]
+            similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
+            cross_edges.append(np.column_stack([i_sel, j_sel]))
+            cross_feats.append(np.column_stack([
+                local[:, 2],                                   # dt
+                similarity,                                    # wavegram agreement
+                local[:, 3],                                   # frequency overlap
+                local[:, 4],                                   # time overlap
+                np.log(np.maximum(energy[i_sel], EPS)
+                       / np.maximum(energy[j_sel], EPS)),      # log energy ratio
+            ]))
+
+        intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)
+        intra_feats = np.concatenate(intra_feats) if intra_feats else np.zeros((0, 1), dtype=np.float32)
+        cross_edges = np.concatenate(cross_edges) if cross_edges else np.zeros((0, 2), dtype=np.int64)
+        cross_feats = np.concatenate(cross_feats) if cross_feats else np.zeros((0, N_EDGE_FEATURES), dtype=np.float32)
+
+        return TriggerGraph(
+            nodes=nodes_df,
+            node_features=X,
+            intra_edges=intra_edges.astype(np.int64).reshape(-1, 2),
+            intra_edge_features=intra_feats.astype(np.float32).reshape(-1, 1),
+            cross_edges=cross_edges.astype(np.int64).reshape(-1, 2),
+            cross_edge_features=cross_feats.astype(np.float32).reshape(-1, N_EDGE_FEATURES),
+            ifos=ifos,
+        )
+
+

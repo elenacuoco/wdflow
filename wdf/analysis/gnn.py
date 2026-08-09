@@ -25,12 +25,16 @@ rest of wdfLib works without either.
 """
 from __future__ import annotations
 
-from itertools import combinations
-
 import numpy as np
 import pandas as pd
 
-from wdf.analysis.pairs import cross_pairs, neighbour_pairs
+from wdf.analysis.network_graph import (
+    EDGE_FEATURES,
+    N_EDGE_FEATURES,
+    WAVEGRAM_TIME_BINS,
+    TriggerGraph,
+    TriggerGraphBuilder,
+)
 
 try:
     import torch
@@ -41,171 +45,6 @@ except ImportError as _e:  # pragma: no cover
     raise ImportError(
         "wdfLib.gnn requires torch and torch_geometric. Install with: pip install -e '.[gnn]'"
     ) from _e
-
-# A node is described by the wavelet coefficients of its cluster, rendered on a
-# fixed octave-by-time grid (`ClusterCoefficients.wavegram`), not by scalar
-# summaries. Scoring a coincidence on peak time, peak frequency and the
-# statistic is what the classical finder already does; the coefficients carry
-# the transient's time-frequency pattern, which is the information a learned
-# combiner can use and a time window cannot.
-WAVEGRAM_TIME_BINS = 32
-
-
-class TriggerGraph:
-    """Node = clustered per-IFO event. Intra-IFO edges = temporally-close
-    same-detector clusters (local-density context). Cross-IFO edges =
-    candidate coincidence pairs across detectors (both true and accidental,
-    deliberately, since the GNN needs negative examples to learn from).
-
-    Plain numpy/pandas container -- the public shape callers (this module's
-    own GNNCoincidenceScorer, but also notebooks) build/inspect directly.
-    `GNNCoincidenceScorer` converts it to a `torch_geometric.data.Data`
-    internally; nothing about this class depends on torch_geometric.
-    """
-
-    def __init__(
-        self, nodes, node_features, intra_edges, intra_edge_features,
-        cross_edges, cross_edge_features, ifos,
-    ):
-        self.nodes = nodes
-        self.node_features = node_features
-        self.intra_edges = intra_edges
-        self.intra_edge_features = intra_edge_features
-        self.cross_edges = cross_edges
-        self.cross_edge_features = cross_edge_features
-        self.ifos = ifos
-
-    def candidate_table(self) -> pd.DataFrame:
-        """Cross-IFO candidate edges as a DataFrame, schema-compatible with
-        CoincidenceFinder.find's output (gps_candidate/dt_s/network_enwdf/
-        n_ifos in common), so ROCCurve can be run on either interchangeably.
-        """
-        i, j = self.cross_edges[:, 0], self.cross_edges[:, 1]
-        gps = self.nodes["gpsPeak"].to_numpy(dtype=float)
-        enwdf = self.nodes["EnWDF"].to_numpy(dtype=float)
-        ifo = self.nodes["ifo"].to_numpy()
-        return pd.DataFrame(dict(
-            candidate_id=np.arange(len(i)),
-            gps_candidate=(gps[i] + gps[j]) / 2,
-            ifos_involved=np.char.add(np.char.add(ifo[i].astype(str), ","),
-                                      ifo[j].astype(str)),
-            dt_s=self.cross_edge_features[:, 0].astype(float),
-            wavegram_similarity=self.cross_edge_features[:, 1].astype(float),
-            network_enwdf=np.hypot(enwdf[i], enwdf[j]),
-            network_min_enwdf=np.minimum(enwdf[i], enwdf[j]),
-            n_ifos=2,
-            node_i=i,
-            node_j=j,
-        ))
-
-
-class TriggerGraphBuilder:
-    def __init__(
-        self,
-        intra_ifo_window_s: float = 5.0,
-        cross_ifo_window_s: float = 0.5,
-        ifos: list[str] | None = None,
-        wavegram_time_bins: int = WAVEGRAM_TIME_BINS,
-    ):
-        self.intra_ifo_window_s = intra_ifo_window_s
-        self.cross_ifo_window_s = cross_ifo_window_s
-        self.ifos = ifos
-        self.wavegram_time_bins = wavegram_time_bins
-
-    def build(self, clustered: dict[str, pd.DataFrame],
-              coefficients: dict[str, dict]) -> TriggerGraph:
-        """Assemble the graph from each detector's events and their coefficients.
-
-        :type clustered: dict[str, pandas.DataFrame]
-        :param clustered: ``{ifo: event catalogue}``, each row carrying at
-            least `cluster_id` and `gpsPeak`.
-        :type coefficients: dict[str, dict]
-        :param coefficients: ``{ifo: {cluster_id: ClusterCoefficients}}``, as
-            `wdf.analysis.cluster_coefficients.collect_cluster_coefficients`
-            returns. Every event must have an entry.
-        :return: TriggerGraph
-        :raises KeyError: if an event has no coefficients.
-        """
-        ifos = self.ifos or list(clustered.keys())
-        frames, grids = [], []
-        for ifo in ifos:
-            per_cluster = coefficients[ifo]
-            events = clustered[ifo].reset_index(drop=True)
-            missing = set(events["cluster_id"].astype(int)) - set(per_cluster)
-            if missing:
-                raise KeyError(
-                    f"no coefficients for cluster {min(missing)} of {ifo}; the graph is "
-                    "built from the wavelet coefficients, so every event needs them"
-                )
-            frames.append(events.assign(ifo=ifo))
-            grids.extend(per_cluster[label].wavegram(self.wavegram_time_bins).ravel()
-                         for label in events["cluster_id"].astype(int))
-        nodes_df = pd.concat(frames, ignore_index=True)
-
-        # |coefficient|/sigma spans decades, so compress before standardising;
-        # log1p leaves the empty cells of the grid at exactly zero.
-        wavegrams = np.log1p(np.vstack(grids)) if grids else np.zeros((0, 1))
-        onehot = pd.get_dummies(nodes_df["ifo"]).reindex(columns=ifos, fill_value=0).to_numpy(dtype=float)
-        X = np.hstack([wavegrams, onehot])
-        mu, sigma = X.mean(axis=0), X.std(axis=0)
-        sigma[sigma == 0] = 1.0
-        X = ((X - mu) / sigma).astype(np.float32)
-
-        # Unit-norm grids, so the similarity between two of them is a shape
-        # comparison and not an amplitude one: the same signal reaches two
-        # detectors with amplitudes set by their antenna responses.
-        norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
-        norms[norms == 0.0] = 1.0
-        shapes = wavegrams / norms
-
-        idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
-        gps = nodes_df["gpsPeak"].to_numpy(dtype=float)
-
-        # Only the pairs inside the window are ever formed, by searching a
-        # sorted time axis. A pairwise-difference matrix asks the same question
-        # in O(n^2) memory, which a search carrying no per-detector threshold
-        # exhausts: 10^5 events in one detector is 10^10 matrix entries.
-        sorted_by_ifo = {
-            ifo: idxs[np.argsort(gps[idxs], kind="mergesort")]
-            for ifo, idxs in idx_by_ifo.items()
-        }
-
-        intra_edges, intra_feats = [], []
-        for idxs in sorted_by_ifo.values():
-            for left, right in neighbour_pairs(gps[idxs], self.intra_ifo_window_s):
-                i_sel, j_sel = idxs[left], idxs[right]
-                dt_sel = gps[i_sel] - gps[j_sel]
-                intra_edges.append(np.column_stack([i_sel, j_sel]))
-                intra_edges.append(np.column_stack([j_sel, i_sel]))
-                intra_feats.append(dt_sel[:, None])
-                intra_feats.append(-dt_sel[:, None])
-
-        cross_edges, cross_feats = [], []
-        for ifo_a, ifo_b in combinations(ifos, 2):
-            idx_a, idx_b = sorted_by_ifo[ifo_a], sorted_by_ifo[ifo_b]
-            for left, right in cross_pairs(gps[idx_a], gps[idx_b],
-                                           self.cross_ifo_window_s):
-                i_sel, j_sel = idx_a[left], idx_b[right]
-                dt_sel = gps[i_sel] - gps[j_sel]
-                similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
-                cross_edges.append(np.column_stack([i_sel, j_sel]))
-                cross_feats.append(np.column_stack([dt_sel, similarity]))
-
-        intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)
-        intra_feats = np.concatenate(intra_feats) if intra_feats else np.zeros((0, 1), dtype=np.float32)
-        cross_edges = np.concatenate(cross_edges) if cross_edges else np.zeros((0, 2), dtype=np.int64)
-        cross_feats = np.concatenate(cross_feats) if cross_feats else np.zeros((0, 2), dtype=np.float32)
-
-        return TriggerGraph(
-            nodes=nodes_df,
-            node_features=X,
-            intra_edges=intra_edges.astype(np.int64).reshape(-1, 2),
-            intra_edge_features=intra_feats.astype(np.float32).reshape(-1, 1),
-            cross_edges=cross_edges.astype(np.int64).reshape(-1, 2),
-            cross_edge_features=cross_feats.astype(np.float32).reshape(-1, 2),
-            ifos=ifos,
-        )
-
 
 class _CandidateData(Data):
     """`Data` with a second, separate edge set (`cross_edge_index`/
@@ -300,6 +139,12 @@ class GNNCoincidenceScorer(nn.Module):
         self.edge_head = nn.Sequential(
             nn.Linear(hidden * 2 + cross_edge_dim, hidden), nn.ReLU(), nn.Linear(hidden, 1)
         )
+        # The feature scaling is part of the fitted model, not of a graph. A
+        # scaling measured on each graph separately would have the model read
+        # the foreground and the background on two different scales, which is
+        # exactly the comparison it exists to make.
+        self.register_buffer("feature_mean", torch.zeros(node_dim))
+        self.register_buffer("feature_scale", torch.ones(node_dim))
         self.to(self.device)
 
     def _edge_logits_from_data(self, data) -> "torch.Tensor":
@@ -309,6 +154,7 @@ class GNNCoincidenceScorer(nn.Module):
         one segment or many at once with no special-casing.
         """
         x = data.x.to(self.device)
+        x = (x - self.feature_mean) / self.feature_scale
         h = self.encoder(x)
         h = self.intra_mp(h, data.edge_index.to(self.device), data.edge_attr.to(self.device))
         if data.cross_edge_index.numel() == 0:
@@ -349,6 +195,16 @@ class GNNCoincidenceScorer(nn.Module):
         table["gnn_score"] = probs
         return table
 
+    def _fit_feature_scaling(self, graphs) -> None:
+        """Measure the node-feature scaling from the graphs being fitted on."""
+        features = np.vstack([g.node_features for g in graphs if len(g.node_features)])
+        mean = features.mean(axis=0)
+        scale = features.std(axis=0)
+        scale[scale == 0.0] = 1.0
+        device = self.feature_mean.device
+        self.feature_mean = torch.as_tensor(mean, dtype=torch.float32, device=device)
+        self.feature_scale = torch.as_tensor(scale, dtype=torch.float32, device=device)
+
     def fit(
         self,
         examples: list[tuple],
@@ -382,6 +238,7 @@ class GNNCoincidenceScorer(nn.Module):
         datas = [d for d in datas if bool(d.train_mask.any())]
         if not datas:
             return []
+        self._fit_feature_scaling([example[0] for example in examples])
         chunk_size = batch_size or len(datas)
 
         opt = torch.optim.Adam(self.parameters(), lr=lr)

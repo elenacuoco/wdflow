@@ -458,7 +458,20 @@ class IndexedCoincidenceFinder:
         widest = max(spreads)
         return float(self.config.timing_tolerance(widest, widest))
 
-    def _candidate_edges(self, left, right):
+    def candidate_edges(self, left, right):
+        """Every pair of events a signal could physically have produced.
+
+        The pair must arrive within the light travel time plus the two events'
+        own timing spreads, share enough of its band, and share enough of its
+        time support once one of them is allowed to shift by the light travel
+        time. What survives is the candidate set; deciding among the survivors
+        is a separate question, and this is what both the one-to-one assignment
+        and the graph stage start from, so that the two admit the same pairs.
+
+        :param left: one detector's events.
+        :param right: the other detector's events.
+        :return: list of (i, j, cost, dt, frequency_overlap, time_overlap).
+        """
         lt = _numeric(left, ("gpsCentroid", "gpsPeak"))
         rt = _numeric(right, ("gpsCentroid", "gpsPeak"))
         ls = _numeric(left, ("tSpread",), default=0.0)
@@ -529,7 +542,7 @@ class IndexedCoincidenceFinder:
         if left.empty or right.empty:
             return pd.DataFrame()
 
-        edges = self._candidate_edges(left, right)
+        edges = self.candidate_edges(left, right)
         selected = []
 
         for component in self._components(len(left), len(right), edges):
