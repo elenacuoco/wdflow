@@ -70,7 +70,12 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     t_mid = 0.5 * (t_lo + t_hi)
 
     centroid = float(energy @ t_mid) / total
-    spread = np.sqrt(max(float(energy @ (t_mid - centroid) ** 2) / total, 0.0))
+    # A tile is an interval, not a point, so its own width contributes to the
+    # spread: uniformly distributed energy over a width w has variance w^2/12.
+    # It matters most where the tiles differ in width, which is exactly what
+    # searching at several window lengths produces.
+    variance = float(energy @ ((t_mid - centroid) ** 2 + (t_hi - t_lo) ** 2 / 12.0))
+    spread = np.sqrt(max(variance / total, 0.0))
 
     loudest = int(np.argmax(magnitude))
     frequency = np.array([tile_frequency(a, b) for a, b in zip(f_lo, f_hi)])

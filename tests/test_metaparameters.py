@@ -137,13 +137,15 @@ def test_the_spread_grows_with_the_extent_of_the_energy():
             > meta_features(near, value, n_coeff, FS, SIGMA)["tSpread"])
 
 
-def test_a_single_tile_has_no_spread_and_is_centred_on_itself():
+def test_a_single_tile_is_centred_on_itself_and_spread_over_its_own_width():
     n_coeff = 512
     index = np.array([70])
     t_lo, t_hi, _, _ = tile_of(index[0], n_coeff)
     features = meta_features(index, np.array([3.0]), n_coeff, FS, SIGMA)
 
-    assert features["tSpread"] == pytest.approx(0.0)
+    # The energy is somewhere in the tile, not at its centre: uniform over a
+    # width w has standard deviation w/sqrt(12).
+    assert features["tSpread"] == pytest.approx((t_hi - t_lo) / np.sqrt(12.0))
     assert features["gpsCentroid"] == pytest.approx(0.5 * (t_lo + t_hi))
     assert features["gpsPeak"] == pytest.approx(features["gpsCentroid"])
     assert features["gpsStart"] == pytest.approx(t_lo)
@@ -170,3 +172,29 @@ def test_the_times_shift_with_the_window_and_the_frequencies_do_not():
         assert later[name] == pytest.approx(at_zero[name])
 
 
+
+
+def test_the_spread_includes_the_tile_s_own_width():
+    """A tile is an interval, not a point: a single surviving coefficient still
+    has a spread, set by the width of the tile carrying it."""
+    import numpy as np
+    from wdf.analysis.metaparameters import meta_features
+    from wdf.analysis.wavelets import coeff_time_bounds
+
+    n_coeff, fs = 512, 2048.0
+    index = np.array([300])
+    features = meta_features(index, np.array([5.0]), n_coeff, fs, sigma=1.0)
+
+    t_lo, t_hi = coeff_time_bounds(n_coeff, fs)
+    width = float(t_hi[300] - t_lo[300])
+    assert features["tSpread"] == pytest.approx(width / np.sqrt(12.0), rel=1e-9)
+
+
+def test_a_wider_tile_gives_a_wider_spread_at_the_same_place():
+    import numpy as np
+    from wdf.analysis.metaparameters import meta_features
+
+    # Level 1 tiles the same instant with a wide tile; level 8 with a narrow one.
+    wide = meta_features(np.array([2]), np.array([5.0]), 512, 2048.0, sigma=1.0)
+    narrow = meta_features(np.array([300]), np.array([5.0]), 512, 2048.0, sigma=1.0)
+    assert wide["tSpread"] > narrow["tSpread"]
