@@ -18,6 +18,8 @@ import pandas as pd
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import (
     EPS,
+    _numeric,
+    _overlap_fraction,
     CoincidenceConfig,
     IndexedCoincidenceFinder,
     _coefficient_energy,
@@ -40,7 +42,8 @@ WAVEGRAM_TIME_BINS = 32
 EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
                  "time_overlap", "log_energy_ratio",
                  "wavegram_similarity_aligned", "wavegram_lag_bins",
-                 "wavegram_overlap", "wavegram_overlap_aligned"]
+                 "wavegram_overlap", "wavegram_overlap_aligned",
+                 "energy_band_overlap", "dt_over_tolerance"]
 
 # A cosine between two unit-normalised grids is a statement about direction and
 # not about evidence: two events each occupying one cell of the plane reach
@@ -233,6 +236,14 @@ class TriggerGraphBuilder:
             raw.reshape(len(raw), 0, self.wavegram_time_bins)
 
         energy = _coefficient_energy(nodes_df)
+        # The support is what decides admissibility, and it is wide by
+        # construction: on three hours of the simulated set its overlap has a
+        # median of exactly one, so as a ranking quantity it carries nothing.
+        # The band the energy occupies varies from pair to pair.
+        band_lo = _numeric(nodes_df, ("freqQ05", "freqMin"), default=np.nan)
+        band_hi = _numeric(nodes_df, ("freqQ95", "freqMax"), default=np.nan)
+        spread = _numeric(nodes_df, ("tSpread",), default=0.0)
+        spread = np.where(np.isfinite(spread), spread, 0.0)
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
         gps = nodes_df["gpsPeak"].to_numpy(dtype=float)
 
@@ -290,6 +301,14 @@ class TriggerGraphBuilder:
                 lag,                                           # bins it took to align
                 overlap,                                       # coherent energy
                 overlap_aligned,                               # the same, best aligned
+                _overlap_fraction(band_lo[i_sel], band_hi[i_sel],
+                                  band_lo[j_sel], band_hi[j_sel]),
+                # How far apart they are relative to what this pair may claim:
+                # a long event is allowed a wide tolerance, and should not be
+                # ranked as if it had used none of it.
+                np.abs(local[:, 2]) / np.maximum(
+                    self.coincidence.timing_tolerance(spread[i_sel], spread[j_sel]),
+                    EPS),
             ]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)

@@ -27,6 +27,8 @@ def _table(n, seed=0, separable=True):
         "wavegram_lag_bins": rng.integers(-3, 4, n).astype(float),
         "wavegram_overlap": rng.uniform(0, 30, n) + 20.0 * shift,
         "wavegram_overlap_aligned": rng.uniform(0, 30, n) + 20.0 * shift,
+        "energy_band_overlap": rng.uniform(0, 1, n),
+        "dt_over_tolerance": rng.uniform(0, 1, n),
     }), labels
 
 
