@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import numpy as np
 
+EPS = np.finfo(float).tiny
+
 from wdf.analysis.wavelets import (
     coeff_freq_bands,
     coeff_time_bounds,
@@ -31,36 +33,56 @@ def _empty() -> dict:
     return {name: float("nan") for name in META_FEATURES}
 
 
-def _energy_quantile(lo, hi, energy, quantiles):
+def energy_quantile(lo, hi, energy, quantiles):
     """Quantiles of energy spread uniformly over a set of intervals.
 
     Each tile holds its energy over its own extent rather than at a point, so
-    the mixture is piecewise uniform and its quantiles are read by inverting the
-    cumulative distribution. Hard support bounds are the extremes of the same
-    distribution, and one marginal coefficient moves them arbitrarily far; these
-    do not move until the energy does.
+    the distribution is the mixture of one uniform density per interval. The
+    intervals overlap freely -- tiles of different octaves cover the same
+    instants, and an event's members cover the same band -- so the mixture is
+    accumulated over the breakpoints of their union and inverted there, rather
+    than by walking the intervals in order.
+
+    Hard support bounds are the extremes of this same distribution, and one
+    marginal coefficient moves them arbitrarily far; these do not move until the
+    energy does.
 
     :param lo: lower edge of each interval.
     :param hi: upper edge of each interval.
     :param energy: energy carried by each interval.
     :param quantiles: the quantiles wanted, between 0 and 1.
-    :return: numpy.ndarray -- one value per requested quantile.
+    :return: numpy.ndarray -- one value per requested quantile, ascending with
+        the quantiles asked for.
     """
-    order = np.argsort(lo, kind="mergesort")
-    lo, hi, energy = lo[order], hi[order], energy[order]
-    total = energy.sum()
-    if total <= 0.0:
-        return np.full(len(quantiles), np.nan)
+    lo = np.asarray(lo, dtype=float).reshape(-1)
+    hi = np.asarray(hi, dtype=float).reshape(-1)
+    energy = np.asarray(energy, dtype=float).reshape(-1)
+    quantiles = np.asarray(quantiles, dtype=float).reshape(-1)
 
-    edges = np.concatenate(([0.0], np.cumsum(energy) / total))
-    out = np.empty(len(quantiles))
-    for slot, q in enumerate(quantiles):
-        k = min(int(np.searchsorted(edges, q, side="right")) - 1, len(lo) - 1)
-        k = max(k, 0)
-        width = edges[k + 1] - edges[k]
-        within = (q - edges[k]) / width if width > 0 else 0.0
-        out[slot] = lo[k] + within * (hi[k] - lo[k])
-    return out
+    total = energy.sum()
+    if lo.size == 0 or not np.isfinite(total) or total <= 0.0:
+        return np.full(quantiles.shape, np.nan)
+
+    breaks = np.unique(np.concatenate([lo, hi]))
+    if breaks.size < 2:
+        return np.full(quantiles.shape, float(breaks[0]))
+
+    width = np.maximum(hi - lo, 0.0)
+    left, right = breaks[:-1], breaks[1:]
+    # Energy a segment receives from each interval covering it, in proportion to
+    # how much of that interval the segment is. A zero-width interval puts all
+    # of its energy on the segment starting at it.
+    covers = (lo[:, None] <= left[None, :]) & (hi[:, None] >= right[None, :])
+    share = np.where(width[:, None] > 0.0,
+                     (right - left)[None, :] / np.maximum(width, EPS)[:, None],
+                     (left[None, :] == lo[:, None]).astype(float))
+    mass = (energy[:, None] * share * covers).sum(axis=0)
+
+    cumulative = np.concatenate(([0.0], np.cumsum(mass)))
+    if cumulative[-1] <= 0.0:
+        return np.full(quantiles.shape, float(breaks[0]))
+    cumulative /= cumulative[-1]
+    return np.interp(quantiles, cumulative, breaks)
 
 
 def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
@@ -117,8 +139,8 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     # The support is what a marginal coefficient can stretch without carrying
     # energy; these follow the energy instead. The frequency quantiles are taken
     # in log frequency, the coordinate the dyadic tiling is uniform in.
-    t05, t95 = _energy_quantile(t_lo, t_hi, energy, (0.05, 0.95))
-    logf05, logf95 = _energy_quantile(
+    t05, t95 = energy_quantile(t_lo, t_hi, energy, (0.05, 0.95))
+    logf05, logf95 = energy_quantile(
         np.log(np.maximum(f_lo, np.finfo(float).tiny)), np.log(f_hi), energy,
         (0.05, 0.95))
     return dict(

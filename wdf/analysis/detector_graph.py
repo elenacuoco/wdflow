@@ -31,6 +31,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from wdf.analysis.metaparameters import energy_quantile
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import EPS, _UnionFind
 from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds
@@ -43,7 +44,8 @@ TRIGGER_EDGE_FEATURES = [
 
 DETECTOR_EVENT_COLUMNS = [
     "cluster_id", "ifo", "gps", "gpsStart", "gpsCentroid", "tSpread", "gpsPeak",
-    "duration", "freqMin", "freqMean", "freqMax", "EnWDF", "sigma", "snrPeak",
+    "duration", "duration90", "freqMin", "freqMean", "freqMax",
+    "freqQ05", "freqQ95", "EnWDF", "sigma", "snrPeak",
     "significance", "n_triggers", "n_scales", "scale_best", "n_coeff", "fs",
 ]
 
@@ -325,9 +327,22 @@ def detector_events(graph: DetectorGraph, significance=None,
             tSpread=spread,
             gpsPeak=float(loudest.get("gpsPeak", centroid)),
             duration=float(group["window_end"].max() - start),
+            duration90=float(np.diff(energy_quantile(
+                group["gpsStart"].to_numpy(dtype=float),
+                group["gpsStart"].to_numpy(dtype=float)
+                + group["duration90"].to_numpy(dtype=float),
+                weight, (0.05, 0.95)))[0]) if "duration90" in group else np.nan,
             freqMin=float(group["freqMin"].min()),
             freqMean=float((group["freqMean"].to_numpy(dtype=float) * weight).sum() / total),
             freqMax=float(group["freqMax"].max()),
+            freqQ05=float(np.exp(energy_quantile(
+                np.log(np.maximum(group["freqQ05"].to_numpy(dtype=float), EPS)),
+                np.log(np.maximum(group["freqQ95"].to_numpy(dtype=float), EPS)),
+                weight, (0.05,))[0])) if "freqQ05" in group else np.nan,
+            freqQ95=float(np.exp(energy_quantile(
+                np.log(np.maximum(group["freqQ05"].to_numpy(dtype=float), EPS)),
+                np.log(np.maximum(group["freqQ95"].to_numpy(dtype=float), EPS)),
+                weight, (0.95,))[0])) if "freqQ95" in group else np.nan,
             EnWDF=float(loudest["EnWDF"]),
             sigma=float(noise.mean()) if noise.size else np.nan,
             snrPeak=float(group["snrPeak"].max()) if "snrPeak" in group else np.nan,

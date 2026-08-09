@@ -238,3 +238,35 @@ def test_a_single_tile_has_quantiles_inside_its_own_extent():
     features = meta_features(np.array([70]), np.array([3.0]), 512, 2048.0, sigma=1.0)
     f_lo, f_hi = coeff_freq_bands(512, 2048.0)
     assert f_lo[70] <= features["freqQ05"] <= features["freqQ95"] <= f_hi[70]
+
+
+def test_quantiles_of_overlapping_intervals_stay_ordered():
+    """Intervals overlap freely -- tiles of different octaves cover the same
+    instants, and an event's members cover the same band -- so the mixture must
+    be accumulated over their union, not by walking them in order."""
+    import numpy as np
+    from wdf.analysis.metaparameters import energy_quantile
+
+    lo = np.full(10, 4.0)
+    hi = np.full(10, 5.7)
+    low, high = energy_quantile(lo, hi, np.linspace(1.0, 3.0, 10), (0.05, 0.95))
+    assert lo[0] <= low < high <= hi[0]
+
+
+def test_a_quantile_follows_where_the_energy_is():
+    import numpy as np
+    from wdf.analysis.metaparameters import energy_quantile
+
+    # Almost all the energy in the right-hand interval.
+    low, high = energy_quantile(np.array([0.0, 10.0]), np.array([1.0, 11.0]),
+                                np.array([1e-6, 1.0]), (0.05, 0.95))
+    assert low > 9.0 and high < 11.0
+
+
+def test_quantiles_of_nothing_are_undefined():
+    import numpy as np
+    from wdf.analysis.metaparameters import energy_quantile
+
+    assert np.isnan(energy_quantile(np.zeros(0), np.zeros(0), np.zeros(0), (0.5,))).all()
+    assert np.isnan(energy_quantile(np.array([1.0]), np.array([2.0]),
+                                    np.array([0.0]), (0.5,))).all()
