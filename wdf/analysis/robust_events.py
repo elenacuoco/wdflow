@@ -398,9 +398,9 @@ class CoincidenceConfig:
         can have between the two detectors.
     :param timing_jitter_s: floor on an event's timing spread, seconds. It is a
         floor and not the timing error: an event living in one tile declares
-        zero spread, which is a statement about the tiling. Set at the light
-        travel time, so the tolerance stays within a small multiple of it
-        rather than being set by the floor.
+        zero spread, which is a statement about the tiling. Set so that the
+        smallest tolerance any pair can claim is 25 ms, a little over twice the
+        light travel time, rather than being set by the floor.
     :param timing_sigma: how many combined spreads to accept.
     :param minimum_frequency_overlap: least overlap of the two bands.
     :param minimum_time_overlap: least overlap of the two time supports, once
@@ -408,7 +408,7 @@ class CoincidenceConfig:
     """
 
     light_travel_time_s: float = 0.01001
-    timing_jitter_s: float = 0.010
+    timing_jitter_s: float = 0.0035
     timing_sigma: float = 3.0
     minimum_frequency_overlap: float = 0.0
     minimum_time_overlap: float = 0.0
