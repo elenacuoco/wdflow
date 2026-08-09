@@ -258,3 +258,182 @@ class GNNCoincidenceScorer(nn.Module):
             opt.step()
             history.append(float(loss.item()))
         return history
+
+
+class _EdgeMessagePassing(MessagePassing):
+    """One round of message passing over an edge set of any feature width."""
+
+    def __init__(self, hidden: int, edge_dim: int):
+        super().__init__(aggr="mean")
+        self.message_mlp = nn.Sequential(
+            nn.Linear(hidden + edge_dim, hidden), nn.ReLU(), nn.Linear(hidden, hidden)
+        )
+        self.update_mlp = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.ReLU())
+
+    def forward(self, h, edge_index, edge_attr):
+        return self.update_mlp(
+            torch.cat([h, self.propagate(edge_index, h=h, edge_attr=edge_attr)], dim=1))
+
+    def message(self, h_j, edge_attr):
+        return self.message_mlp(torch.cat([h_j, edge_attr], dim=1))
+
+
+class DetectorEdgeScorer(nn.Module):
+    """Level one: which of a detector's admissible edges join one transient.
+
+    The graph's edges are what geometry allows; connected components over all
+    of them chain noise triggers together, because triggers close in time and
+    band are common in noise. This decides which of those edges survive, and
+    the components of the survivors are the detector's events.
+
+    The morphology reaches the model: a node carries its trigger's wavegram on
+    a band-by-time grid, so what is compared is how two triggers look in the
+    plane and not only how close they are.
+    """
+
+    def __init__(self, node_dim: int, edge_dim: int, hidden: int = 32,
+                 layers: int = 2, seed: int = 0, device: str | None = None):
+        """
+        :type node_dim: int
+        :param node_dim: width of `DetectorGraph.node_features`.
+        :type edge_dim: int
+        :param edge_dim: width of `DetectorGraph.edge_features`.
+        :type hidden: int
+        :param hidden: width of the hidden representation.
+        :type layers: int
+        :param layers: rounds of message passing.
+        :type seed: int
+        :param seed: torch seed, for a reproducible initialisation.
+        :type device: str or None
+        :param device: torch device; CUDA when available if None.
+        """
+        super().__init__()
+        torch.manual_seed(seed)
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.encoder = nn.Sequential(nn.Linear(node_dim, hidden), nn.ReLU())
+        self.rounds = nn.ModuleList(
+            [_EdgeMessagePassing(hidden, edge_dim) for _ in range(layers)])
+        self.edge_head = nn.Sequential(
+            nn.Linear(hidden * 2 + edge_dim, hidden), nn.ReLU(), nn.Linear(hidden, 1))
+        # Carried with the model, so that the stretch it was fitted on and any
+        # stretch it later scores are read on one scale.
+        self.register_buffer("feature_mean", torch.zeros(node_dim))
+        self.register_buffer("feature_scale", torch.ones(node_dim))
+        self.to(self.device)
+
+    def _logits(self, graph):
+        x = torch.as_tensor(graph.node_features, dtype=torch.float32, device=self.device)
+        x = (x - self.feature_mean) / self.feature_scale
+        edge_attr = torch.as_tensor(graph.edge_features, dtype=torch.float32,
+                                    device=self.device)
+        if not len(graph.edges):
+            return torch.zeros(0, device=self.device)
+        edges = torch.as_tensor(graph.edges.T, dtype=torch.long, device=self.device)
+        # Messages travel both ways: the relation between two triggers is
+        # symmetric, and a directed edge set would make the first of a pair
+        # blind to the second.
+        both = torch.cat([edges, edges.flip(0)], dim=1)
+        both_attr = torch.cat([edge_attr, edge_attr], dim=0)
+
+        h = self.encoder(x)
+        for round_ in self.rounds:
+            h = round_(h, both, both_attr)
+        i, j = edges[0], edges[1]
+        return self.edge_head(torch.cat([h[i], h[j], edge_attr], dim=1)).squeeze(-1)
+
+    def score(self, graph) -> pd.DataFrame:
+        """The model's opinion on each admissible edge.
+
+        :param graph: a `wdf.analysis.detector_graph.DetectorGraph`.
+        :return: pandas.DataFrame -- the edge table with `edge_logit` and
+            `edge_score`, the probability that the two triggers are one
+            transient.
+        """
+        with torch.no_grad():
+            logits = self._logits(graph)
+            raw = logits.cpu().numpy() if logits.numel() else np.array([])
+            probability = torch.sigmoid(logits).cpu().numpy() if logits.numel() \
+                else np.array([])
+        table = graph.edge_table()
+        table["edge_logit"] = raw
+        table["edge_score"] = probability
+        return table
+
+    def fit(self, examples: list[tuple], epochs: int = 100, lr: float = 1e-2) -> list[float]:
+        """Fit on labelled edges.
+
+        :param examples: `(graph, labels)` or `(graph, labels, mask)` per
+            stretch, labels aligned with `graph.edges`, 1 where the two
+            triggers belong to one transient.
+        :type epochs: int
+        :param epochs: gradient steps.
+        :type lr: float
+        :param lr: learning rate.
+        :return: list[float] -- the loss per epoch.
+        """
+        usable = [e for e in examples if len(e[0].edges)]
+        if not usable:
+            return []
+        features = np.vstack([e[0].node_features for e in usable])
+        mean, scale = features.mean(axis=0), features.std(axis=0)
+        scale[scale == 0.0] = 1.0
+        self.feature_mean = torch.as_tensor(mean, dtype=torch.float32, device=self.device)
+        self.feature_scale = torch.as_tensor(scale, dtype=torch.float32, device=self.device)
+
+        opt = torch.optim.Adam(self.parameters(), lr=lr)
+        loss_fn = nn.BCEWithLogitsLoss()
+        history = []
+        for _ in range(epochs):
+            opt.zero_grad()
+            total, contributing = torch.tensor(0.0, device=self.device), 0
+            for example in usable:
+                graph, labels = example[0], np.asarray(example[1], dtype=float)
+                mask = example[2] if len(example) > 2 else np.ones(len(labels), dtype=bool)
+                mask = torch.as_tensor(np.asarray(mask, dtype=bool), device=self.device)
+                if not bool(mask.any()):
+                    continue
+                logits = self._logits(graph)
+                target = torch.as_tensor(labels, dtype=torch.float32, device=self.device)
+                total = total + loss_fn(logits[mask], target[mask])
+                contributing += 1
+            if contributing:
+                total.backward()
+                opt.step()
+            history.append(float(total.detach().cpu()))
+        return history
+
+
+def edge_labels_from_injections(graph, injection_times, tolerance_s: float = 0.5):
+    """Label each edge by whether its two triggers share an injection.
+
+    A trigger belongs to the injection whose time falls inside its window,
+    widened by `tolerance_s`; an edge is a positive when both belong to the
+    same one. This is the ground truth level one can actually be trained on.
+
+    :param graph: a `wdf.analysis.detector_graph.DetectorGraph`.
+    :param injection_times: GPS times of the injected signals.
+    :type tolerance_s: float
+    :param tolerance_s: how far outside its window a trigger may still claim
+        an injection, seconds.
+    :return: numpy.ndarray -- 1.0 where both triggers share an injection.
+    """
+    nodes = graph.nodes
+    start = nodes["gps"].to_numpy(dtype=float)
+    span = nodes["n_coeff"].to_numpy(dtype=float) / np.maximum(
+        nodes["fs"].to_numpy(dtype=float), 1e-30)
+    times = np.sort(np.asarray(injection_times, dtype=float))
+
+    slot = np.searchsorted(times, start + 0.5 * span)
+    owner = np.full(len(nodes), -1)
+    for offset in (-1, 0):
+        candidate = np.clip(slot + offset, 0, max(len(times) - 1, 0))
+        if not len(times):
+            break
+        inside = ((times[candidate] >= start - tolerance_s)
+                  & (times[candidate] <= start + span + tolerance_s))
+        owner = np.where(inside & (owner < 0), candidate, owner)
+
+    if not len(graph.edges):
+        return np.zeros(0)
+    i, j = graph.edges[:, 0], graph.edges[:, 1]
+    return ((owner[i] >= 0) & (owner[i] == owner[j])).astype(float)
