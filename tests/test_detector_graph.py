@@ -167,3 +167,43 @@ def test_the_wavegram_is_on_the_noise_scale():
     grids = trigger_wavegrams(triggers, band_grid([512], FS), time_bins=8)
     assert grids.max() > 1e-3
     assert np.isfinite(np.log1p(grids)).all()
+
+
+def test_a_broadband_trigger_does_not_join_everything_it_sits_on():
+    """Band overlap alone admits a transient covering the whole plane against
+    every narrow one beneath it. The band has to continue, not merely touch."""
+    narrow = _triggers([512], 6)
+    narrow = narrow.assign(freqMin=100.0, freqMax=200.0, freqMean=140.0)
+    broad = _triggers([512], 6, seed=3).assign(
+        freqMin=20.0, freqMax=1000.0, freqMean=800.0)
+    both = pd.concat([narrow, broad], ignore_index=True)
+
+    loose = build_detector_graph(both, config=DetectorGraphConfig(
+        maximum_band_step=99.0, maximum_log_energy_jump=99.0))
+    tight = build_detector_graph(both, config=DetectorGraphConfig(
+        maximum_band_step=1.0, maximum_log_energy_jump=99.0))
+
+    def crossing(graph):
+        table = graph.edge_table()
+        if not len(table):
+            return 0
+        mean = graph.nodes["freqMean"].to_numpy()
+        return int((mean[table.node_i.to_numpy()] != mean[table.node_j.to_numpy()]).sum())
+
+    assert crossing(loose) > 0
+    assert crossing(tight) == 0
+
+
+def test_a_sweeping_transient_is_not_broken_by_the_continuity_test():
+    """A chirp moves its band from one window to the next, so the test asks the
+    step to be small rather than the two to look alike."""
+    import numpy as np
+    sweeping = _triggers([512], 12)
+    sweeping = sweeping.assign(
+        freqMean=60.0 * 2.0 ** (np.arange(len(sweeping)) / 8.0),
+        freqMin=40.0, freqMax=900.0)
+
+    graph = build_detector_graph(sweeping, config=DetectorGraphConfig(
+        maximum_band_step=1.0, maximum_log_energy_jump=99.0))
+    labels = graph.components()
+    assert labels.max() + 1 < len(sweeping) / 2

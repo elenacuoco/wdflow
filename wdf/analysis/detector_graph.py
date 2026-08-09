@@ -61,12 +61,22 @@ class DetectorGraphConfig:
         a fraction of their mean window span. Zero joins only triggers that
         touch or overlap; one allows a gap as wide as a window.
     :param minimum_frequency_overlap: least shared fraction of the narrower band.
+    :param maximum_band_step: how far the energy-weighted frequency may move
+        between two triggers, in octaves. A transient that sweeps moves its band
+        from one window to the next, so requiring the two to look alike would
+        break a chirp into pieces; requiring the step to be small says the band
+        continues rather than that it stands still.
+    :param maximum_log_energy_jump: largest jump in coefficient energy between
+        two triggers of one transient, as a log ratio. A transient rises and
+        falls smoothly; a step of several decades is two things, not one.
     :param minimum_significance: triggers below this are not nodes at all.
     :param wavegram_time_bins: time bins per band in a node's wavegram.
     """
 
     time_tolerance: float = 1.0
     minimum_frequency_overlap: float = 0.0
+    maximum_band_step: float = 2.0
+    maximum_log_energy_jump: float = 3.0
     minimum_significance: float = 0.0
     wavegram_time_bins: int = WAVEGRAM_TIME_BINS
 
@@ -220,7 +230,11 @@ def build_detector_graph(triggers: pd.DataFrame,
     end = start + span
     f_lo = nodes["freqMin"].to_numpy(dtype=float)
     f_hi = nodes["freqMax"].to_numpy(dtype=float)
+    band = np.log2(np.maximum(
+        nodes["freqMean"].to_numpy(dtype=float) if "freqMean" in nodes
+        else np.sqrt(np.maximum(f_lo, EPS) * f_hi), EPS))
     energy = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
+    log_energy = np.log(energy)
 
     bands = band_grid(scale, float(fs[0]))
     wavegrams = trigger_wavegrams(nodes, bands, config.wavegram_time_bins)
@@ -244,7 +258,16 @@ def build_detector_graph(triggers: pd.DataFrame,
         narrower = np.maximum(np.minimum(f_hi[left] - f_lo[left],
                                          f_hi[right] - f_lo[right]), EPS)
         overlap = np.clip(shared / narrower, 0.0, 1.0)
-        join = (gap <= allowed) & (overlap >= config.minimum_frequency_overlap)
+        # Close in time, sharing a band, the band continuing rather than
+        # jumping, and the energy continuing too. Band overlap alone admits a
+        # broadband transient against everything it happens to sit on.
+        join = (
+            (gap <= allowed)
+            & (overlap >= config.minimum_frequency_overlap)
+            & (np.abs(band[left] - band[right]) <= config.maximum_band_step)
+            & (np.abs(log_energy[left] - log_energy[right])
+               <= config.maximum_log_energy_jump)
+        )
         if not join.any():
             continue
         i, j = left[join], right[join]
