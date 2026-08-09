@@ -98,15 +98,37 @@ def test_events_carry_what_the_network_graph_reads():
     assert events["n_triggers"].sum() == len(graph.nodes)
 
 
-def test_the_event_statistic_is_its_loudest_member_not_a_sum():
-    """Several window lengths describe the same strain, so summing would count
-    one transient's energy more than once."""
+def test_the_event_statistic_measures_its_whole_extent():
+    """A transient spanning several windows is scored over all of them, so the
+    event is louder than its loudest single window -- which is what a search
+    without this step would have reported, and is kept beside it."""
+    from wdf.analysis.detector_graph import stitched_statistic
+
     triggers = _triggers([256, 512], 6)
     graph = build_detector_graph(triggers)
     events = detector_events(graph)
-    for _, event in events.iterrows():
-        assert event["EnWDF"] <= graph.nodes["EnWDF"].max() + 1e-9
-    assert events["EnWDF"].max() == pytest.approx(graph.nodes["EnWDF"].max())
+
+    assert events["EnWDF_window"].max() == pytest.approx(graph.nodes["EnWDF"].max())
+    assert (events["EnWDF"] >= events["EnWDF_window"] - 1e-9).all()
+    np.testing.assert_allclose(events["EnWDF"].to_numpy(),
+                               stitched_statistic(graph), rtol=1e-9)
+
+
+def test_the_stitched_statistic_does_not_add_window_lengths():
+    """Each length is a complete description of the same strain, so the largest
+    is taken rather than their sum."""
+    from wdf.analysis.detector_graph import stitched_statistic
+
+    triggers = _triggers([256, 512], 8)
+    graph = build_detector_graph(triggers)
+    both = stitched_statistic(graph)
+
+    one = build_detector_graph(triggers[triggers.n_coeff == 256])
+    other = build_detector_graph(triggers[triggers.n_coeff == 512])
+    apart = max(stitched_statistic(one).max(), stitched_statistic(other).max())
+    assert both.max() <= np.hypot(stitched_statistic(one).max(),
+                                  stitched_statistic(other).max()) + 1e-9
+    assert both.max() == pytest.approx(apart, rel=0.5)
 
 
 def test_pruning_edges_splits_events_without_rebuilding_the_graph():
