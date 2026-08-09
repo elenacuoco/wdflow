@@ -172,6 +172,16 @@ wdf.analysis.network_graph
 wdf.analysis.baseline
 ~~~~~~~~~~~~~~~~~~~~~~
 
+.. automodule:: wdf.analysis.detectors
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: wdf.analysis.anomaly
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: wdf.analysis.baseline
    :members:
 

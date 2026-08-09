@@ -371,7 +371,8 @@
       </div>
       <div class="prose">
         <p>A node carries its trigger's wavegram on a band-by-time grid, so what reaches the model is how the trigger looks in the plane and not only where it sits. The rows are indexed by absolute frequency band, so the same physical band is the same row at every window length.</p>
-        <p>The events of each detector then become the nodes of the network graph, and an edge exists only where a signal could have produced the pair: within the light travel time plus the events' own timing spreads, overlapping in band, overlapping in time once the travel time is allowed for.</p>
+        <p>The events of each detector then become the nodes of the network graph, and an edge exists only where a signal could have produced the pair: the two must cover the same stretch of time once one may shift by the light travel time plus their own timing spreads, and their bands must overlap.</p>
+        <p>The test is on the events' extents and not on any instant of them. An extended transient has no arrival time: which moment a detector calls its centroid or its peak depends on its own noise, its antenna response and which coefficients survived threshold. On the simulated set two detectors seeing one compact binary put their centroids 77&nbsp;ms apart and their peaks 14&nbsp;ms apart, against a light travel time of 10&nbsp;ms — so gating on either admitted 19 of 108 coincident injections, while gating on the extents admitted 71 and was the difference between recovering no binary neutron star and recovering some. For a transient shorter than the light travel time the two statements coincide, which is why the extent test is the general one. The arrival-time difference is still measured and still ranks the survivors; it no longer decides which pairs exist.</p>
       </div>
     </div>
 
@@ -386,7 +387,8 @@
       </div>
       <div class="prose">
         <p>A model's output is not a probability of astrophysical origin. Significance comes from time slides, which leave each detector's noise intact while destroying any real coincidence — and the unshifted data is the same construction at zero shift, so foreground and background are one population differently ordered.</p>
-        <p style="font-size:0.9rem;color:var(--fg-dim);">A deterministic baseline — a logistic regression on the same edge features — is ranked through the same background. A learned statistic that does not beat it at fixed false-alarm rate is not introduced.</p>
+        <p style="font-size:0.9rem;color:var(--fg-dim);">A deterministic baseline is ranked through the same background, and a learned statistic that does not beat it at fixed false-alarm rate is not introduced. The learned one is fitted on accidental coincidences alone — candidates built from time-slid data, which are accidental by construction — and scores a pair by how badly a model of that population fails to reproduce it. No injection and no label enters the fit, so the selection cannot depend on the waveform family the model was shown.</p>
+        <p style="font-size:0.9rem;color:var(--fg-dim);">Efficiency is read as the excess over an accidental floor. Injections placed in one detector only cannot be recovered in coincidence, so whatever fraction of them a statistic appears to recover measures how often some candidate happens to fall inside the matching window. An efficiency at or below that floor is not evidence of recovery.</p>
       </div>
     </div>
   </section>

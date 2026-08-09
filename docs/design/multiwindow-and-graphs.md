@@ -76,23 +76,36 @@ at every length.
 ## Level two: `wdf.analysis.network_graph`
 
 The level-one events become the nodes. An edge exists only where a signal could
-have produced the pair — within the light travel time plus the two events' own
-timing spreads, overlapping in band, overlapping in time once the travel time is
-allowed for. These are the candidates
+have produced the pair: the two events must cover the same stretch of time once
+one of them is allowed to shift by the light travel time plus their own timing
+spreads, and they must overlap in band. These are the candidates
 `wdf.analysis.robust_events.IndexedCoincidenceFinder.candidate_edges` admits, so
 the learned and the classical statistic rank one population.
 
+The test is on the events' extents and not on any instant of them. An extended
+transient has no arrival time: which instant a detector calls its centroid or its
+peak depends on its own noise, its antenna response and which coefficients
+survived threshold. On the simulated set two detectors seeing one compact binary
+put their centroids a median of 77 ms apart and their peaks 14 ms apart, against
+a light travel time of 10 ms — so gating on either admitted 19 of 108 coincident
+injections while gating on the extents admitted 71. For a transient shorter than
+the light travel time the two statements coincide, which is why the extent test
+is the general one. The arrival-time difference is still measured and still ranks
+the survivors; it no longer decides which pairs exist.
+
 An edge carries the arrival-time difference, the shared fraction of band and of
 time support, the log ratio of the two energies, and the agreement between the
-two wavegrams both at zero lag and at the lag that best aligns them. The ratio is
-a feature and not a penalty: the antenna responses make unequal amplitudes
-between detectors physical.
+two wavegrams. No alignment is searched for: each event's map is centred on its
+own energy, so the arrival-time difference is not in the maps at all. The energy
+ratio is a feature and not a penalty: the antenna responses make unequal
+amplitudes between detectors physical.
 
-A pair is labelled a positive only when both its events cover the same injection
-(`edge_labels_from_injections`). Labelling by the pair's mean time landing near an
-injection admits a noise event that merely sits close to a real signal in the
-other detector, and a model trained on that learns proximity rather than
-coherence.
+The maps are rendered twice, because two questions want opposite resolutions.
+The assembly map joins windows seconds apart into one transient and needs wide
+columns and a long span; the comparison map is what two detectors are matched on
+and needs columns of the order of the light travel time. `event_coefficients`
+takes both the column width and the number of columns, so the same function
+produces either.
 
 ## Significance
 
@@ -104,9 +117,24 @@ resulting distribution.
 
 The zero-lag candidates and the slid candidates come from the same finder, so they
 are one population differently ordered. `wdf.analysis.baseline` provides a
-deterministic ranking — a logistic regression on the same edge features — through
-the same background, because a learned statistic that does not beat it at fixed
-false-alarm rate is not worth introducing.
+deterministic ranking through the same background, because a learned statistic
+that does not beat it at fixed false-alarm rate is not worth introducing.
+
+`wdf.analysis.anomaly.BackgroundAnomalyScorer` is the learned one, and it is
+fitted on accidental coincidences alone. Candidates built from time-slid data, or
+from a stretch of noise holding no injection, are accidental by construction and
+available in quantity; a graph autoencoder fitted to reproduce that population
+scores a candidate by how badly it fails to reproduce it. Its `fit` takes graphs
+and nothing else — no label, no injection — so the selection cannot depend on the
+waveform family the model was shown. It is the un-modelled counterpart of a
+likelihood ratio: the denominator is measured and the numerator, which needs a
+signal model, is never formed.
+
+Efficiency is read as the excess over an accidental floor. Injections placed in
+one detector only cannot be recovered in coincidence, so whatever fraction of
+them a statistic appears to recover measures the rate at which some candidate
+happens to fall inside the matching window. An efficiency at or below that floor
+is not evidence of recovery.
 
 ## Scale
 

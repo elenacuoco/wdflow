@@ -23,16 +23,23 @@ Once each detector has its own clustered event list, wdflow combines them
 across detectors via two separate methods, meant to be run side by side and
 compared, not to replace one another:
 
-- **Classical timing coincidence** (`wdf.analysis.coincidence.CoincidenceFinder`):
-  matches clustered events across detectors within a light-travel-time +
-  timing-jitter window (`find` for detector pairs, `find_network` for any
-  network size via connected components on the pairwise-match graph).
-  `wdf.analysis.significance.BackgroundEstimator` estimates the accidental
-  (false-alarm) rate for either by non-physical time shifts, the standard
-  time-slide technique for estimating how often detectors would coincide by
-  pure chance; `BackgroundEstimator.rank_candidates` attaches a false-alarm
-  probability (and, given a segment duration, a FAR) to every candidate in a
-  list at once, ranked most significant first.
+- **Deterministic coincidence** (`wdf.analysis.CoincidenceFinder`, which is
+  `robust_events.IndexedCoincidenceFinder`): matches clustered events across
+  detectors whose covered stretches of time meet once one may shift by the
+  light travel time plus the events' own timing spreads, and whose bands
+  overlap. The pairing is one-to-one, by assignment rather than by nearest
+  neighbour, so one event cannot enter two candidates.
+  `wdf.analysis.BackgroundEstimator` (`robust_events.TimeSlideFAR`) estimates
+  the accidental rate by non-physical time shifts, the standard time-slide
+  technique, with the rate's denominator the background **livetime** — the
+  slides times the span — and not the number of candidates the slides produced.
+
+  Two earlier implementations remain importable for comparison and are not what
+  the canonical names give you: `wdf.analysis.LegacyCoincidenceFinder` pairs
+  each event with its nearest neighbour without consuming it, so one event can
+  appear in several candidates, and `wdf.analysis.significance.BackgroundEstimator`
+  divides by the number of background candidates, which is a tail percentile of
+  the candidate distribution rather than a rate.
 
 - **Learned combination** (`wdf.analysis.gnn.GNNCoincidenceScorer`): a graph
   neural network over the same per-detector clustered events (nodes),
