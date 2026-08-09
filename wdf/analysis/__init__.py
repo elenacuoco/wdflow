@@ -18,7 +18,7 @@ from wdf.analysis.cluster_coefficients import (
 )
 from wdf.analysis.reconstruction import combined_snr, reconstruct_clusters, stitch
 from wdf.analysis.wavelets import dominant_tile, wavegram_ridge
-from wdf.analysis.coincidence import CoincidenceFinder
+from wdf.analysis.coincidence import CoincidenceFinder as LegacyCoincidenceFinder
 from wdf.analysis.evaluation import (
     compare_statistics,
     efficiency_at_far,
@@ -37,7 +37,19 @@ from wdf.analysis.robust_events import (
     select_events_for_coincidence,
 )
 
+# The canonical names are the current implementations. The two earlier ones
+# differ scientifically, not only in interface: `coincidence.CoincidenceFinder`
+# pairs each event with its nearest neighbour without consuming it, so one
+# event can appear in several candidates, and `significance.BackgroundEstimator`
+# divides by the number of background candidates rather than by the background
+# livetime, which is a tail percentile and not a rate. They stay importable
+# under `Legacy*` for comparison and are not what a caller gets by default.
+CoincidenceFinder = IndexedCoincidenceFinder
+BackgroundEstimator = TimeSlideFAR
+
 __all__ = [
+    "BackgroundEstimator",
+    "LegacyCoincidenceFinder",
     "ClusterConfig",
     "CoincidenceConfig",
     "FARConfig",

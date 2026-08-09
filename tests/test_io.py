@@ -15,7 +15,20 @@ N_COEFF = 64
 FS = 2048.0
 
 
+OVERLAP = N_COEFF // 4
+
+
 def write_triggers(path, n=20, seed=0, n_coeff=N_COEFF):
+    """A trigger file as the pipeline writes it: named for its window length,
+    with the run configuration beside it. The stride the search advanced by is
+    in that configuration and nowhere else."""
+    import json
+
+    path = path.with_name(path.name.replace(".parquet", f"-Win{n_coeff}-.parquet"))
+    json.dump(dict(window=n_coeff, overlap=OVERLAP, sampling=2.0 * FS,
+                   ResamplingFactor=2),
+              open(path.parent / f"parametersUsed-Win{n_coeff}.json", "w"))
+
     rng = np.random.default_rng(seed)
     with TriggerWriter(str(path)) as writer:
         for k in range(n):

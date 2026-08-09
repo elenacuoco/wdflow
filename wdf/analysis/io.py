@@ -20,6 +20,7 @@ from wdf.analysis.coefficients import (
     coefficient_matrix,
     read_triggers,
 )
+from wdf.analysis.robust_events import stride_seconds
 
 # Every column wdf.observers.SingleEventPrintFileObserver writes for a trigger.
 TRIGGER_COLUMNS = list(META_FIELDS) + ["wave", "n_coeff", "fs"] + list(COEFFICIENT_FIELDS)
@@ -28,20 +29,30 @@ TRIGGER_COLUMNS = list(META_FIELDS) + ["wave", "n_coeff", "fs"] + list(COEFFICIE
 def triggers_from_files(paths: list[str], ifo: str) -> pd.DataFrame:
     """Concatenate one detector's WDF trigger files, tagging each row with `ifo`.
 
+    Each row carries the `stride` of the run that produced it, read from the
+    configuration written beside the file. The stride is what the search was
+    told to advance by; inferring it from how far apart the triggers landed
+    measures the transients instead, and a stretch where only every third
+    window fired would report three times the truth.
+
     :type paths: list[str]
     :param paths: trigger files written by `TriggerWriter`.
     :type ifo: str
     :param ifo: detector name to tag the rows with.
     :return: pandas.DataFrame -- one row per trigger.
     :raises ValueError: if no paths are given, or a file is missing a column.
+    :raises FileNotFoundError: if a file has no configuration beside it.
     """
     if not paths:
         raise ValueError(f"no trigger file paths given for ifo={ifo!r}")
-    df = pd.concat([read_triggers(p) for p in paths], ignore_index=True)
-
-    missing = set(TRIGGER_COLUMNS) - set(df.columns)
+    frames = [read_triggers(path) for path in paths]
+    missing = set(TRIGGER_COLUMNS) - set(pd.concat(frames, ignore_index=True).columns)
     if missing:
         raise ValueError(f"trigger files missing expected columns {sorted(missing)}: {paths}")
+
+    for path, frame in zip(paths, frames):
+        frame["stride"] = stride_seconds(run_parameters(path))
+    df = pd.concat(frames, ignore_index=True)
     df["ifo"] = ifo
     return df
 
