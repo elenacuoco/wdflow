@@ -332,3 +332,33 @@ def test_the_logit_is_kept_because_the_probability_saturates():
     assert np.allclose(score, 1.0 / (1.0 + np.exp(-logit)), atol=1e-6)
     # the logit orders the candidates at least as finely as the probability
     assert len(np.unique(np.round(logit, 6))) >= len(np.unique(np.round(score, 6)))
+
+
+def test_a_pair_is_a_positive_only_when_both_events_are_one_injection():
+    """A noise event sitting near a real signal in the other detector must not
+    make the pair a positive: the network stage measures coherence between two
+    views of one signal, not proximity to an injection."""
+    from wdf.analysis.network_graph import edge_labels_from_injections
+
+    clustered, coefficients = _synth_graph_inputs({"H1": 20, "L1": 20})
+    graph = TriggerGraphBuilder(ifos=["H1", "L1"]).build(clustered, coefficients)
+    assert len(graph.cross_edges)
+
+    # An injection on top of every H1 event and none near L1's: no pair can have
+    # both of its events covering the same injection.
+    only_h1 = clustered["H1"]["gpsCentroid"].to_numpy()
+    labels = edge_labels_from_injections(
+        graph, only_h1 - 3600.0, window_s=0.05)
+    assert labels.sum() == 0
+
+    # Injections covering both detectors' events do produce positives.
+    both = np.concatenate([clustered[ifo]["gpsCentroid"].to_numpy() for ifo in ("H1", "L1")])
+    assert edge_labels_from_injections(graph, both, window_s=0.5).sum() > 0
+
+
+def test_no_injections_makes_every_pair_a_negative():
+    from wdf.analysis.network_graph import edge_labels_from_injections
+
+    clustered, coefficients = _synth_graph_inputs({"H1": 10, "L1": 10})
+    graph = TriggerGraphBuilder(ifos=["H1", "L1"]).build(clustered, coefficients)
+    assert edge_labels_from_injections(graph, []).sum() == 0

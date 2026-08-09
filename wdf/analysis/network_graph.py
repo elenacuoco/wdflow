@@ -290,3 +290,42 @@ class TriggerGraphBuilder:
         )
 
 
+
+
+def edge_labels_from_injections(graph, injection_times, window_s: float = 0.5):
+    """Label each candidate edge by whether both its events are one injection.
+
+    A pair is a positive when the two detectors' events each cover the same
+    injection, not when the pair's mean time happens to land near one. The
+    weaker rule admits a noise event that merely sits close to a real signal in
+    the other detector, and a model trained on it learns temporal proximity to
+    an injection rather than coherence between two views of one signal --- which
+    is the thing the network stage exists to measure.
+
+    :param graph: a `TriggerGraph`.
+    :param injection_times: GPS times of the injected signals.
+    :type window_s: float
+    :param window_s: how far outside its own extent an event still covers an
+        injection, seconds.
+    :return: numpy.ndarray -- 1.0 where both events cover the same injection.
+    """
+    from wdf.analysis.injections import candidate_spans
+
+    if not len(graph.cross_edges):
+        return np.zeros(0)
+
+    times = np.sort(np.asarray(injection_times, dtype=float))
+    owner = np.full(len(graph.nodes), -1)
+    if len(times):
+        start, end = candidate_spans(
+            graph.nodes,
+            candidate_time="gpsCentroid" if "gpsCentroid" in graph.nodes else "gpsPeak")
+        # The nearest injection is the only one an event's own extent can cover.
+        slot = np.clip(np.searchsorted(times, start), 0, len(times) - 1)
+        for candidate in (slot, np.maximum(slot - 1, 0)):
+            covers = ((times[candidate] >= start - window_s)
+                      & (times[candidate] <= end + window_s))
+            owner = np.where(covers & (owner < 0), candidate, owner)
+
+    i, j = graph.cross_edges[:, 0], graph.cross_edges[:, 1]
+    return ((owner[i] >= 0) & (owner[i] == owner[j])).astype(float)
