@@ -93,9 +93,9 @@ def stride_seconds(parameters) -> float:
 
 
 def _frequency_interval(frame: pd.DataFrame):
-    fmin = _numeric(frame, ("freqMin", "freqPeak", "freqMean"), default=0.0)
-    fmax = _numeric(frame, ("freqMax", "freqPeak", "freqMean"), default=0.0)
-    fmean = _numeric(frame, ("freqMean", "freqPeak"), default=0.5 * (fmin + fmax))
+    fmin = _numeric(frame, ("freqMin", "freqMean"), default=0.0)
+    fmax = _numeric(frame, ("freqMax", "freqMean"), default=0.0)
+    fmean = _numeric(frame, ("freqMean",), default=0.5 * (fmin + fmax))
     fmin, fmax = np.minimum(fmin, fmax), np.maximum(fmin, fmax)
     return fmin, fmean, fmax
 
@@ -326,11 +326,6 @@ def cluster_detector_triggers(
     )
     cluster_snr_peak[~np.isfinite(cluster_snr_peak)] = np.nan
 
-    freq_peak = (
-        _numeric(cleaned, ("freqPeak",))[peak_at]
-        if "freqPeak" in cleaned
-        else fmean[peak_at]
-    )
     ifo_column = (
         cleaned["ifo"].to_numpy()[peak_at]
         if "ifo" in cleaned
@@ -367,7 +362,6 @@ def cluster_detector_triggers(
             "freqMean": _group_weighted_mean(
                 fmean[by_cluster], weights, grouped, n_clusters),
             "freqMax": np.maximum.reduceat(fmax[by_cluster], starts),
-            "freqPeak": freq_peak,
             # Primary cluster ranking: do not add EnWDF values in quadrature
             # across overlapping WDF windows, because that double-counts common
             # samples.

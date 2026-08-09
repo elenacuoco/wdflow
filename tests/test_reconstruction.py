@@ -82,4 +82,4 @@ def test_wavegram_events_score_a_multi_window_signal_on_its_reconstruction():
     loudest = events.sort_values("EnWDF").iloc[-1]
     assert loudest.EnWDF > loudest.loudest_window
     assert loudest.windows > 1
-    assert loudest.freqMin <= loudest.freqPeak <= loudest.freqMax
+    assert loudest.freqMin <= loudest.freqMean <= loudest.freqMax

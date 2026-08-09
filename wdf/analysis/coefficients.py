@@ -31,7 +31,7 @@ TIME_FIELDS = ["gps", "gpsStart", "gpsCentroid", "gpsPeak"]
 
 MEASUREMENT_FIELDS = [
     "tSpread", "duration", "EnWDF", "sigma", "snrPeak",
-    "freqMin", "freqMean", "freqMax", "freqPeak",
+    "freqMin", "freqMean", "freqMax",
 ]
 
 META_FIELDS = TIME_FIELDS + MEASUREMENT_FIELDS

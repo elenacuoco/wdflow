@@ -36,7 +36,7 @@ def test_the_glitchgram_draws_a_point_per_trigger(triggers):
 
 
 def test_the_frequency_and_the_statistic_are_choices_not_fixtures(triggers):
-    """freqPeak and freqMean answer different questions and get compared."""
+    """A caller comparing two statistics should not have to edit the plot."""
     fig, ax = plt.subplots()
     plot_glitchgram(ax, triggers, frequency="freqMean", statistic="snrPeak",
                     colorbar=False)

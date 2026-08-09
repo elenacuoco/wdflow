@@ -21,7 +21,7 @@ SEARCH_COLUMNS = ["gps", "EnWDF", "sigma"]
 # What wdflow derives from the coefficients. A change here is a change to the
 # metaparameter estimators.
 DERIVED_COLUMNS = ["gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
-                   "snrPeak", "freqMin", "freqMean", "freqMax", "freqPeak"]
+                   "snrPeak", "freqMin", "freqMean", "freqMax"]
 
 # WDF2Classify's candidate basis set (2026-08-03, trimmed to 10 -- see
 # WDF2Classify.cpp's kCandidateBases for the full rationale): Haar,

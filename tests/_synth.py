@@ -51,7 +51,7 @@ def triggers_from_signal(signal, fs, window, overlap, gps0=1000.0, ifo="H1",
 RAW_TRIGGER_COLUMNS = [
     "gps", "gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
     "EnWDF", "sigma", "snrPeak",
-    "freqMin", "freqMean", "freqMax", "freqPeak",
+    "freqMin", "freqMean", "freqMax",
     "wave", "n_coeff", "fs", "wt_index", "wt_value", "ifo",
 ]
 
@@ -59,7 +59,7 @@ NCOEFF = 64
 FS = 2048.0
 
 
-def _trigger(rng, gps0, gps_peak, enwdf, ifo, freq_mean, freq_peak,
+def _trigger(rng, gps0, gps_peak, enwdf, ifo, freq_mean,
              freq_min, freq_max, snr_peak):
     n_nonzero = int(rng.integers(1, 5))
     index = np.sort(rng.choice(NCOEFF, size=n_nonzero, replace=False))
@@ -68,7 +68,7 @@ def _trigger(rng, gps0, gps_peak, enwdf, ifo, freq_mean, freq_peak,
         tSpread=rng.uniform(0.005, 0.05), gpsPeak=gps_peak,
         duration=rng.uniform(0.05, 0.3),
         EnWDF=enwdf, sigma=1.0, snrPeak=snr_peak,
-        freqMin=freq_min, freqMean=freq_mean, freqMax=freq_max, freqPeak=freq_peak,
+        freqMin=freq_min, freqMean=freq_mean, freqMax=freq_max,
         wave="BsplineC309", n_coeff=NCOEFF, fs=FS,
         wt_index=index.astype(np.uint16),
         wt_value=rng.normal(scale=enwdf, size=n_nonzero).astype(np.float32),
@@ -87,15 +87,13 @@ def synth_raw_triggers(ifo: str, n_background: int, gps0: float, span_s: float,
     rng = np.random.default_rng(seed)
     rows = [
         _trigger(rng, gps0, gp, rng.uniform(3.0, 6.0), ifo,
-                 rng.uniform(60, 240), rng.uniform(60, 240), 50.0, 250.0,
-                 rng.uniform(0.5, 3.0))
+                 rng.uniform(60, 240), 50.0, 250.0, rng.uniform(0.5, 3.0))
         for gp in gps0 + rng.uniform(0, span_s, n_background)
     ]
     if burst_gps is not None:
         rows += [
             _trigger(rng, gps0, burst_gps + dt, burst_snr + rng.uniform(-1, 1), ifo,
-                     140.0 + rng.uniform(-5, 5), 140.0 + rng.uniform(-5, 5),
-                     80.0, 200.0, rng.uniform(3, 6))
+                     140.0 + rng.uniform(-5, 5), 80.0, 200.0, rng.uniform(3, 6))
             for dt in rng.uniform(-0.01, 0.01, burst_n)
         ]
     df = pd.DataFrame(rows, columns=RAW_TRIGGER_COLUMNS)

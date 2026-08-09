@@ -177,46 +177,6 @@ def test_wavegram_ridge_follows_a_rising_track():
     assert ridge["times"][np.nanargmax(ridge["magnitudes"])] > 0.0
 
 
-def test_peak_frequency_is_not_quantised_onto_the_octave_ladder():
-    """Reading the loudest tile's band directly can only return one value per
-    octave; weighting the tiles around it in time makes the estimate continuous."""
-    from wdf.analysis.wavelets import dominant_tile, peak_frequency
-
-    fs, n = 2048.0, 512
-    seen_tile, seen_weighted = set(), set()
-    rng = np.random.default_rng(0)
-    for _ in range(40):
-        wt = np.zeros(n)
-        # a loud coarse-scale coefficient with finer ones inside its span,
-        # which is the configuration the weighting exists to correct
-        k = int(rng.integers(8, 32))
-        wt[k] = 5.0
-        for finer in rng.integers(64, n, size=4):
-            wt[int(finer)] = rng.uniform(0.5, 3.0)
-        seen_tile.add(round(dominant_tile(wt, fs)["freq"], 3))
-        seen_weighted.add(round(peak_frequency(wt, fs), 3))
-
-    assert len(seen_weighted) > len(seen_tile)
-
-
-def test_peak_frequency_stays_inside_the_band_of_the_tiles_it_averages():
-    from wdf.analysis.wavelets import coeff_freq_bands, peak_frequency
-
-    fs, n = 2048.0, 512
-    wt = np.zeros(n)
-    wt[300] = 4.0
-    f_lo, f_hi = coeff_freq_bands(n, fs)
-    value = peak_frequency(wt, fs)
-    assert 0.0 < value <= fs / 2
-
-
-def test_peak_frequency_of_an_empty_window_is_nan():
-    from wdf.analysis.wavelets import peak_frequency
-
-    assert np.isnan(peak_frequency(np.zeros(64), 2048.0))
-    assert np.isnan(peak_frequency(np.array([]), 2048.0))
-
-
 def test_the_tile_overlay_skips_the_coefficients_thresholding_removed():
     """A zero coefficient is an absent tile, not a faint one. Drawing it would
     claim the search found something there -- and because the coefficients are

@@ -3,8 +3,7 @@
 Every function here takes an Axes and returns it, so the same call serves a
 notebook cell and the HTML report. Which column carries the frequency, or the
 statistic, is an argument with a default rather than a choice built into the
-plot: `freqPeak` and `freqMean` answer different questions and are meant to be
-compared.
+plot: a caller comparing two statistics should not have to edit a plot.
 """
 from __future__ import annotations
 
@@ -63,12 +62,8 @@ def plot_glitchgram(ax, triggers, statistic="EnWDF", frequency="freqMean",
                     t0=None, cmap="viridis", colorbar=True):
     """Time against frequency, coloured by the statistic.
 
-    The frequency defaults to `freqMean`, the spectral moment over every
-    surviving tile. `freqPeak` is time-localised, and for the median trigger
-    only one coefficient overlaps its peak tile in time, so it can only return
-    that tile's own frequency: plotted, it draws the octave ladder as horizontal
-    lines rather than the distribution of the data. `freqPeak` remains the
-    sharper answer on a transient that sweeps, and stays available here.
+    The frequency is `freqMean`, the energy-weighted moment over every
+    surviving tile, which is the only continuous frequency the transform gives.
 
     :type ax: matplotlib.axes.Axes
     :param ax: axes to draw on.

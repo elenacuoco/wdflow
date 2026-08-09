@@ -110,7 +110,7 @@ def build_run_report(
     :type cleaned: dict[str, pandas.DataFrame]
     :param cleaned: {ifo: cleaned raw-trigger DataFrame} (e.g.
         `wdf.analysis.io.clean_triggers`'s output) -- drives the glitchgram.
-        Must have `gpsPeak`, `freqPeak`, `snrPeak` columns.
+        Must have `gpsCentroid`, `freqMean`, `EnWDF` columns.
     :type clustered: dict[str, pandas.DataFrame] | None
     :param clustered: {ifo: clustered-event DataFrame} (e.g.
         `wdf.analysis.clustering.TriggerClusterer.clustered_events`'s output)
@@ -164,7 +164,7 @@ def build_run_report(
         else:
             this_rank_col = "snrPeak"
         top = ranking_df.sort_values(this_rank_col, ascending=False).head(top_n)
-        table_cols = [c for c in ("gpsStart", "gpsPeak", this_rank_col, "freqMax", "freqPeak",
+        table_cols = [c for c in ("gpsStart", "gpsPeak", this_rank_col, "freqMax", "freqMean",
                                    "n_triggers") if c in top.columns]
         if this_rank_col not in table_cols:
             table_cols.append(this_rank_col)

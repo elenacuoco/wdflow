@@ -15,17 +15,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from wdf.analysis.coefficients import to_dense
 from wdf.analysis.wavelets import (
     coeff_freq_bands,
     coeff_time_bounds,
-    peak_frequency,
     tile_frequency,
 )
 
 META_FEATURES = [
     "gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
-    "snrPeak", "freqMin", "freqMean", "freqMax", "freqPeak",
+    "snrPeak", "freqMin", "freqMean", "freqMax",
 ]
 
 
@@ -51,7 +49,7 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     :param gps: GPS time of the analysis window's first sample, which the
         returned times are absolute against.
     :return: dict -- `gpsStart`, `gpsCentroid`, `tSpread`, `gpsPeak`,
-        `duration`, `snrPeak`, `freqMin`, `freqMean`, `freqMax`, `freqPeak`;
+        `duration`, `snrPeak`, `freqMin`, `freqMean`, `freqMax`;
         all `nan` when no coefficient survived.
     """
     index = np.asarray(index, dtype=np.int64).reshape(-1)
@@ -89,5 +87,4 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
         freqMin=float(f_lo.min()),
         freqMean=float(np.exp(float(energy @ np.log(frequency)) / total)),
         freqMax=float(f_hi.max()),
-        freqPeak=peak_frequency(to_dense(index, value, int(n_coeff)), float(fs)),
     )

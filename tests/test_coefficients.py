@@ -145,7 +145,7 @@ def test_the_measurements_are_single_precision_and_the_times_are_not(tmp_path):
     for name in ("gps", "gpsStart", "gpsCentroid", "gpsPeak"):
         assert frame[name].dtype == np.float64
     for name in ("EnWDF", "sigma", "snrPeak", "tSpread", "duration",
-                 "freqMin", "freqMean", "freqMax", "freqPeak"):
+                 "freqMin", "freqMean", "freqMax"):
         assert frame[name].dtype == np.float32
 
 

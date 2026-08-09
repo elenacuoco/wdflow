@@ -29,7 +29,6 @@ class eventPE:
     :param freqMin: lower edge of the surviving tiles, Hz.
     :param freqMean: energy-weighted frequency of the surviving tiles, Hz.
     :param freqMax: upper edge of the surviving tiles, Hz.
-    :param freqPeak: frequency the transient's amplitude peaks at, Hz.
     :param wave: name of the basis that produced the coefficients.
     :param n_coeff: length of the window's coefficient vector.
     :param fs: sampling frequency the coefficients were computed at, Hz.
@@ -49,7 +48,6 @@ class eventPE:
     freqMin: float
     freqMean: float
     freqMax: float
-    freqPeak: float
     wave: str
     n_coeff: int
     fs: float
@@ -74,7 +72,6 @@ class eventPE:
             freqMin=float(self.freqMin),
             freqMean=float(self.freqMean),
             freqMax=float(self.freqMax),
-            freqPeak=float(self.freqPeak),
             wave=str(self.wave),
             n_coeff=int(self.n_coeff),
             fs=float(self.fs),

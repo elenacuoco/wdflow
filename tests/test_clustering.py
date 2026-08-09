@@ -91,7 +91,10 @@ def test_clustered_events_when_every_trigger_is_noise():
     # regression test: pandas' default "str" dtype breaks boolean-mask assignment
     # (group_key[noise_mask] = [...]) specifically when the mask selects every row
     df = synth_raw_triggers("H1", n_background=10, gps0=1000.0, span_s=50.0, seed=8)
-    tc = TriggerClusterer(time_eps_s=0.5, freq_eps_hz=50.0, min_samples=2)
+    # A radius well under the closest pair, so every trigger is isolated by
+    # construction rather than by the seed happening to spread them out.
+    closest = float(df["gpsPeak"].diff().dropna().min())
+    tc = TriggerClusterer(time_eps_s=0.1 * closest, freq_eps_hz=50.0, min_samples=2)
     labeled = tc.fit_predict(df)
     assert (labeled["cluster_id"] == -1).all()
     events = tc.clustered_events(labeled)

@@ -2,13 +2,12 @@ import numpy as np
 import pytest
 
 from pytsa.tsa import WaveletTransform
-from wdf.analysis.coefficients import from_dense, to_dense
+from wdf.analysis.coefficients import from_dense
 from wdf.analysis.metaparameters import META_FEATURES, meta_features
 from wdf.analysis.wavelets import (
     coeff_freq_bands,
     coeff_time_bounds,
     donoho_johnstone_threshold,
-    peak_frequency,
 )
 from wdf.structures.array2SeqView import array2SeqView
 
@@ -55,7 +54,6 @@ def test_the_band_brackets_the_frequency_the_burst_was_made_at(n_coeff):
 
     assert features["freqMin"] <= f0 <= features["freqMax"]
     assert features["freqMin"] <= features["freqMean"] <= features["freqMax"]
-    assert features["freqMin"] <= features["freqPeak"] <= features["freqMax"]
 
 
 @pytest.mark.parametrize("n_coeff", WINDOWS)
@@ -168,42 +166,7 @@ def test_the_times_shift_with_the_window_and_the_frequencies_do_not():
 
     for name in ("gpsStart", "gpsCentroid", "gpsPeak"):
         assert later[name] - at_zero[name] == pytest.approx(1.4e9)
-    for name in ("duration", "tSpread", "freqMin", "freqMean", "freqMax",
-                 "freqPeak", "snrPeak"):
+    for name in ("duration", "tSpread", "freqMin", "freqMean", "freqMax", "snrPeak"):
         assert later[name] == pytest.approx(at_zero[name])
 
 
-def test_the_peak_frequency_weights_tiles_rather_than_selecting_them():
-    """Weighting continuously is what lets the estimate leave the ladder when
-    there is more than one tile to leave it with; a rule that admits or excludes
-    tiles can only ever return one of a handful of frequencies."""
-    n_coeff = 512
-    coarse = (1 << 4) + 1
-    fine = (1 << 7) + 8
-    t_lo, t_hi, _, _ = tile_of(coarse, n_coeff)
-
-    # A fine tile inside the coarse one: both contribute, so the answer sits
-    # between their two octaves instead of on either.
-    inside = np.array([coarse, fine])
-    assert 0.0 < (t_hi - t_lo)
-    dense = to_dense(inside, np.array([1.0, 0.6]), n_coeff)
-
-    from wdf.analysis.wavelets import coeff_freq_bands, tile_frequency
-    f_lo, f_hi = coeff_freq_bands(n_coeff, FS)
-    ladder = [tile_frequency(f_lo[k], f_hi[k]) for k in inside]
-
-    estimate = peak_frequency(dense, FS)
-    assert min(ladder) < estimate < max(ladder)
-
-
-def test_a_single_surviving_tile_returns_its_own_frequency():
-    """With one tile there is nothing to interpolate between, and the octave is
-    the transform's real resolution rather than a failure of the estimator."""
-    from wdf.analysis.wavelets import coeff_freq_bands, tile_frequency
-
-    n_coeff = 512
-    k = 70
-    f_lo, f_hi = coeff_freq_bands(n_coeff, FS)
-    dense = to_dense(np.array([k]), np.array([3.0]), n_coeff)
-
-    assert peak_frequency(dense, FS) == pytest.approx(tile_frequency(f_lo[k], f_hi[k]))

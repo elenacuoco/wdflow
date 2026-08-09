@@ -16,7 +16,7 @@ class _FakePar:
 def _with_clustered_columns(df):
     # build_run_report's default ranking/table columns expect a
     # clustered-events-like shape; the raw-trigger synth fixture already
-    # carries gpsPeak/EnWDF/freqPeak, so only n_triggers is missing.
+    # carries gpsPeak/EnWDF/freqMean, so only n_triggers is missing.
     out = df.copy()
     out["n_triggers"] = 1
     return out

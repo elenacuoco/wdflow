@@ -18,7 +18,7 @@ CLUSTER_COL = "cluster_id"
 
 CLUSTERED_EVENT_COLUMNS = [
     "cluster_id", "is_noise", "trigger_index", "ifo", "gpsStart", "gpsPeak", "EnWDF",
-    "freqMean", "freqMax", "freqMin", "freqPeak", "duration", "wave",
+    "freqMean", "freqMax", "freqMin", "duration", "wave",
     "n_triggers", "gps_span_s",
 ]
 
@@ -63,9 +63,6 @@ class TriggerClusterer:
         :param time_col: trigger column used as the time-axis clustering feature.
         :type freq_col: str
         :param freq_col: trigger column used as the frequency-axis clustering feature.
-            `freqMean` is a spectral moment and tracks a narrowband carrier more
-            closely than `freqPeak`, which answers where the local signal-to-noise
-            ratio peaks and is the sharper of the two only for a sweeping transient.
         :type stat_col: str
         :param stat_col: trigger column used to rank cluster members (peak selection
             in `clustered_events`) and as the optional third clustering feature.
@@ -215,7 +212,6 @@ class TriggerClusterer:
                 freqMean=float(g["freqMean"].mean()) if "freqMean" in g.columns else float(peak[self.freq_col]),
                 freqMax=float(peak["freqMax"]) if "freqMax" in g.columns else float(peak[self.freq_col]),
                 freqMin=float(g["freqMin"].min()) if "freqMin" in g.columns else float(peak[self.freq_col]),
-                freqPeak=float(peak[self.freq_col]),
                 duration=gps_span_s if n > 1 else float(peak.get("duration", 0.0)),
                 wave=peak.get("wave"),
                 n_triggers=n,
@@ -227,9 +223,31 @@ class TriggerClusterer:
 PIXEL_COLUMNS = ["trigger_index", "ifo", "t_lo", "t_hi", "f_lo", "f_hi", "energy", "sigma"]
 PIXEL_CLUSTERED_EVENT_COLUMNS = [
     "cluster_id", "ifo", "gpsStart", "gpsEnd", "gpsPeak", "duration",
-    "freqMin", "freqMax", "freqPeak", "EnWDF", "sigma",
+    "freqMin", "freqMean", "freqMax", "EnWDF", "sigma",
     "total_energy", "n_pixels", "n_triggers", "ifos",
 ]
+
+
+def _energy_weighted_frequency(pixels: pd.DataFrame) -> float:
+    """The tiles' frequency, weighted by the energy each carries.
+
+    Geometric, because the tiling is uniform in log frequency; the same
+    construction `meta_features` uses on one window's tiles.
+
+    :type pixels: pandas.DataFrame
+    :param pixels: tiles of one cluster, carrying `f_lo`, `f_hi` and `energy`.
+    :return: float -- the frequency in Hz, `nan` when the tiles carry no energy.
+    """
+    from wdf.analysis.wavelets import tile_frequency
+
+    energy = pixels["energy"].to_numpy(dtype=float)
+    total = float(energy.sum())
+    if total <= 0.0:
+        return float("nan")
+    frequency = np.array([tile_frequency(a, b)
+                          for a, b in zip(pixels["f_lo"], pixels["f_hi"])])
+    frequency = np.maximum(frequency, np.finfo(float).tiny)
+    return float(np.exp(float(energy @ np.log(frequency)) / total))
 
 
 def collect_significant_pixels(triggers: pd.DataFrame, fs: float) -> pd.DataFrame:
@@ -276,11 +294,11 @@ def collect_significant_pixels(triggers: pd.DataFrame, fs: float) -> pd.DataFram
 class WaveletPixelClusterer:
     """Connected-component clustering directly on WDF's own wavelet-coefficient
     time-frequency tiles, instead of on each trigger's single (gpsPeak,
-    freqPeak) point summary -- the same idea coherent WaveBurst (cWB) uses
+    freqMean) point summary -- the same idea coherent WaveBurst (cWB) uses
     (percolation over connected pixels in a time-frequency map). WDF already
     computes the full per-trigger tile map;
     `TriggerClusterer` never sees it, only the scalar per-window stats
-    (`freqPeak` etc.) that get written to the trigger CSV.
+    (`freqMean` etc.) that get written to the trigger file.
 
     Two pixels are adjacent (and so chained into the same cluster, possibly
     from different, overlapping WDF windows) if their frequency bands touch
@@ -375,8 +393,8 @@ class WaveletPixelClusterer:
                 gpsPeak=0.5 * float(loudest["t_lo"] + loudest["t_hi"]),
                 duration=gps_end - gps_start,
                 freqMin=float(g["f_lo"].min()),
+                freqMean=_energy_weighted_frequency(g),
                 freqMax=float(g["f_hi"].max()),
-                freqPeak=tile_frequency(float(loudest["f_lo"]), float(loudest["f_hi"])),
                 EnWDF=float(np.sqrt(total_energy) / sigma) if sigma > 0 else float("nan"),
                 sigma=sigma,
                 total_energy=total_energy,
