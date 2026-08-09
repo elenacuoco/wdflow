@@ -99,7 +99,8 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
     :param bands: (n_bands, 2) band edges, as `band_grid` returns.
     :type time_bins: int
     :param time_bins: time bins per band, spanning each trigger's own window.
-    :return: numpy.ndarray -- (n_triggers, n_bands * time_bins).
+    :return: numpy.ndarray -- (n_triggers, n_bands * time_bins), the coefficient
+        magnitudes on the noise scale that produced the trigger.
     """
     grid = np.zeros((len(triggers), len(bands), time_bins))
     if triggers.empty:
@@ -121,7 +122,12 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
         where = positions[triggers.index.get_indexer(group.index)]
         for slot, (_, trigger) in zip(where, group.iterrows()):
             index = np.asarray(trigger["wt_index"], dtype=int)
-            value = np.abs(np.asarray(trigger["wt_value"], dtype=float))
+            # On the noise scale, as the statistic is: the raw coefficients are
+            # strain, of order 1e-22, and a grid of those is numerically zero
+            # once compressed or multiplied by another.
+            sigma = float(trigger.get("sigma", 1.0))
+            sigma = sigma if np.isfinite(sigma) and sigma > 0.0 else 1.0
+            value = np.abs(np.asarray(trigger["wt_value"], dtype=float)) / sigma
             keep = row_of[index] >= 0
             np.add.at(grid[slot], (row_of[index[keep]], column_of[index[keep]]),
                       value[keep])

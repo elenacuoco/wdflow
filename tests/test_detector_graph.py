@@ -132,3 +132,16 @@ def test_no_triggers_gives_no_graph_and_no_events():
     graph = build_detector_graph(empty)
     assert len(graph.edges) == 0
     assert detector_events(graph).empty
+
+
+def test_the_wavegram_is_on_the_noise_scale():
+    """Raw coefficients are strain, of order 1e-22: a grid of those is
+    numerically zero once compressed or multiplied by another grid."""
+    import numpy as np
+    triggers = _triggers([512], 4)
+    triggers["wt_value"] = [np.asarray(v) * 1e-22 for v in triggers.wt_value]
+    triggers["sigma"] = 1e-22
+
+    grids = trigger_wavegrams(triggers, band_grid([512], FS), time_bins=8)
+    assert grids.max() > 1e-3
+    assert np.isfinite(np.log1p(grids)).all()
