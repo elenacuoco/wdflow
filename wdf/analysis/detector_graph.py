@@ -50,7 +50,12 @@ DETECTOR_EVENT_COLUMNS = [
     "EnWDF_window",
 ]
 
-WAVEGRAM_TIME_BINS = 16
+WAVEGRAM_TIME_BINS = 64
+
+# One column of an event's map stands for this long, wherever it is drawn, so a
+# column means the same thing in both detectors and the lag that best aligns two
+# maps is a time. At 2048 Hz it is the stride of the shortest window in use.
+WAVEGRAM_BIN_SECONDS = 0.09375
 
 
 @dataclass
@@ -512,19 +517,30 @@ class EventWavegram:
 
 
 def event_coefficients(graph: DetectorGraph, labels=None,
-                       time_bins: int = WAVEGRAM_TIME_BINS) -> dict:
-    """Each level-one event's coefficients, for the network graph's nodes.
+                       time_bins: int = WAVEGRAM_TIME_BINS,
+                       bin_seconds: float = WAVEGRAM_BIN_SECONDS) -> dict:
+    """Each level-one event's coefficients, assembled into one map.
 
-    The members are laid out in absolute time across the event's own extent, not
-    at their position inside their own window: an event assembled from windows a
-    second apart describes a transient a second long, and summing the members'
-    own grids would fold it onto itself.
+    The members are laid out in absolute time, not at their position inside
+    their own window: an event assembled from windows a second apart describes a
+    transient a second long, and summing the members' own grids would fold it
+    onto itself.
+
+    The map is on a **common** time base --- a bin is `bin_seconds` wherever it
+    is drawn --- and centred on the event's energy centroid. Scaling each map to
+    its own event's extent instead would give a bin a different duration in each
+    detector, so two maps compared across the network would be stretched onto
+    each other, and the lag that best aligns them would be in no unit at all.
+    An event longer than `time_bins * bin_seconds` is truncated to the centre of
+    its energy; a shorter one leaves the rest of the map empty.
 
     :type graph: DetectorGraph
     :param graph: the detector's level-one graph.
     :param labels: component label per node, or None to take every edge.
     :type time_bins: int
-    :param time_bins: time bins across each event's extent.
+    :param time_bins: columns of the map.
+    :type bin_seconds: float
+    :param bin_seconds: duration one column stands for, seconds.
     :return: dict -- ``{cluster_id: EventWavegram}``.
     """
     nodes = graph.nodes
@@ -556,16 +572,22 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     sigma_of = nodes["sigma"].to_numpy(dtype=float)
     span = scale / fs
 
+    centroid_of = nodes["gpsCentroid"].to_numpy(dtype=float) \
+        if "gpsCentroid" in nodes else gps
+    weight = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
+    half = 0.5 * time_bins * float(bin_seconds)
+
     out = {}
     for label, (start, size) in enumerate(zip(starts, sizes)):
         members = order[start:start + size]
-        first = float(gps[members].min())
-        last = float((gps[members] + span[members]).max())
-        extent = max(last - first, EPS)
+        # Centred on where the energy is, so a truncated map keeps the part that
+        # carries the signal rather than the part that happens to come first.
+        centre = float(np.average(centroid_of[members], weights=weight[members]))
+        first = centre - half
 
         grid = np.zeros((len(bands), time_bins))
         for node in members:
-            centre, rows = geometry[int(scale[node])]
+            tile_centre, rows = geometry[int(scale[node])]
             index = np.asarray(index_of[node], dtype=int)
             keep = rows[index] >= 0
             if not keep.any():
@@ -573,11 +595,14 @@ def event_coefficients(graph: DetectorGraph, labels=None,
             sigma = sigma_of[node]
             sigma = sigma if np.isfinite(sigma) and sigma > 0.0 else 1.0
             # Absolute time, then the event's own extent.
-            when = gps[node] + centre[index[keep]]
-            column = np.clip(((when - first) / extent * time_bins).astype(int),
-                             0, time_bins - 1)
-            np.add.at(grid, (rows[index[keep]], column),
-                      np.abs(np.asarray(value_of[node], dtype=float))[keep] / sigma)
+            when = gps[node] + tile_centre[index[keep]]
+            column = np.floor((when - first) / float(bin_seconds)).astype(int)
+            inside = (column >= 0) & (column < time_bins)
+            if not inside.any():
+                continue
+            np.add.at(grid, (rows[index[keep]][inside], column[inside]),
+                      (np.abs(np.asarray(value_of[node], dtype=float))[keep]
+                       / sigma)[inside])
         out[int(label)] = EventWavegram(grid)
     return out
 

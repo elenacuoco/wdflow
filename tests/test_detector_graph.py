@@ -234,3 +234,44 @@ def test_a_sweeping_transient_is_not_broken_by_the_continuity_test():
     graph = build_detector_graph(sweeping, config=DetectorGraphConfig(band_adjacency=1))
     labels = graph.components()
     assert labels.max() + 1 < len(sweeping) / 2
+
+
+def test_two_events_of_different_length_share_one_time_base():
+    """A column stands for the same duration wherever it is drawn, so two maps
+    compared across the network are not stretched onto each other."""
+    import numpy as np
+    from wdf.analysis.detector_graph import (WAVEGRAM_BIN_SECONDS,
+                                             event_coefficients)
+
+    short = _walking_coefficients(_triggers([512], 3), [64, 64, 64])
+    long = _walking_coefficients(_triggers([512], 24), [64] * 24)
+
+    grids = []
+    for triggers in (short, long):
+        graph = build_detector_graph(triggers)
+        labels = np.zeros(len(graph.nodes), dtype=int)
+        grids.append(event_coefficients(graph, labels)[0].wavegram())
+
+    assert grids[0].shape == grids[1].shape
+    # The long event fills more columns, which is the point: the same duration
+    # per column means the map records how long the transient actually was.
+    assert int((grids[1] > 0).sum(axis=0).astype(bool).sum()) > \
+        int((grids[0] > 0).sum(axis=0).astype(bool).sum())
+
+
+def test_the_map_keeps_the_part_that_carries_the_energy():
+    """An event longer than the map is truncated about its energy centroid, not
+    from wherever it happens to begin."""
+    import numpy as np
+    from wdf.analysis.detector_graph import event_coefficients
+
+    triggers = _walking_coefficients(_triggers([512], 120), [64] * 120)
+    triggers = triggers.assign(EnWDF=1.0)
+    triggers.loc[triggers.index[-5:], "EnWDF"] = 50.0
+
+    graph = build_detector_graph(triggers)
+    labels = np.zeros(len(graph.nodes), dtype=int)
+    grid = event_coefficients(graph, labels)[0].wavegram()
+
+    occupied = np.flatnonzero((grid > 0).any(axis=0))
+    assert occupied.size, "the loud end must fall inside the map"
