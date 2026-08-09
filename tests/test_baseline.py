@@ -23,6 +23,8 @@ def _table(n, seed=0, separable=True):
         "log_energy_ratio": rng.normal(0, 1, n),
         "network_min_enwdf": rng.uniform(3, 10, n) + 5.0 * shift,
         "network_enwdf": rng.uniform(5, 20, n),
+        "wavegram_similarity_aligned": rng.uniform(0, 1, n) * 0.5 + 0.5 * shift,
+        "wavegram_lag_bins": rng.integers(-3, 4, n).astype(float),
     }), labels
 
 

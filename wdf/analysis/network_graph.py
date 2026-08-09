@@ -38,8 +38,37 @@ WAVEGRAM_TIME_BINS = 32
 # penalty: the antenna responses make the same signal reach two detectors with
 # amplitudes differing by a factor of a few, so an unequal pair is physical.
 EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
-                 "time_overlap", "log_energy_ratio"]
+                 "time_overlap", "log_energy_ratio",
+                 "wavegram_similarity_aligned", "wavegram_lag_bins"]
+
+# A real signal reaches the two detectors up to the light travel time apart, so
+# two wavegrams anchored each at its own event's time are compared misaligned.
+# The morphologies are therefore also compared at the lag that best aligns them,
+# searched over this many time bins either way. That the two agree at zero lag
+# and that they agree at some lag are different statements, and both are carried.
+MAX_LAG_BINS = 3
 N_EDGE_FEATURES = len(EDGE_FEATURES)
+
+
+def _aligned_similarity(left, right, max_lag: int = None):
+    """Agreement between two wavegrams at the lag that best aligns them.
+
+    :param left: (n, n_bands, n_bins) unit-norm grids.
+    :param right: (n, n_bands, n_bins) unit-norm grids.
+    :param max_lag: bins to search either way; default MAX_LAG_BINS.
+    :return: (best agreement, lag in bins) -- the lag is positive when the
+        right grid had to move later to match the left.
+    """
+    max_lag = MAX_LAG_BINS if max_lag is None else max_lag
+    if left.size == 0:
+        return np.zeros(len(left)), np.zeros(len(left))
+    lags = np.arange(-max_lag, max_lag + 1)
+    scores = np.stack([
+        np.einsum("ijk,ijk->i", left, np.roll(right, shift, axis=2))
+        for shift in lags
+    ], axis=1)
+    best = scores.argmax(axis=1)
+    return scores[np.arange(len(best)), best], lags[best].astype(float)
 
 
 class TriggerGraph:
@@ -183,6 +212,9 @@ class TriggerGraphBuilder:
         norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
         norms[norms == 0.0] = 1.0
         shapes = wavegrams / norms
+        n_bins = self.wavegram_time_bins
+        panels = shapes.reshape(len(shapes), -1, n_bins) if shapes.size else \
+            shapes.reshape(len(shapes), 0, n_bins)
 
         energy = _coefficient_energy(nodes_df)
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
@@ -224,14 +256,17 @@ class TriggerGraphBuilder:
             i_sel = idx_a[local[:, 0].astype(int)]
             j_sel = idx_b[local[:, 1].astype(int)]
             similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
+            aligned, lag = _aligned_similarity(panels[i_sel], panels[j_sel])
             cross_edges.append(np.column_stack([i_sel, j_sel]))
             cross_feats.append(np.column_stack([
                 local[:, 2],                                   # dt
-                similarity,                                    # wavegram agreement
+                similarity,                                    # agreement at zero lag
                 local[:, 3],                                   # frequency overlap
                 local[:, 4],                                   # time overlap
                 np.log(np.maximum(energy[i_sel], EPS)
                        / np.maximum(energy[j_sel], EPS)),      # log energy ratio
+                aligned,                                       # agreement, best aligned
+                lag,                                           # bins it took to align
             ]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)
