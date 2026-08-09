@@ -291,69 +291,113 @@ def detector_events(graph: DetectorGraph, significance=None,
     significance = np.asarray(significance, dtype=float)
     significance = np.where(np.isfinite(significance), significance, 0.0)
 
-    frame = nodes.assign(cluster_id=labels, significance=significance)
-    span = frame["n_coeff"].to_numpy(dtype=float) / np.maximum(
-        frame["fs"].to_numpy(dtype=float), EPS)
-    frame = frame.assign(window_end=frame["gps"].to_numpy(dtype=float) + span)
+    def column(name, default=np.nan):
+        if name not in nodes:
+            return np.full(len(nodes), default, dtype=float)
+        values = pd.to_numeric(nodes[name], errors="coerce").to_numpy(dtype=float)
+        return np.where(np.isfinite(values), values, default)
 
-    rows = []
-    for cluster_id, group in frame.groupby("cluster_id", sort=True):
-        loudest = group.loc[group["significance"].idxmax()]
-        weight = np.maximum(group["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
-        total = weight.sum()
+    gps = column("gps")
+    scale = column("n_coeff")
+    fs = np.maximum(column("fs", 1.0), EPS)
+    window_end = gps + scale / fs
 
-        centroid_of = group["gpsCentroid"].to_numpy(dtype=float) \
-            if "gpsCentroid" in group else group["gps"].to_numpy(dtype=float)
-        centroid_of = np.where(np.isfinite(centroid_of), centroid_of,
-                               group["gps"].to_numpy(dtype=float))
-        centroid = float((centroid_of * weight).sum() / total)
-        spread_of = group["tSpread"].to_numpy(dtype=float) \
-            if "tSpread" in group else np.zeros(len(group))
-        spread_of = np.where(np.isfinite(spread_of), spread_of, 0.0)
-        spread = float(np.sqrt(max(
-            ((spread_of ** 2 + (centroid_of - centroid) ** 2) * weight).sum() / total,
-            0.0)))
+    # Grouped by reduction over a sorted label, not by a Python pass per cluster.
+    # A search carrying no per-detector threshold produces tens of thousands of
+    # components, and the threshold scan builds the events once per candidate
+    # threshold.
+    order = np.argsort(labels, kind="stable")
+    grouped = labels[order]
+    sizes = np.bincount(grouped, minlength=int(labels.max()) + 1)
+    n_events = len(sizes)
+    starts = np.concatenate(([0], np.cumsum(sizes)[:-1]))
 
-        start = float(group["gps"].min())
-        noise = group["sigma"].to_numpy(dtype=float)
-        noise = noise[np.isfinite(noise) & (noise > 0.0)]
+    weight = np.maximum(column("EnWDF", 0.0) ** 2, EPS)
+    total = np.bincount(grouped, weights=weight[order], minlength=n_events)
 
-        rows.append(dict(
-            cluster_id=int(cluster_id),
-            ifo=loudest.get("ifo", ""),
-            gps=start,
-            gpsStart=float(group["gpsStart"].min()) if "gpsStart" in group else start,
-            gpsCentroid=centroid,
-            tSpread=spread,
-            gpsPeak=float(loudest.get("gpsPeak", centroid)),
-            duration=float(group["window_end"].max() - start),
-            duration90=float(np.diff(energy_quantile(
-                group["gpsStart"].to_numpy(dtype=float),
-                group["gpsStart"].to_numpy(dtype=float)
-                + group["duration90"].to_numpy(dtype=float),
-                weight, (0.05, 0.95)))[0]) if "duration90" in group else np.nan,
-            freqMin=float(group["freqMin"].min()),
-            freqMean=float((group["freqMean"].to_numpy(dtype=float) * weight).sum() / total),
-            freqMax=float(group["freqMax"].max()),
-            freqQ05=float(np.exp(energy_quantile(
-                np.log(np.maximum(group["freqQ05"].to_numpy(dtype=float), EPS)),
-                np.log(np.maximum(group["freqQ95"].to_numpy(dtype=float), EPS)),
-                weight, (0.05,))[0])) if "freqQ05" in group else np.nan,
-            freqQ95=float(np.exp(energy_quantile(
-                np.log(np.maximum(group["freqQ05"].to_numpy(dtype=float), EPS)),
-                np.log(np.maximum(group["freqQ95"].to_numpy(dtype=float), EPS)),
-                weight, (0.95,))[0])) if "freqQ95" in group else np.nan,
-            EnWDF=float(loudest["EnWDF"]),
-            sigma=float(noise.mean()) if noise.size else np.nan,
-            snrPeak=float(group["snrPeak"].max()) if "snrPeak" in group else np.nan,
-            significance=float(loudest["significance"]),
-            n_triggers=int(len(group)),
-            n_scales=int(group["n_coeff"].nunique()),
-            scale_best=int(loudest["n_coeff"]),
-            n_coeff=int(loudest["n_coeff"]),
-            fs=float(loudest["fs"]),
-        ))
-    return pd.DataFrame(rows, columns=DETECTOR_EVENT_COLUMNS)
+    def weighted(values):
+        summed = np.bincount(grouped, weights=values[order] * weight[order],
+                             minlength=n_events)
+        return np.divide(summed, total, out=np.full(n_events, np.nan),
+                         where=total > 0)
+
+    def lowest(values):
+        return np.minimum.reduceat(values[order], starts)
+
+    def highest(values):
+        return np.maximum.reduceat(values[order], starts)
+
+    # The loudest member of each cluster: ordering by cluster and then by
+    # decreasing significance puts it first in every group.
+    peak = np.lexsort((-significance, labels))[starts]
+
+    centroid_of = column("gpsCentroid", np.nan)
+    centroid_of = np.where(np.isfinite(centroid_of), centroid_of, gps)
+    centroid = weighted(centroid_of)
+    offset = centroid_of[order] - centroid[grouped]
+    spread_of = column("tSpread", 0.0)
+    spread = np.sqrt(np.maximum(np.divide(
+        np.bincount(grouped, weights=(spread_of[order] ** 2 + offset ** 2) * weight[order],
+                    minlength=n_events),
+        total, out=np.zeros(n_events), where=total > 0), 0.0))
+
+    noise = column("sigma", np.nan)
+    usable = np.isfinite(noise) & (noise > 0.0)
+    counted = np.bincount(grouped, weights=usable[order].astype(float), minlength=n_events)
+    sigma = np.divide(
+        np.bincount(grouped, weights=np.where(usable, noise, 0.0)[order], minlength=n_events),
+        counted, out=np.full(n_events, np.nan), where=counted > 0)
+
+    start = lowest(gps)
+    scales_seen = np.array([len(np.unique(scale[order][a:a + n]))
+                            for a, n in zip(starts, sizes)])
+
+    events = pd.DataFrame({
+        "cluster_id": np.arange(n_events),
+        "ifo": nodes["ifo"].to_numpy()[peak] if "ifo" in nodes else "",
+        "gps": start,
+        "gpsStart": lowest(column("gpsStart", np.inf)) if "gpsStart" in nodes else start,
+        "gpsCentroid": centroid,
+        "tSpread": spread,
+        "gpsPeak": column("gpsPeak", np.nan)[peak] if "gpsPeak" in nodes else centroid,
+        "duration": highest(window_end) - start,
+        "freqMin": lowest(column("freqMin", np.inf)),
+        "freqMean": weighted(column("freqMean", np.nan)),
+        "freqMax": highest(column("freqMax", -np.inf)),
+        "EnWDF": column("EnWDF", 0.0)[peak],
+        "sigma": sigma,
+        "snrPeak": highest(column("snrPeak", -np.inf)),
+        "significance": significance[peak],
+        "n_triggers": sizes,
+        "n_scales": scales_seen,
+        "scale_best": scale[peak].astype(int),
+        "n_coeff": scale[peak].astype(int),
+        "fs": fs[peak],
+    })
+
+    # The energy quantiles invert a mixture per cluster, so they are computed
+    # only where there is a mixture: a cluster of one member simply keeps its
+    # own, which at these event rates is most of them.
+    quantile_columns = ("duration90", "freqQ05", "freqQ95")
+    for name in quantile_columns:
+        events[name] = column(name, np.nan)[peak]
+
+    if set(quantile_columns) <= set(nodes.columns):
+        low, high = column("freqQ05", np.nan), column("freqQ95", np.nan)
+        member_start = column("gpsStart", np.nan)
+        member_span = column("duration90", 0.0)
+        for event in np.flatnonzero(sizes > 1):
+            members = order[starts[event]:starts[event] + sizes[event]]
+            events.at[event, "duration90"] = float(np.diff(energy_quantile(
+                member_start[members], member_start[members] + member_span[members],
+                weight[members], (0.05, 0.95)))[0])
+            band = energy_quantile(np.log(np.maximum(low[members], EPS)),
+                                   np.log(np.maximum(high[members], EPS)),
+                                   weight[members], (0.05, 0.95))
+            events.at[event, "freqQ05"] = float(np.exp(band[0]))
+            events.at[event, "freqQ95"] = float(np.exp(band[1]))
+
+    return events[DETECTOR_EVENT_COLUMNS]
 
 
 class EventWavegram:
