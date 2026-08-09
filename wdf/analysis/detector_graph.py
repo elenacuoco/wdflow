@@ -339,3 +339,54 @@ def detector_events(graph: DetectorGraph, significance=None,
             fs=float(loudest["fs"]),
         ))
     return pd.DataFrame(rows, columns=DETECTOR_EVENT_COLUMNS)
+
+
+class EventWavegram:
+    """One level-one event's coefficients on the shared band-by-time grid.
+
+    `ClusterCoefficients` renders a cluster on the octave grid of one window
+    length, which a multi-window event does not have: its members come from
+    several lengths at once. The rows here are absolute frequency bands, shared
+    between the lengths, so one event's members all land on the same grid
+    whatever length produced them.
+
+    :param grid: (n_bands, n_time_bins) of summed coefficient magnitude.
+    """
+
+    def __init__(self, grid: np.ndarray):
+        self.grid = grid
+
+    def wavegram(self, n_time_bins: int | None = None) -> np.ndarray:
+        """The event's band-by-time grid.
+
+        :type n_time_bins: int | None
+        :param n_time_bins: kept for interface compatibility; the grid is
+            already rendered at the width the graph was built with.
+        :return: numpy.ndarray -- (n_bands, n_time_bins).
+        """
+        return self.grid
+
+
+def event_coefficients(graph: DetectorGraph, labels=None,
+                       time_bins: int = WAVEGRAM_TIME_BINS) -> dict:
+    """Each level-one event's coefficients, for the network graph's nodes.
+
+    :type graph: DetectorGraph
+    :param graph: the detector's level-one graph.
+    :param labels: component label per node, or None to take every edge.
+    :type time_bins: int
+    :param time_bins: time bins per band.
+    :return: dict -- ``{cluster_id: EventWavegram}``.
+    """
+    if graph.nodes.empty:
+        return {}
+    labels = graph.components() if labels is None else np.asarray(labels)
+    bands = band_grid(graph.nodes["n_coeff"].to_numpy(),
+                      float(graph.nodes["fs"].iloc[0]))
+    grids = trigger_wavegrams(graph.nodes, bands, time_bins)
+    grids = grids.reshape(len(graph.nodes), len(bands), time_bins)
+
+    out = {}
+    for label in np.unique(labels):
+        out[int(label)] = EventWavegram(grids[labels == label].sum(axis=0))
+    return out
