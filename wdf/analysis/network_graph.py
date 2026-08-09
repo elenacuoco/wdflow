@@ -185,6 +185,7 @@ class TriggerGraphBuilder:
         """
         ifos = self.ifos or list(clustered.keys())
         frames, grids = [], []
+        grid_shape = (0, self.wavegram_time_bins)
         for ifo in ifos:
             per_cluster = coefficients[ifo]
             events = clustered[ifo].reset_index(drop=True)
@@ -195,8 +196,10 @@ class TriggerGraphBuilder:
                     "built from the wavelet coefficients, so every event needs them"
                 )
             frames.append(events.assign(ifo=ifo))
-            grids.extend(per_cluster[label].wavegram(self.wavegram_time_bins).ravel()
-                         for label in events["cluster_id"].astype(int))
+            for label in events["cluster_id"].astype(int):
+                grid = np.asarray(per_cluster[label].wavegram(self.wavegram_time_bins))
+                grid_shape = grid.shape
+                grids.append(grid.ravel())
         nodes_df = pd.concat(frames, ignore_index=True)
 
         # |coefficient|/sigma spans decades, so compress before standardising;
@@ -212,9 +215,11 @@ class TriggerGraphBuilder:
         norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
         norms[norms == 0.0] = 1.0
         shapes = wavegrams / norms
-        n_bins = self.wavegram_time_bins
-        panels = shapes.reshape(len(shapes), -1, n_bins) if shapes.size else \
-            shapes.reshape(len(shapes), 0, n_bins)
+        # The width comes from the grids that arrived, not from this builder's
+        # own constant: a multi-window event is rendered on the shared band grid
+        # by its own level, which need not have chosen the same number of bins.
+        panels = shapes.reshape(len(shapes), *grid_shape) if shapes.size else \
+            shapes.reshape(len(shapes), 0, self.wavegram_time_bins)
 
         energy = _coefficient_energy(nodes_df)
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
