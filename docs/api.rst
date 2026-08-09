@@ -85,6 +85,18 @@ wdf.analysis.io
 .. automodule:: wdf.analysis.io
    :members:
 
+wdf.analysis.coefficients
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.coefficients
+   :members:
+
+wdf.analysis.metaparameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.metaparameters
+   :members:
+
 wdf.analysis.output_schema
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -127,6 +139,42 @@ wdf.analysis.roc
 .. automodule:: wdf.analysis.roc
    :members:
 
+wdf.analysis.pairs
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.pairs
+   :members:
+
+wdf.analysis.scale
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.scale
+   :members:
+
+wdf.analysis.pixel_graph
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.pixel_graph
+   :members:
+
+wdf.analysis.detector_graph
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.detector_graph
+   :members:
+
+wdf.analysis.network_graph
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.network_graph
+   :members:
+
+wdf.analysis.baseline
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.baseline
+   :members:
+
 wdf.analysis.gnn
 ~~~~~~~~~~~~~~~~~~
 
@@ -155,6 +203,12 @@ wdf.analysis.injections
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.injections
+   :members:
+
+wdf.analysis.plots
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.plots
    :members:
 
 wdf.analysis.report

@@ -17,6 +17,8 @@ tutorials/03_coincidence_and_significance
 :hidden:
 
 api
+design/multiwindow-and-graphs
 design/event-candidates
 design/whitening
+design/warm-up
 ```
