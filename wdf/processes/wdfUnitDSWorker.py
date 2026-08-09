@@ -20,7 +20,7 @@ from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 read_conditioned)
-from wdf.config.Parameters import Parameters 
+from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
 from wdf.processes.Whitening import Whitening
 from wdf.processes.zero_phase_whitening import (
@@ -48,7 +48,8 @@ class wdfUnitDSWorker(object):
         """
         self.par = Parameters()
         self.par.copy(parameters)
-        self.par.Ncoeff = parameters.window
+        self.schedule = window_schedule(parameters)
+        self.par.Ncoeff = max(window for window, _ in self.schedule)
         self.par.channel = parameters.channel
         self.learn = parameters.learn
         self.par.resampling=parameters.sampling/parameters.ResamplingFactor
@@ -252,16 +253,23 @@ class wdfUnitDSWorker(object):
 
             
 
-            # WDF process
-            WDF = wdf(self.par, wavThresh)
-            
-            # register obesevers to WDF process
-            savetrigger = SingleEventPrintTriggers(self.par)
-            parameterestimation = ParameterEstimation(self.par)
-            parameterestimation.register(savetrigger)
-            WDF.register(parameterestimation)
-            filejson = "parametersUsed.json"
-            self.par.dump(self.par.dir + filejson)
+            # One search per analysis window length, all reading the same
+            # whitened stream: the conditioning is the expensive part and is
+            # done once, while each window length has its own stride, its own
+            # coefficient grid and its own trigger file.
+            searches, writers = [], []
+            for window, overlap in self.schedule:
+                par = Parameters()
+                par.copy(self.par)
+                par.window, par.overlap, par.Ncoeff = window, overlap, window
+                search = wdf(par, wavThresh)
+                savetrigger = SingleEventPrintTriggers(par)
+                parameterestimation = ParameterEstimation(par)
+                parameterestimation.register(savetrigger)
+                search.register(parameterestimation)
+                par.dump("%sparametersUsed-Win%s.json" % (par.dir, window))
+                searches.append(search)
+                writers.append(savetrigger)
             # Start detection loop
             logging.info("Starting detection loop")
             data = SV()
@@ -273,8 +281,9 @@ class wdfUnitDSWorker(object):
             data_ds = read_conditioned(streaming, data, ds)
             while data_ds.GetStart() <= self.par.gpsEnd:
                 whitening.Process(data_ds, dataw)
-                WDF.SetData(dataw)
-                WDF.Process()
+                for search in searches:
+                    search.SetData(dataw)
+                    search.Process()
                 if data.GetStart() + 2 * self.par.len > gpsEnd:
                     logging.warning(
                         "Stopping at %.1f: the next read would pass the end of "
@@ -282,7 +291,21 @@ class wdfUnitDSWorker(object):
                     break
                 data_ds = read_conditioned(streaming, data, ds)
 
-            savetrigger.close()
+            # Reading stops a whole priming ahead of what the whitening has
+            # emitted, so the filters still hold analysable data when the last
+            # read is refused. Draining it costs the segment nothing; leaving it
+            # costs a span set by the filters rather than by the segment.
+            while dataw.GetStart() <= self.par.gpsEnd:
+                emitted = dataw.GetStart()
+                whitening.Output(dataw)
+                if dataw.GetSize() == 0 or dataw.GetStart() <= emitted:
+                    break
+                for search in searches:
+                    search.SetData(dataw)
+                    search.Process()
+
+            for savetrigger in writers:
+                savetrigger.close()
 
             elapsed_time = time.time() - start_time
             timeslice = gpsEnd - gpsStart

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -43,6 +44,35 @@ def triggers_from_files(paths: list[str], ifo: str) -> pd.DataFrame:
         raise ValueError(f"trigger files missing expected columns {sorted(missing)}: {paths}")
     df["ifo"] = ifo
     return df
+
+
+def run_parameters(trigger_path: str):
+    """The run configuration a trigger file was produced under.
+
+    A run searching several analysis window lengths writes one configuration
+    per length, beside that length's trigger file in the same segment
+    directory, and both file names carry the window length.
+
+    :type trigger_path: str
+    :param trigger_path: a trigger file written by `TriggerWriter`.
+    :return: wdf.config.Parameters.Parameters -- the configuration used.
+    :raises FileNotFoundError: if no matching configuration sits beside it.
+    """
+    from wdf.config.Parameters import Parameters
+
+    match = re.search(r"-Win(\d+)-", os.path.basename(trigger_path))
+    if match is None:
+        raise FileNotFoundError(
+            f"{trigger_path} does not name its analysis window, so the run "
+            "configuration written beside it cannot be identified"
+        )
+    path = os.path.join(os.path.dirname(trigger_path),
+                        "parametersUsed-Win%s.json" % match.group(1))
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"no run configuration at {path}")
+    par = Parameters()
+    par.load(path)
+    return par
 
 
 def load_triggers_dir(base_dir: str, ifo: str, pattern: str = "*.parquet") -> pd.DataFrame:

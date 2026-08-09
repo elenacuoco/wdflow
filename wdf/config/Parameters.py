@@ -66,3 +66,35 @@ class Parameters(object):
               """
         self.__dict__ = copy.deepcopy(param.__dict__)
         return self.__dict__
+
+
+def window_schedule(par):
+    """The analysis windows a run searches at, as (window, overlap) pairs.
+
+    The same data may be searched at several window lengths at once: a
+    transient longer than the window cannot have its extent measured within
+    one, and only a longer window reaches the lower frequency bands. Each of
+    `window` and `overlap` is either a single value, applying to every window
+    length, or a list.
+
+    :param par: run configuration carrying `window` and `overlap`, in samples.
+    :return: list[tuple[int, int]] -- (window, overlap), in the order given.
+    :raises ValueError: if `window` and `overlap` are lists of different
+        lengths, or if an overlap does not fit inside its window.
+    """
+    windows = par.window if isinstance(par.window, (list, tuple)) else [par.window]
+    overlaps = (par.overlap if isinstance(par.overlap, (list, tuple))
+                else [par.overlap] * len(windows))
+    if len(overlaps) != len(windows):
+        raise ValueError(
+            f"{len(windows)} window lengths but {len(overlaps)} overlaps; give one "
+            "overlap per window length, or a single overlap for all of them"
+        )
+    schedule = [(int(w), int(o)) for w, o in zip(windows, overlaps)]
+    for window, overlap in schedule:
+        if not 0 <= overlap < window:
+            raise ValueError(
+                f"overlap {overlap} does not fit in a window of {window} samples; "
+                "the search advances by window - overlap and would not move"
+            )
+    return schedule
