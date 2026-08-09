@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
-from wdf.analysis.pairs import neighbour_pairs
+from wdf.analysis.pairs import cross_pairs, neighbour_pairs
 
 EPS = np.finfo(float).tiny
 
@@ -488,38 +488,45 @@ class IndexedCoincidenceFinder:
         re = np.maximum(_coefficient_energy(right), EPS)
 
         widest = self.coincidence_window(left, right)
-        right_order = np.argsort(rt, kind="mergesort")
-        rt_sorted = rt[right_order]
-        edges = []
 
-        for i, t in enumerate(lt):
-            lo = np.searchsorted(rt_sorted, t - widest, side="left")
-            hi = np.searchsorted(rt_sorted, t + widest, side="right")
-            for position in range(lo, hi):
-                j = int(right_order[position])
-                tolerance = float(self.config.timing_tolerance(ls[i], rs[j]))
-                dt = t - rt[j]
-                if abs(dt) > tolerance:
-                    continue
-                overlap = _overlap_fraction(lf0[i], lf1[i], rf0[j], rf1[j])
-                if overlap < self.config.minimum_frequency_overlap:
-                    continue
-                time_overlap = _shifted_overlap_fraction(
-                    l_start[i], l_end[i], r_start[j], r_end[j],
-                    self.config.light_travel_time_s)
-                if time_overlap < self.config.minimum_time_overlap:
-                    continue
-                dt_cost = abs(dt) / max(tolerance, EPS)
-                scale = max(lf1[i] - lf0[i], rf1[j] - rf0[j], 1.0)
-                df_cost = abs(lfm[i] - rfm[j]) / scale
-                morphology_cost = abs(np.log(le[i] / re[j]))
-                cost = (
-                    self.config.time_weight * dt_cost
-                    + self.config.frequency_weight * df_cost
-                    + self.config.morphology_weight * morphology_cost
-                )
-                edges.append((i, j, cost, dt, overlap, time_overlap))
-        return edges
+        # Formed as arrays over the admissible pairs rather than one pair at a
+        # time: the per-pair tolerance is the same expression evaluated
+        # elementwise, and at these event rates the Python call dominated the
+        # whole graph build.
+        left_order = np.argsort(lt, kind="mergesort")
+        right_order = np.argsort(rt, kind="mergesort")
+        blocks = []
+        for a, b in cross_pairs(lt[left_order], rt[right_order], widest):
+            i, j = left_order[a], right_order[b]
+            tolerance = self.config.timing_tolerance(ls[i], rs[j])
+            dt = lt[i] - rt[j]
+            overlap = _overlap_fraction(lf0[i], lf1[i], rf0[j], rf1[j])
+            time_overlap = _shifted_overlap_fraction(
+                l_start[i], l_end[i], r_start[j], r_end[j],
+                self.config.light_travel_time_s)
+            keep = (
+                (np.abs(dt) <= tolerance)
+                & (overlap >= self.config.minimum_frequency_overlap)
+                & (time_overlap >= self.config.minimum_time_overlap)
+            )
+            if not keep.any():
+                continue
+            i, j, dt = i[keep], j[keep], dt[keep]
+            overlap, time_overlap = overlap[keep], time_overlap[keep]
+            scale = np.maximum(np.maximum(lf1[i] - lf0[i], rf1[j] - rf0[j]), 1.0)
+            cost = (
+                self.config.time_weight * np.abs(dt) / np.maximum(tolerance[keep], EPS)
+                + self.config.frequency_weight * np.abs(lfm[i] - rfm[j]) / scale
+                + self.config.morphology_weight * np.abs(np.log(le[i] / re[j]))
+            )
+            blocks.append(np.column_stack([i, j, cost, dt, overlap, time_overlap]))
+
+        if not blocks:
+            return []
+        rows = np.concatenate(blocks)
+        rows = rows[np.lexsort((rows[:, 1], rows[:, 0]))]
+        return [(int(r[0]), int(r[1]), float(r[2]), float(r[3]), float(r[4]),
+                 float(r[5])) for r in rows]
 
     @staticmethod
     def _components(n_left, n_right, edges):
