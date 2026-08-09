@@ -10,10 +10,13 @@ import matplotlib.pyplot as plt
 from _synth import synth_raw_triggers
 from wdf.analysis.coefficients import trigger_statistics
 from wdf.analysis.plots import (
+    plot_cluster_membership,
+    plot_event_span,
     plot_glitchgram,
     plot_rate,
     plot_trigger_statistics,
     plot_trigger_tiles,
+    plot_windows_per_event,
 )
 
 FS = 2048.0
@@ -87,3 +90,63 @@ def test_the_statistics_report_the_sparsity_that_justifies_the_format(triggers):
 
 def test_a_run_with_no_triggers_still_reports():
     assert trigger_statistics(pd.DataFrame()) == {"n_triggers": 0}
+
+
+def _chained_events():
+    """A run of consecutive windows, clustered, plus the matcher's output."""
+    from types import SimpleNamespace
+
+    from _synth import triggers_from_signal
+    from wdf.analysis.injections import match_injections
+    from wdf.analysis.robust_events import ClusterConfig, cluster_detector_triggers
+
+    fs, window, overlap = 2048.0, 512, 128
+    step = window - overlap
+    rng = np.random.default_rng(0)
+    signal = np.hanning(window + 6 * step) * np.sin(
+        2 * np.pi * 200.0 * np.arange(window + 6 * step) / fs)
+    signal += 1e-3 * rng.standard_normal(signal.size)
+
+    triggers = triggers_from_signal(signal, fs, window, overlap, gps0=1000.0)
+    parameters = SimpleNamespace(window=window, overlap=overlap, resampling=fs)
+    labeled, events = cluster_detector_triggers(
+        triggers, parameters, config=ClusterConfig(max_missing_windows=0))
+    injections = pd.DataFrame([{"gps": 1000.3, "duration": 0.8}])
+    matched = match_injections(events, injections, window_s=0.5,
+                               candidate_time="gpsCentroid")
+    return labeled, events, matched, fs
+
+
+def test_cluster_membership_fills_the_member_tiles_and_outlines_the_rest():
+    labeled, events, _, fs = _chained_events()
+    cluster_id = int(events.iloc[0].cluster_id)
+    members = labeled[labeled.cluster_id == cluster_id]
+
+    fig, ax = plt.subplots()
+    plot_cluster_membership(ax, labeled, events, cluster_id, fs)
+    filled = [p for p in ax.patches if p.get_facecolor()[3] > 0]
+    assert len(filled) == sum(len(v) for v in members.wt_index)
+    plt.close(fig)
+
+
+def test_windows_per_event_draws_one_point_per_event():
+    _, events, _, _ = _chained_events()
+    fig, ax = plt.subplots()
+    plot_windows_per_event(ax, events)
+    drawn = np.asarray(ax.collections[0].get_offsets())
+    assert len(drawn) == len(events)
+    assert (drawn[:, 1] == events.n_triggers.to_numpy()).all()
+    plt.close(fig)
+
+
+def test_the_event_span_bar_covers_the_injection_it_matched():
+    """Which is the property that makes the span the right thing to match on."""
+    _, events, matched, _ = _chained_events()
+    assert bool(matched.found.iloc[0])
+
+    fig, ax = plt.subplots()
+    plot_event_span(ax, events, matched)
+    bar = [line for line in ax.lines if len(line.get_xdata()) == 2][0]
+    x0, x1 = bar.get_xdata()
+    assert x0 <= 0.0 <= x1
+    plt.close(fig)

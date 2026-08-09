@@ -178,3 +178,122 @@ def plot_trigger_statistics(fig, triggers, fs=None):
 
     fig.tight_layout()
     return fig
+
+
+def plot_cluster_membership(ax, labeled, events, cluster_id, fs, cluster_column="cluster_id"):
+    """One event's windows on the wavegram, with everything around them.
+
+    Member tiles are drawn filled, the tiles of the windows on either side in
+    outline. A chain broken through the middle of a signal shows as a
+    continuous track that stops being filled part way along, which is what
+    reading counts off a table cannot show.
+
+    :type ax: matplotlib.axes.Axes
+    :param ax: axes to draw on.
+    :type labeled: pandas.DataFrame
+    :param labeled: triggers carrying a cluster label and the coefficients.
+    :type events: pandas.DataFrame
+    :param events: the event catalogue.
+    :type cluster_id: int
+    :param cluster_id: which event to draw.
+    :type fs: float
+    :param fs: sampling frequency the coefficients were computed at, Hz.
+    :type cluster_column: str
+    :param cluster_column: the label column in `labeled`.
+    :return: matplotlib.axes.Axes
+    """
+    import matplotlib.pyplot as plt
+
+    from wdf.analysis.clustering import collect_significant_pixels
+
+    event = events.loc[events[cluster_column] == cluster_id].iloc[0]
+    members = labeled[labeled[cluster_column] == cluster_id]
+    span = float(event["duration"])
+    lo = float(event["gpsStart"]) - max(span, 1.0)
+    hi = float(event["gpsStart"]) + span + max(span, 1.0)
+
+    around = labeled[(labeled["gps"] >= lo) & (labeled["gps"] <= hi)]
+    t0 = float(event["gpsStart"])
+
+    for tile in collect_significant_pixels(around, fs).itertuples():
+        ax.add_patch(plt.Rectangle(
+            (tile.t_lo - t0, tile.f_lo), tile.t_hi - tile.t_lo, tile.f_hi - tile.f_lo,
+            facecolor="none", edgecolor="0.6", lw=0.4))
+    for tile in collect_significant_pixels(members, fs).itertuples():
+        ax.add_patch(plt.Rectangle(
+            (tile.t_lo - t0, tile.f_lo), tile.t_hi - tile.t_lo, tile.f_hi - tile.f_lo,
+            facecolor="tab:blue", alpha=0.7, lw=0))
+
+    ax.set_xlim(lo - t0, hi - t0)
+    ax.set_ylim(max(fs / 2 ** 20, 1.0), fs / 2)
+    ax.set_yscale("log")
+    ax.set_xlabel(f"time - {t0:.3f} [s]")
+    ax.set_ylabel("frequency [Hz]")
+    ax.set_title(f"event {int(cluster_id)}: {int(event['n_triggers'])} windows, "
+                 f"{span * 1e3:.0f} ms")
+    return ax
+
+
+def plot_windows_per_event(ax, events, injections=None, duration_column="duration"):
+    """How many windows an event spans, against how long the signal was.
+
+    A chaining rule that works gives a rising trend. One that breaks gives a
+    ceiling: events stop growing at whatever length the rule can still follow,
+    however long the signal is.
+
+    :type ax: matplotlib.axes.Axes
+    :param ax: axes to draw on.
+    :type events: pandas.DataFrame
+    :param events: the event catalogue, carrying `n_triggers`.
+    :type injections: pandas.DataFrame or None
+    :param injections: matched injections, to take the true duration from; the
+        events' own measured duration is used when None.
+    :type duration_column: str
+    :param duration_column: column holding the signal duration, seconds.
+    :return: matplotlib.axes.Axes
+    """
+    source = events if injections is None else injections
+    duration = pd.to_numeric(source[duration_column], errors="coerce").to_numpy(float)
+    windows = pd.to_numeric(events["n_triggers"], errors="coerce").to_numpy(float)
+    keep = np.isfinite(duration) & np.isfinite(windows) & (duration > 0)
+
+    ax.scatter(duration[keep], windows[keep], s=8, alpha=0.4, linewidths=0)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("signal duration [s]")
+    ax.set_ylabel("analysis windows in the event")
+    return ax
+
+
+def plot_event_span(ax, events, injections, injection_time="gps",
+                    candidate_column="candidate_index"):
+    """Where each recovered event's extent sits against the injection it matched.
+
+    The bar is the event's `[gpsStart, gpsStart+duration]`, the marker the
+    injection. An event that covers its injection is doing its job even when its
+    own reported time is seconds away, which is the ordinary case for a chirp.
+
+    :type ax: matplotlib.axes.Axes
+    :param ax: axes to draw on.
+    :type events: pandas.DataFrame
+    :param events: the event catalogue, indexed as the matcher recorded it.
+    :type injections: pandas.DataFrame
+    :param injections: output of `wdf.analysis.injections.match_injections`.
+    :type injection_time: str
+    :param injection_time: column of `injections` holding the injection time.
+    :type candidate_column: str
+    :param candidate_column: column of `injections` holding the matched event.
+    :return: matplotlib.axes.Axes
+    """
+    found = injections[injections["found"]]
+    for row, (_, injection) in enumerate(found.iterrows()):
+        event = events.loc[injection[candidate_column]]
+        t_inj = float(injection[injection_time])
+        start = float(event["gpsStart"]) - t_inj
+        ax.plot([start, start + float(event["duration"])], [row, row],
+                lw=1.5, color="tab:blue", solid_capstyle="butt")
+    ax.axvline(0.0, color="crimson", ls="--", lw=1, label="injection")
+    ax.set_xlabel("time from the injection [s]")
+    ax.set_ylabel("recovered injection")
+    ax.legend(fontsize=8)
+    return ax
