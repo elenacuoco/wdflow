@@ -60,12 +60,13 @@ class DetectorGraphConfig:
     :param time_tolerance: largest gap between two triggers' time supports, as
         a fraction of their mean window span. Zero joins only triggers that
         touch or overlap; one allows a gap as wide as a window.
-    :param minimum_frequency_overlap: least shared fraction of the narrower band.
-    :param maximum_band_step: how far the energy-weighted frequency may move
-        between two triggers, in octaves. A transient that sweeps moves its band
-        from one window to the next, so requiring the two to look alike would
-        break a chirp into pieces; requiring the step to be small says the band
-        continues rather than that it stands still.
+    :param minimum_frequency_overlap: least shared fraction of the two supports.
+        The support is the interval the surviving tiles span, which a broadband
+        transient makes wide, so the band-set test below carries the frequency
+        condition and this defaults to nothing.
+    :param band_adjacency: how many octave rows apart two occupied bands may be
+        and still count as touching. One says energy in a band connects to
+        energy in that band or in either neighbour.
     :param maximum_log_energy_jump: largest jump in coefficient energy between
         two triggers of one transient, as a log ratio. A transient rises and
         falls smoothly; a step of several decades is two things, not one.
@@ -75,7 +76,7 @@ class DetectorGraphConfig:
 
     time_tolerance: float = 1.0
     minimum_frequency_overlap: float = 0.0
-    maximum_band_step: float = 2.0
+    band_adjacency: int = 1
     maximum_log_energy_jump: float = 3.0
     minimum_significance: float = 0.0
     wavegram_time_bins: int = WAVEGRAM_TIME_BINS
@@ -143,6 +144,56 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
             np.add.at(grid[slot], (row_of[index[keep]], column_of[index[keep]]),
                       value[keep])
     return grid.reshape(len(triggers), -1)
+
+
+def occupied_bands(triggers: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
+    """Which octave bands each trigger's surviving coefficients fall in.
+
+    Not the interval they span: the support of a broadband transient covers
+    everything beneath it, while the bands it occupies are where its energy
+    actually is. The rows are those of the shared ladder, so the same physical
+    band is the same bit at every window length.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers carrying `n_coeff`, `fs` and the coefficients.
+    :type bands: numpy.ndarray
+    :param bands: (n_bands, 2) band edges, as `band_grid` returns.
+    :return: numpy.ndarray -- one unsigned integer per trigger, bit `r` set
+        where the trigger has a coefficient in band `r`.
+    """
+    mask = np.zeros(len(triggers), dtype=np.uint64)
+    if triggers.empty:
+        return mask
+    if len(bands) > 64:
+        raise ValueError(
+            f"{len(bands)} bands do not fit one integer; the ladder spans "
+            "sampling rate over window length and should not reach this")
+
+    row_of_band = {(round(lo, 9), round(hi, 9)): row
+                   for row, (lo, hi) in enumerate(bands)}
+    position = np.arange(len(triggers))
+    for (n_coeff, fs), group in triggers.groupby(["n_coeff", "fs"], sort=False):
+        f_lo, f_hi = coeff_freq_bands(int(n_coeff), float(fs))
+        row_of = np.array([row_of_band.get((round(lo, 9), round(hi, 9)), -1)
+                           for lo, hi in zip(f_lo, f_hi)])
+        bit_of = np.where(row_of >= 0,
+                          np.left_shift(np.uint64(1), np.maximum(row_of, 0)
+                                        .astype(np.uint64)),
+                          np.uint64(0))
+        where = position[triggers.index.get_indexer(group.index)]
+        for slot, index in zip(where, group["wt_index"]):
+            mask[slot] = np.bitwise_or.reduce(
+                bit_of[np.asarray(index, dtype=int)], initial=np.uint64(0))
+    return mask
+
+
+def _bands_touch(left: np.ndarray, right: np.ndarray, adjacency: int) -> np.ndarray:
+    """Whether two band sets share a row, or sit within `adjacency` of one."""
+    spread = right.copy()
+    for shift in range(1, int(adjacency) + 1):
+        spread |= np.left_shift(right, np.uint64(shift))
+        spread |= np.right_shift(right, np.uint64(shift))
+    return (left & spread) != np.uint64(0)
 
 
 class DetectorGraph:
@@ -230,13 +281,11 @@ def build_detector_graph(triggers: pd.DataFrame,
     end = start + span
     f_lo = nodes["freqMin"].to_numpy(dtype=float)
     f_hi = nodes["freqMax"].to_numpy(dtype=float)
-    band = np.log2(np.maximum(
-        nodes["freqMean"].to_numpy(dtype=float) if "freqMean" in nodes
-        else np.sqrt(np.maximum(f_lo, EPS) * f_hi), EPS))
     energy = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
     log_energy = np.log(energy)
 
     bands = band_grid(scale, float(fs[0]))
+    occupied = occupied_bands(nodes, bands)
     wavegrams = trigger_wavegrams(nodes, bands, config.wavegram_time_bins)
     norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
     norms[norms == 0.0] = 1.0
@@ -258,13 +307,15 @@ def build_detector_graph(triggers: pd.DataFrame,
         narrower = np.maximum(np.minimum(f_hi[left] - f_lo[left],
                                          f_hi[right] - f_lo[right]), EPS)
         overlap = np.clip(shared / narrower, 0.0, 1.0)
-        # Close in time, sharing a band, the band continuing rather than
-        # jumping, and the energy continuing too. Band overlap alone admits a
-        # broadband transient against everything it happens to sit on.
+        # Continuity, which is what this level asks: close in time, energy in a
+        # band finding energy in that band or one beside it in the other
+        # trigger, and the coefficient energy continuing. Overlap of the
+        # supports would admit a broadband transient against everything it
+        # happens to sit on, its energy being nowhere near.
         join = (
             (gap <= allowed)
             & (overlap >= config.minimum_frequency_overlap)
-            & (np.abs(band[left] - band[right]) <= config.maximum_band_step)
+            & _bands_touch(occupied[left], occupied[right], config.band_adjacency)
             & (np.abs(log_energy[left] - log_energy[right])
                <= config.maximum_log_energy_jump)
         )
@@ -569,7 +620,11 @@ def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
         stride[here] = float(np.median(spacing)) if spacing.size else length / fs[here][0]
     share = np.clip(stride / (scale / fs), 0.0, 1.0)
 
+    # A window's step region is what it contributes without repeating what a
+    # neighbour carried; a window with no neighbour repeats nothing, so an event
+    # is never quieter than its loudest single window.
     best = np.zeros(n_events)
+    np.maximum.at(best, labels, nodes["EnWDF"].to_numpy(dtype=float))
     frame = pd.DataFrame(dict(label=labels, scale=scale, energy=energy * share,
                               sigma=sigma))
     for (label, _), group in frame.groupby(["label", "scale"], sort=False):

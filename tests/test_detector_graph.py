@@ -7,6 +7,7 @@ from wdf.analysis.detector_graph import (
     band_grid,
     build_detector_graph,
     detector_events,
+    occupied_bands,
     trigger_wavegrams,
 )
 
@@ -33,6 +34,22 @@ def _triggers(scales, n, seed=0, gps0=1000.0, ifo="H1"):
                 wt_value=rng.normal(size=n_nonzero).astype(np.float32),
                 ifo=ifo))
     return pd.DataFrame(rows)
+
+
+def _fixed_coefficients(triggers, index):
+    """Give every trigger the same surviving coefficients."""
+    triggers = triggers.copy()
+    triggers["wt_index"] = [np.asarray(index, dtype=np.uint16)] * len(triggers)
+    triggers["wt_value"] = [np.full(len(index), 5.0, dtype=np.float32)] * len(triggers)
+    return triggers
+
+
+def _walking_coefficients(triggers, indices):
+    """One surviving coefficient per trigger, at the index given."""
+    triggers = triggers.copy()
+    triggers["wt_index"] = [np.array([k], dtype=np.uint16) for k in indices]
+    triggers["wt_value"] = [np.array([5.0], dtype=np.float32) for _ in indices]
+    return triggers
 
 
 def test_the_band_ladder_is_shared_between_window_lengths():
@@ -169,41 +186,51 @@ def test_the_wavegram_is_on_the_noise_scale():
     assert np.isfinite(np.log1p(grids)).all()
 
 
-def test_a_broadband_trigger_does_not_join_everything_it_sits_on():
-    """Band overlap alone admits a transient covering the whole plane against
-    every narrow one beneath it. The band has to continue, not merely touch."""
-    narrow = _triggers([512], 6)
-    narrow = narrow.assign(freqMin=100.0, freqMax=200.0, freqMean=140.0)
-    broad = _triggers([512], 6, seed=3).assign(
-        freqMin=20.0, freqMax=1000.0, freqMean=800.0)
-    both = pd.concat([narrow, broad], ignore_index=True)
+def test_a_trigger_joins_only_where_it_has_energy():
+    """The support of a broadband transient covers everything beneath it. The
+    bands it occupies are where its energy is, and only those connect."""
+    import numpy as np
 
-    loose = build_detector_graph(both, config=DetectorGraphConfig(
-        maximum_band_step=99.0, maximum_log_energy_jump=99.0))
-    tight = build_detector_graph(both, config=DetectorGraphConfig(
-        maximum_band_step=1.0, maximum_log_energy_jump=99.0))
+    low = _fixed_coefficients(_triggers([512], 6), [9, 10])
+    high = _fixed_coefficients(_triggers([512], 6, seed=3), [400, 401])
+    both = pd.concat([low, high], ignore_index=True)
 
-    def crossing(graph):
-        table = graph.edge_table()
-        if not len(table):
-            return 0
-        mean = graph.nodes["freqMean"].to_numpy()
-        return int((mean[table.node_i.to_numpy()] != mean[table.node_j.to_numpy()]).sum())
+    bands = band_grid([512], FS)
+    masks = occupied_bands(both, bands)
+    assert (masks[:6] & masks[6:]).sum() == 0, "the fixture must not share a band"
 
-    assert crossing(loose) > 0
-    assert crossing(tight) == 0
+    graph = build_detector_graph(both, config=DetectorGraphConfig(band_adjacency=1))
+    table = graph.edge_table()
+    if len(table):
+        # The graph sorts its nodes in time, so the two populations are told
+        # apart by the bands they occupy rather than by their row.
+        node_mask = occupied_bands(graph.nodes, bands)
+        crossing = (node_mask[table.node_i.to_numpy()]
+                    != node_mask[table.node_j.to_numpy()])
+        assert not crossing.any()
+
+
+def test_energy_in_a_band_connects_to_the_band_beside_it():
+    """A transient that sweeps moves between neighbouring bands, so touching
+    means adjacent as well as shared."""
+    import numpy as np
+
+    triggers = _triggers([512], 8)
+    triggers = _walking_coefficients(triggers, [2 ** (7 + k % 2)
+                                                for k in range(len(triggers))])
+
+    apart = build_detector_graph(triggers, config=DetectorGraphConfig(band_adjacency=0))
+    touching = build_detector_graph(triggers, config=DetectorGraphConfig(band_adjacency=1))
+    assert len(touching.edges) > len(apart.edges)
 
 
 def test_a_sweeping_transient_is_not_broken_by_the_continuity_test():
-    """A chirp moves its band from one window to the next, so the test asks the
-    step to be small rather than the two to look alike."""
+    """A chirp climbs one band at a time, and the test asks the bands to touch
+    rather than the two wavegrams to look alike."""
     import numpy as np
-    sweeping = _triggers([512], 12)
-    sweeping = sweeping.assign(
-        freqMean=60.0 * 2.0 ** (np.arange(len(sweeping)) / 8.0),
-        freqMin=40.0, freqMax=900.0)
 
-    graph = build_detector_graph(sweeping, config=DetectorGraphConfig(
-        maximum_band_step=1.0, maximum_log_energy_jump=99.0))
+    sweeping = _walking_coefficients(_triggers([512], 10),
+                                     [2 ** (4 + k // 3) for k in range(10)])
+    graph = build_detector_graph(sweeping, config=DetectorGraphConfig(band_adjacency=1))
     labels = graph.components()
     assert labels.max() + 1 < len(sweeping) / 2
