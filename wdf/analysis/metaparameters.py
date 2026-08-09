@@ -22,13 +22,45 @@ from wdf.analysis.wavelets import (
 )
 
 META_FEATURES = [
-    "gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
-    "snrPeak", "freqMin", "freqMean", "freqMax",
+    "gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration", "duration90",
+    "snrPeak", "freqMin", "freqMean", "freqMax", "freqQ05", "freqQ95",
 ]
 
 
 def _empty() -> dict:
     return {name: float("nan") for name in META_FEATURES}
+
+
+def _energy_quantile(lo, hi, energy, quantiles):
+    """Quantiles of energy spread uniformly over a set of intervals.
+
+    Each tile holds its energy over its own extent rather than at a point, so
+    the mixture is piecewise uniform and its quantiles are read by inverting the
+    cumulative distribution. Hard support bounds are the extremes of the same
+    distribution, and one marginal coefficient moves them arbitrarily far; these
+    do not move until the energy does.
+
+    :param lo: lower edge of each interval.
+    :param hi: upper edge of each interval.
+    :param energy: energy carried by each interval.
+    :param quantiles: the quantiles wanted, between 0 and 1.
+    :return: numpy.ndarray -- one value per requested quantile.
+    """
+    order = np.argsort(lo, kind="mergesort")
+    lo, hi, energy = lo[order], hi[order], energy[order]
+    total = energy.sum()
+    if total <= 0.0:
+        return np.full(len(quantiles), np.nan)
+
+    edges = np.concatenate(([0.0], np.cumsum(energy) / total))
+    out = np.empty(len(quantiles))
+    for slot, q in enumerate(quantiles):
+        k = min(int(np.searchsorted(edges, q, side="right")) - 1, len(lo) - 1)
+        k = max(k, 0)
+        width = edges[k + 1] - edges[k]
+        within = (q - edges[k]) / width if width > 0 else 0.0
+        out[slot] = lo[k] + within * (hi[k] - lo[k])
+    return out
 
 
 def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
@@ -82,6 +114,13 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     frequency = np.maximum(frequency, np.finfo(float).tiny)
 
     start = float(t_lo.min())
+    # The support is what a marginal coefficient can stretch without carrying
+    # energy; these follow the energy instead. The frequency quantiles are taken
+    # in log frequency, the coordinate the dyadic tiling is uniform in.
+    t05, t95 = _energy_quantile(t_lo, t_hi, energy, (0.05, 0.95))
+    logf05, logf95 = _energy_quantile(
+        np.log(np.maximum(f_lo, np.finfo(float).tiny)), np.log(f_hi), energy,
+        (0.05, 0.95))
     return dict(
         gpsStart=gps + start,
         gpsCentroid=gps + centroid,
@@ -89,7 +128,10 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
         gpsPeak=gps + float(t_mid[loudest]),
         duration=float(t_hi.max()) - start,
         snrPeak=float(magnitude[loudest] / sigma) if sigma > 0 else float("nan"),
+        duration90=float(t95 - t05),
         freqMin=float(f_lo.min()),
         freqMean=float(np.exp(float(energy @ np.log(frequency)) / total)),
         freqMax=float(f_hi.max()),
+        freqQ05=float(np.exp(logf05)),
+        freqQ95=float(np.exp(logf95)),
     )

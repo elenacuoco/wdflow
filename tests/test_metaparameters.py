@@ -198,3 +198,43 @@ def test_a_wider_tile_gives_a_wider_spread_at_the_same_place():
     wide = meta_features(np.array([2]), np.array([5.0]), 512, 2048.0, sigma=1.0)
     narrow = meta_features(np.array([300]), np.array([5.0]), 512, 2048.0, sigma=1.0)
     assert wide["tSpread"] > narrow["tSpread"]
+
+
+def test_one_marginal_tile_stretches_the_support_but_not_the_quantiles():
+    """A coefficient carrying almost no energy moves freqMin, freqMax and the
+    span arbitrarily far. The quantiles follow the energy instead, which is what
+    the band-overlap and timing tests should be reading."""
+    import numpy as np
+    from wdf.analysis.metaparameters import meta_features
+
+    loud_and_marginal = meta_features(
+        np.array([300, 3]), np.array([10.0, 0.05]), 512, 2048.0, sigma=1.0)
+    loud_alone = meta_features(np.array([300]), np.array([10.0]), 512, 2048.0, sigma=1.0)
+
+    assert loud_and_marginal["freqMin"] < 0.1 * loud_alone["freqMin"]
+    assert loud_and_marginal["duration"] > 100 * loud_and_marginal["duration90"]
+
+    assert loud_and_marginal["freqQ05"] > loud_alone["freqMin"] * 0.5
+    assert loud_and_marginal["freqQ95"] <= loud_alone["freqMax"]
+
+
+def test_the_quantiles_bracket_the_energy_weighted_frequency():
+    import numpy as np
+    from wdf.analysis.metaparameters import meta_features
+
+    features = meta_features(np.array([70, 140, 300]), np.array([4.0, 6.0, 5.0]),
+                             512, 2048.0, sigma=1.0)
+    assert features["freqQ05"] <= features["freqMean"] <= features["freqQ95"]
+    assert features["freqMin"] <= features["freqQ05"]
+    assert features["freqQ95"] <= features["freqMax"]
+    assert 0.0 <= features["duration90"] <= features["duration"]
+
+
+def test_a_single_tile_has_quantiles_inside_its_own_extent():
+    import numpy as np
+    from wdf.analysis.metaparameters import meta_features
+    from wdf.analysis.wavelets import coeff_freq_bands
+
+    features = meta_features(np.array([70]), np.array([3.0]), 512, 2048.0, sigma=1.0)
+    f_lo, f_hi = coeff_freq_bands(512, 2048.0)
+    assert f_lo[70] <= features["freqQ05"] <= features["freqQ95"] <= f_hi[70]

@@ -23,12 +23,16 @@ class eventPE:
     :param tSpread: spread of the energy in time about the centroid, seconds.
     :param gpsPeak: centre of the tile carrying the largest coefficient.
     :param duration: extent of the surviving tiles, seconds.
+    :param duration90: interval holding the central 90 per cent of the energy,
+        seconds; unlike `duration` one marginal tile cannot stretch it.
     :param EnWDF: the search's statistic for this window.
     :param sigma: noise scale the search measured on this window.
     :param snrPeak: largest coefficient on the noise scale.
     :param freqMin: lower edge of the surviving tiles, Hz.
     :param freqMean: energy-weighted frequency of the surviving tiles, Hz.
     :param freqMax: upper edge of the surviving tiles, Hz.
+    :param freqQ05: frequency below which 5 per cent of the energy lies, Hz.
+    :param freqQ95: frequency below which 95 per cent of the energy lies, Hz.
     :param wave: name of the basis that produced the coefficients.
     :param n_coeff: length of the window's coefficient vector.
     :param fs: sampling frequency the coefficients were computed at, Hz.
@@ -42,12 +46,15 @@ class eventPE:
     tSpread: float
     gpsPeak: float
     duration: float
+    duration90: float
     EnWDF: float
     sigma: float
     snrPeak: float
     freqMin: float
     freqMean: float
     freqMax: float
+    freqQ05: float
+    freqQ95: float
     wave: str
     n_coeff: int
     fs: float
@@ -66,12 +73,15 @@ class eventPE:
             tSpread=float(self.tSpread),
             gpsPeak=float(self.gpsPeak),
             duration=float(self.duration),
+            duration90=float(self.duration90),
             EnWDF=float(self.EnWDF),
             sigma=float(self.sigma),
             snrPeak=float(self.snrPeak),
             freqMin=float(self.freqMin),
             freqMean=float(self.freqMean),
             freqMax=float(self.freqMax),
+            freqQ05=float(self.freqQ05),
+            freqQ95=float(self.freqQ95),
             wave=str(self.wave),
             n_coeff=int(self.n_coeff),
             fs=float(self.fs),

@@ -30,8 +30,8 @@ MAX_COEFF = 1 << 16
 TIME_FIELDS = ["gps", "gpsStart", "gpsCentroid", "gpsPeak"]
 
 MEASUREMENT_FIELDS = [
-    "tSpread", "duration", "EnWDF", "sigma", "snrPeak",
-    "freqMin", "freqMean", "freqMax",
+    "tSpread", "duration", "duration90", "EnWDF", "sigma", "snrPeak",
+    "freqMin", "freqMean", "freqMax", "freqQ05", "freqQ95",
 ]
 
 META_FIELDS = TIME_FIELDS + MEASUREMENT_FIELDS
