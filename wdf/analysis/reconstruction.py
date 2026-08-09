@@ -19,6 +19,8 @@ now over the signal's whole extent rather than over one window.
 from __future__ import annotations
 
 import numpy as np
+
+from wdf.analysis.coefficients import to_dense
 import pandas as pd
 
 
@@ -155,3 +157,52 @@ def reconstruct_clusters(triggers, fs, window, overlap, cluster_column="cluster_
         rows.append(summary)
 
     return pd.DataFrame(rows).sort_values("gps").reset_index(drop=True)
+
+
+def spectral_centroid(triggers) -> np.ndarray:
+    """Each trigger's energy-weighted frequency, from its reconstruction.
+
+    The tile moment cannot resolve inside an octave, because every tile of one
+    octave carries the same band; a trigger whose surviving coefficients all
+    fall in one octave therefore reports that band's centre, and a fifth of
+    triggers do. The reconstruction is not a set of tiles but a time series, and
+    its spectrum is not tied to the dyadic ladder: two basis functions of the
+    same octave at different times interfere, and the interference depends on
+    their spacing, which is exactly the continuous information the tile moment
+    discards.
+
+    Only a trigger keeping a single coefficient stays quantised, since one
+    coefficient reconstructs to one basis function with a fixed spectrum. About
+    one trigger in a hundred is in that state.
+
+    This is an analysis quantity and is deliberately not computed in the search:
+    it costs an inverse transform and a Fourier transform per trigger, and the
+    front end has to stream in real time. `freqMin` and `freqMax` remain the
+    tile support, which is what the band-overlap tests want.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers carrying `n_coeff`, `fs`, `wave` and the
+        coefficient columns.
+    :return: numpy.ndarray -- the centroid in Hz, `nan` where undefined.
+    """
+    import pandas as pd
+
+    out = np.full(len(triggers), np.nan)
+    if not len(triggers):
+        return out
+
+    position = {label: slot for slot, label in enumerate(triggers.index)}
+    for (n_coeff, fs, wave), group in triggers.groupby(["n_coeff", "fs", "wave"],
+                                                       sort=False):
+        n_coeff, fs = int(n_coeff), float(fs)
+        frequency = np.fft.rfftfreq(n_coeff, 1.0 / fs)
+        for label, row in group.iterrows():
+            dense = to_dense(np.asarray(row["wt_index"]), np.asarray(row["wt_value"]),
+                             n_coeff)
+            power = np.abs(np.fft.rfft(inverse_transform(dense, str(wave)))) ** 2
+            # The mean carries no frequency and would drag the moment to zero.
+            power[0] = 0.0
+            total = power.sum()
+            if total > 0.0:
+                out[position[label]] = float((power * frequency).sum() / total)
+    return out

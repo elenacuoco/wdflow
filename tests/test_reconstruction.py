@@ -83,3 +83,45 @@ def test_wavegram_events_score_a_multi_window_signal_on_its_reconstruction():
     assert loudest.EnWDF > loudest.loudest_window
     assert loudest.windows > 1
     assert loudest.freqMin <= loudest.freqMean <= loudest.freqMax
+
+
+def test_the_reconstruction_centroid_recovers_a_known_frequency():
+    import numpy as np
+    from _synth import triggers_from_signal
+    from wdf.analysis.reconstruction import spectral_centroid
+
+    fs = 2048.0
+    t = np.arange(int(2 * fs)) / fs
+    signal = np.sin(2 * np.pi * 180.0 * t) * np.exp(-((t - 1.0) / 0.02) ** 2)
+    centroid = spectral_centroid(triggers_from_signal(signal, fs, 512, 128))
+    assert np.nanmedian(centroid) == pytest.approx(180.0, rel=0.05)
+
+
+def test_the_reconstruction_centroid_escapes_the_octave_ladder():
+    """The tile moment cannot resolve inside an octave; the reconstruction is a
+    time series and its spectrum is not tied to the ladder."""
+    import numpy as np
+    from _synth import triggers_from_signal
+    from wdf.analysis.reconstruction import spectral_centroid
+    from wdf.analysis.wavelets import coeff_freq_bands, tile_frequency
+
+    fs = 2048.0
+    t = np.arange(int(4 * fs)) / fs
+    rng = np.random.default_rng(0)
+    triggers = triggers_from_signal(rng.normal(size=len(t)), fs, 512, 128)
+    centroid = spectral_centroid(triggers)
+    finite = centroid[np.isfinite(centroid)]
+    assert finite.size
+
+    f_lo, f_hi = coeff_freq_bands(512, fs)
+    ladder = {round(tile_frequency(a, b), 6) for a, b in zip(f_lo, f_hi)}
+    on_ladder = sum(1 for v in finite if round(float(v), 6) in ladder)
+    assert on_ladder < 0.2 * finite.size
+
+
+def test_an_empty_frame_has_no_centroid():
+    import pandas as pd
+    from wdf.analysis.reconstruction import spectral_centroid
+
+    assert spectral_centroid(
+        pd.DataFrame(columns=["n_coeff", "fs", "wave", "wt_index", "wt_value"])).size == 0
