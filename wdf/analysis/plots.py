@@ -59,11 +59,19 @@ def plot_trigger_tiles(ax, triggers, fs, t0=0.0, sigma=None, cmap="viridis"):
 
 
 def plot_glitchgram(ax, triggers, statistic="EnWDF", frequency="freqMean",
-                    t0=None, cmap="viridis", colorbar=True):
+                    t0=None, cmap="viridis", colorbar=True, band=False):
     """Time against frequency, coloured by the statistic.
 
-    The frequency is `freqMean`, the energy-weighted moment over every
-    surviving tile, which is the only continuous frequency the transform gives.
+    The frequency is `freqMean`, the energy-weighted moment over every surviving
+    tile. It is continuous only where a trigger's coefficients span more than one
+    octave: within an octave every tile has the same band, so the moment collapses
+    onto that band's centre and a fifth of triggers land on a handful of values.
+    That is the transform's resolution and not an artefact of the estimator --
+    a sub-octave number would be resolution the data does not carry.
+
+    `band` draws each trigger's own `[freqMin, freqMax]` behind the point, which
+    is what the trigger actually determines, so the octave-limited ones read as
+    bands rather than as lines.
 
     :type ax: matplotlib.axes.Axes
     :param ax: axes to draw on.
@@ -80,6 +88,8 @@ def plot_glitchgram(ax, triggers, statistic="EnWDF", frequency="freqMean",
     :param cmap: colormap for the statistic.
     :type colorbar: bool
     :param colorbar: draw a colorbar beside the axes.
+    :type band: bool
+    :param band: draw each trigger's `[freqMin, freqMax]` extent behind its point.
     :return: matplotlib.axes.Axes
     """
     from matplotlib.colors import LogNorm
@@ -89,6 +99,11 @@ def plot_glitchgram(ax, triggers, statistic="EnWDF", frequency="freqMean",
     t0 = float(np.nanmin(time)) if t0 is None else float(t0)
     value = pd.to_numeric(triggers[statistic], errors="coerce").to_numpy()
     positive = value[np.isfinite(value) & (value > 0)]
+
+    if band and {"freqMin", "freqMax"} <= set(triggers.columns):
+        low = pd.to_numeric(triggers["freqMin"], errors="coerce").to_numpy()
+        high = pd.to_numeric(triggers["freqMax"], errors="coerce").to_numpy()
+        ax.vlines(time - t0, low, high, color="0.6", lw=0.4, alpha=0.35, zorder=1)
 
     drawn = ax.scatter(
         time - t0, pd.to_numeric(triggers[frequency], errors="coerce").to_numpy(),
