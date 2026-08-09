@@ -103,17 +103,21 @@ class GraphCoincidenceFinder:
 
     :param builder: the graph builder.
     :param scorer: anything with `score(table_or_graph)`.
-    :param coefficients: ``{ifo: {cluster_id: ClusterCoefficients}}``.
+    :param coefficients: ``{ifo: {cluster_id: EventWavegram}}``, the assembly
+        map.
     :param on_graph: True when the scorer takes the graph itself (the learned
         scorer), False when it takes the candidate table (the baseline).
+    :param comparison: the same events rendered for the cross-detector
+        comparison; the assembly map when None.
     """
 
     def __init__(self, builder: TriggerGraphBuilder, scorer, coefficients,
-                 on_graph: bool = False):
+                 on_graph: bool = False, comparison=None):
         self.builder = builder
         self.scorer = scorer
         self.coefficients = coefficients
         self.on_graph = on_graph
+        self.comparison = comparison
 
     def find(self, events_by_ifo: dict) -> pd.DataFrame:
         """Score every physically admissible candidate of these events.
@@ -127,8 +131,13 @@ class GraphCoincidenceFinder:
         graph = self.builder.build(
             events_by_ifo,
             {ifo: self.coefficients[ifo] for ifo in events_by_ifo},
+            comparison=None if self.comparison is None else
+            {ifo: self.comparison[ifo] for ifo in events_by_ifo},
         )
         if not len(graph.cross_edges):
-            return pd.DataFrame()
+            # The empty table, with its columns. A DataFrame with no rows and no
+            # columns reports a missing background as a missing statistic, which
+            # sends the reader looking for the wrong fault.
+            return graph.candidate_table()
         return (self.scorer.score(graph) if self.on_graph
                 else self.scorer.score(graph.candidate_table()))
