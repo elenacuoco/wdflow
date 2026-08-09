@@ -270,3 +270,20 @@ def test_quantiles_of_nothing_are_undefined():
     assert np.isnan(energy_quantile(np.zeros(0), np.zeros(0), np.zeros(0), (0.5,))).all()
     assert np.isnan(energy_quantile(np.array([1.0]), np.array([2.0]),
                                     np.array([0.0]), (0.5,))).all()
+
+
+def test_the_peak_tile_is_never_louder_than_the_whole_window():
+    """snrPeak is one coefficient on the noise scale and EnWDF is the norm of
+    all of them, so the first cannot exceed the second."""
+    import numpy as np
+    from wdf.analysis.metaparameters import meta_features
+
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        k = int(rng.integers(1, 12))
+        index = np.sort(rng.choice(np.arange(1, 512), k, replace=False))
+        value = rng.normal(scale=8.0, size=k)
+        sigma = float(rng.uniform(0.5, 2.0))
+        features = meta_features(index, value, 512, 2048.0, sigma)
+        enwdf = float(np.linalg.norm(value) / sigma)
+        assert features["snrPeak"] <= enwdf + 1e-9
