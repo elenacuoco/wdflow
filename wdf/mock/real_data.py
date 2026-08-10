@@ -39,14 +39,18 @@ def measured_psd(strain, sample_rate, segment_s=8.0):
     :param sample_rate: samples per second.
     :type segment_s: float
     :param segment_s: length of the averaging segment, seconds.
-    :return: tuple -- (frequency, density), both numpy arrays.
+    :return: pycbc.types.FrequencySeries -- the density, on the frequency
+        spacing the averaging segment implies. A series and not a pair of
+        arrays: what consumes it interpolates onto the spacing a waveform
+        needs, and an interpolation needs to know its own frequency step.
     """
+    from pycbc.types import FrequencySeries
     from scipy.signal import welch
 
     nperseg = int(round(segment_s * float(sample_rate)))
     frequency, density = welch(np.asarray(strain, dtype=float),
                                fs=float(sample_rate), nperseg=nperseg)
-    return frequency, density
+    return FrequencySeries(density, delta_f=float(frequency[1] - frequency[0]))
 
 
 def read_strain(frames, channels, start_gps, duration):

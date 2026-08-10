@@ -582,6 +582,10 @@ def _inject_one(
         detectors,
     )
 
+    # Against the spectrum of the detector the signal is being projected onto,
+    # measured when one is given: the amplitude of an injection is only
+    # meaningful against the noise it has to be seen through, and on recorded
+    # data that is neither the design curve nor the same in the two detectors.
     unscaled_snrs = {
         ifo: optimal_snr(
             samples,
@@ -589,6 +593,7 @@ def _inject_one(
             low_frequency_cutoff=low_frequency_cutoff,
             high_frequency_cutoff=high_frequency_cutoff,
             psd_name=psd_name,
+            psd=None if psd is None else psd.get(ifo),
         )
         for ifo, (samples, _) in projected.items()
     }
@@ -616,6 +621,7 @@ def _inject_one(
             low_frequency_cutoff=low_frequency_cutoff,
             high_frequency_cutoff=high_frequency_cutoff,
             psd_name=psd_name,
+            psd=None if psd is None else psd.get(ifo),
         )
 
         row[f"snr_{ifo}"] = achieved_snr
