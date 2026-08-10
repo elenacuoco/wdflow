@@ -5,22 +5,13 @@ pipeline for transient time-series signals, built on the C++ core
 [p4TSA](https://github.com/elenacuoco/p4TSA) (exposed to Python as `pytsa`), plus the downstream
 trigger analysis that turns raw per-window triggers into candidate events.
 
-**It is built to run in real time**, which is not the same as being causal. The
-whitening is zero phase, and a zero-phase response has a symmetric impulse
-response, so it reads a fixed number of samples ahead. What matters is that the
-number is fixed, finite and known before the filter runs: the look-ahead is
-exactly the order of the square-root filter, and that order divided by the
-sampling rate is the latency of the whole chain. Nothing else looks ahead at
-all -- the noise model is updated as the data arrives, and triggers are grouped
-into events and events into candidates as the data advances rather than once a
-segment is complete.
-The per-window arithmetic is a fixed sequence of multiply-accumulate steps --
-an autoregressive filter of known order, an orthonormal transform of a
-power-of-two window, a threshold and a sum of squares -- with no iteration to
-convergence, no dynamic memory and no data-dependent branching, so the chain is
-implementable on an FPGA and, in that form, able to produce candidates inside
-the latency budget of a low-latency alert. The implementation here is in
-software; the design is taken so as not to preclude the other.
+**It runs in real time**, at a latency that is fixed and known before the filter
+runs, and its per-window arithmetic -- an autoregressive filter of known order,
+an orthonormal transform of a power-of-two window, a threshold and a sum of
+squares, with no iteration to convergence, no dynamic memory and no
+data-dependent branching -- is simple enough to put on an FPGA. No template and
+no signal model: every trigger carries the coefficients that produced it, so
+what a transient is can be decided afterwards.
 
 ## Layout
 
