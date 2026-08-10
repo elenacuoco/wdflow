@@ -102,22 +102,58 @@ class BackgroundAnomalyScorer(nn.Module):
             raise ValueError("no accidental coincidences to fit on; the slides "
                              "produced no candidate edges")
 
-        nodes = torch.cat([d.x for d in data]).to(self.device)
-        self.feature_mean.copy_(nodes.mean(dim=0))
-        self.feature_scale.copy_(nodes.std(dim=0).clamp_min(1e-6))
-        edges = torch.cat([d.cross_edge_attr for d in data]).to(self.device)
-        self.edge_mean.copy_(edges.mean(dim=0))
-        self.edge_scale.copy_(edges.std(dim=0).clamp_min(1e-6))
+        # Accumulated over the graphs rather than concatenated across them. The
+        # node features of a slid graph are the same array as the unslid one's
+        # --- a time shift changes which events pair, not the events --- so a
+        # concatenation is one copy per slide of a matrix that can be gigabytes,
+        # and it is allocated only to be reduced to a mean and a deviation.
+        def standardise(mean_buffer, scale_buffer, pick):
+            total = None
+            squares = None
+            count = 0
+            for one in data:
+                values = pick(one).to(dtype=torch.float64)
+                if not values.numel():
+                    continue
+                summed = values.sum(dim=0)
+                total = summed if total is None else total + summed
+                squared = (values * values).sum(dim=0)
+                squares = squared if squares is None else squares + squared
+                count += values.shape[0]
+            if not count:
+                return
+            mean = total / count
+            variance = torch.clamp(squares / count - mean * mean, min=0.0)
+            mean_buffer.copy_(mean.to(mean_buffer.dtype))
+            scale_buffer.copy_(variance.sqrt().clamp_min(1e-6).to(
+                scale_buffer.dtype))
+
+        standardise(self.feature_mean, self.feature_scale, lambda d: d.x)
+        standardise(self.edge_mean, self.edge_scale, lambda d: d.cross_edge_attr)
+
+        # The gradient is accumulated one graph at a time. Computing every
+        # graph's residuals before the backward pass keeps every graph's
+        # activations alive at once, which for a set of slides over a long
+        # segment is gigabytes; taking the backward pass per graph holds one.
+        # The sum of the per-graph losses weighted by their edge counts is the
+        # loss over all the edges, so the two agree.
+        edges = [int(d.cross_edge_attr.shape[0]) for d in data]
+        total_edges = float(sum(edges)) or 1.0
 
         optimiser = torch.optim.Adam(self.parameters(), lr=lr)
         history = []
         self.train()
         for _ in range(int(epochs)):
             optimiser.zero_grad()
-            loss = torch.cat([self._residuals(d) for d in data]).mean()
-            loss.backward()
+            epoch_loss = 0.0
+            for one, count in zip(data, edges):
+                if not count:
+                    continue
+                loss = self._residuals(one).sum() / total_edges
+                loss.backward()
+                epoch_loss += float(loss.detach().cpu())
             optimiser.step()
-            history.append(float(loss.detach().cpu()))
+            history.append(epoch_loss)
         return history
 
     @torch.no_grad()
