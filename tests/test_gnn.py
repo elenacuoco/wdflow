@@ -219,9 +219,14 @@ def test_scorer_device_selection():
 
     default_model = GNNCoincidenceScorer(node_dim=graph.node_features.shape[1], hidden=4, seed=0,
                                      cross_edge_dim=graph.cross_edge_features.shape[1])
-    expected = "cuda" if torch.cuda.is_available() else "cpu"
-    assert default_model.device == expected
-    assert next(default_model.parameters()).device.type == expected
+    # Not "cuda whenever torch says one exists": a device that is present but
+    # full or mismatched is not usable, and the choice falls back rather than
+    # failing the run. What has to hold is that the model and its parameters
+    # agree on where they are.
+    from wdf.analysis.gnn import usable_device
+
+    assert default_model.device == usable_device()
+    assert next(default_model.parameters()).device.type == usable_device()
 
     cpu_model = GNNCoincidenceScorer(node_dim=graph.node_features.shape[1], hidden=4, seed=0, device="cpu",
                                  cross_edge_dim=graph.cross_edge_features.shape[1])
