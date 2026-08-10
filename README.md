@@ -5,6 +5,18 @@ pipeline for transient time-series signals, built on the C++ core
 [p4TSA](https://github.com/elenacuoco/p4TSA) (exposed to Python as `pytsa`), plus the downstream
 trigger analysis that turns raw per-window triggers into candidate events.
 
+**It is built to run in real time.** Every stage is causal and works on a
+stream: the noise model is updated as the data arrives, the whitening filter has
+a fixed and known look-ahead, and triggers are grouped into events and events
+into candidates as the data advances rather than once a segment is complete.
+The per-window arithmetic is a fixed sequence of multiply-accumulate steps --
+an autoregressive filter of known order, an orthonormal transform of a
+power-of-two window, a threshold and a sum of squares -- with no iteration to
+convergence, no dynamic memory and no data-dependent branching, so the chain is
+implementable on an FPGA and, in that form, able to produce candidates inside
+the latency budget of a low-latency alert. The implementation here is in
+software; the design is taken so as not to preclude the other.
+
 ## Layout
 
 - `wdf.config`, `wdf.processes`, `wdf.observers`, `wdf.structures` -- trigger generation. Needs
@@ -186,9 +198,12 @@ only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdf
 
 ## How to cite
 
-**Use of this code in published work requires citation of the following.** A
-further paper covering the calibration of the statistic and the parameter
-estimation is in preparation and will be added here.
+**Use of this code in published work requires citation of the following.**
+
+*This pipeline:*
+
+- E. Cuoco *et al.*, *A real-time un-modelled search for gravitational wave
+  transients in the wavelet domain*, in preparation.
 
 *The Wavelet Detection Filter:*
 
