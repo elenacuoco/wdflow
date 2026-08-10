@@ -79,6 +79,11 @@ class DetectorGraphConfig:
     band_adjacency: int = 1
     maximum_log_energy_jump: float = 3.0
     minimum_significance: float = 0.0
+    # Whether two windows must have been represented in the same basis to
+    # continue one another. Off by default: a transient whose character changes
+    # --- a chirp entering a different regime --- can legitimately be won by a
+    # different basis, and the band test already asks for continuity of energy.
+    same_basis: bool = False
     wavegram_time_bins: int = WAVEGRAM_TIME_BINS
 
 
@@ -338,6 +343,8 @@ def build_detector_graph(triggers: pd.DataFrame,
 
     bands = band_grid(scale, float(fs[0]))
     occupied = occupied_bands(nodes, bands)
+    basis = (nodes["wave"].to_numpy().astype(str) if "wave" in nodes
+             else np.zeros(len(nodes), dtype=int))
     wavegrams = trigger_wavegrams(nodes, bands, config.wavegram_time_bins)
     norms = np.linalg.norm(wavegrams, axis=1, keepdims=True)
     norms[norms == 0.0] = 1.0
@@ -373,6 +380,13 @@ def build_detector_graph(triggers: pd.DataFrame,
             & (np.abs(log_energy[left] - log_energy[right])
                <= config.maximum_log_energy_jump)
         )
+        if config.same_basis:
+            # The basis that represented a window most compactly is a statement
+            # about the shape in it. One transient does not change shape from
+            # one window to the next, so two windows the competition assigned to
+            # different bases are, by the competition's own verdict, two
+            # different shapes.
+            join &= basis[left] == basis[right]
         if not join.any():
             continue
         i, j = left[join], right[join]
@@ -396,6 +410,52 @@ def build_detector_graph(triggers: pd.DataFrame,
                              np.zeros((0, len(TRIGGER_EDGE_FEATURES))))
     return DetectorGraph(nodes, node_features, np.concatenate(edges),
                          np.concatenate(features))
+
+
+def event_tiles(nodes, members):
+    """Every surviving coefficient of an event, as tiles in absolute time.
+
+    The event's parameters are properties of the coefficients it kept, so they
+    are computed from those coefficients placed on the plane --- not from the
+    per-window summaries averaged together, which describe each window's own
+    view of a transient that spans several.
+
+    :type nodes: pandas.DataFrame
+    :param nodes: the detector's triggers.
+    :param members: row positions of the event's members.
+    :return: tuple -- (t_lo, t_hi, f_lo, f_hi, energy), all numpy arrays over
+        the union of the members' surviving coefficients.
+    """
+    geometry = {}
+    t_lo, t_hi, f_lo, f_hi, energy = [], [], [], [], []
+    gps = nodes["gps"].to_numpy(dtype=float)
+    scale = nodes["n_coeff"].to_numpy(dtype=int)
+    rate = nodes["fs"].to_numpy(dtype=float)
+    sigma = nodes["sigma"].to_numpy(dtype=float)
+    index_of = nodes["wt_index"].to_numpy()
+    value_of = nodes["wt_value"].to_numpy()
+
+    for row in members:
+        n = int(scale[row])
+        if n not in geometry:
+            geometry[n] = (coeff_time_bounds(n, float(rate[row])),
+                           coeff_freq_bands(n, float(rate[row])))
+        (lo, hi), (flo, fhi) = geometry[n]
+        index = np.asarray(index_of[row], dtype=int)
+        if not index.size:
+            continue
+        scaled = np.abs(np.asarray(value_of[row], dtype=float))
+        noise = sigma[row] if np.isfinite(sigma[row]) and sigma[row] > 0 else 1.0
+        t_lo.append(gps[row] + lo[index])
+        t_hi.append(gps[row] + hi[index])
+        f_lo.append(flo[index])
+        f_hi.append(fhi[index])
+        energy.append((scaled / noise) ** 2)
+
+    if not energy:
+        return (np.zeros(0),) * 5
+    return (np.concatenate(t_lo), np.concatenate(t_hi), np.concatenate(f_lo),
+            np.concatenate(f_hi), np.concatenate(energy))
 
 
 def detector_events(graph: DetectorGraph, significance=None,
@@ -526,24 +586,33 @@ def detector_events(graph: DetectorGraph, significance=None,
     # The energy quantiles invert a mixture per cluster, so they are computed
     # only where there is a mixture: a cluster of one member simply keeps its
     # own, which at these event rates is most of them.
+    # The quantities that follow the energy are measured on the event's own
+    # coefficients, gathered from every member and placed on the plane in
+    # absolute time. Averaging the members' summaries instead describes each
+    # window's view of a transient that spans several of them, which for a long
+    # event is a mixture of fragments and not the event.
     quantile_columns = ("duration90", "freqQ05", "freqQ95")
     for name in quantile_columns:
         events[name] = column(name, np.nan)[peak]
 
-    if set(quantile_columns) <= set(nodes.columns):
-        low, high = column("freqQ05", np.nan), column("freqQ95", np.nan)
-        member_start = column("gpsStart", np.nan)
-        member_span = column("duration90", 0.0)
+    if {"wt_index", "wt_value"} <= set(nodes.columns):
         for event in np.flatnonzero(sizes > 1):
             members = order[starts[event]:starts[event] + sizes[event]]
+            lo, hi, band_lo, band_hi, tile_energy = event_tiles(nodes, members)
+            if not tile_energy.size:
+                continue
             events.at[event, "duration90"] = float(np.diff(energy_quantile(
-                member_start[members], member_start[members] + member_span[members],
-                weight[members], (0.05, 0.95)))[0])
-            band = energy_quantile(np.log(np.maximum(low[members], EPS)),
-                                   np.log(np.maximum(high[members], EPS)),
-                                   weight[members], (0.05, 0.95))
+                lo, hi, tile_energy, (0.05, 0.95)))[0])
+            band = energy_quantile(np.log(np.maximum(band_lo, EPS)),
+                                   np.log(np.maximum(band_hi, EPS)),
+                                   tile_energy, (0.05, 0.95))
             events.at[event, "freqQ05"] = float(np.exp(band[0]))
             events.at[event, "freqQ95"] = float(np.exp(band[1]))
+            # The geometric moment over the same tiles, which is the frequency
+            # the event's energy sits at rather than the mean of the windows'.
+            centre = np.sqrt(np.maximum(band_lo, EPS) * np.maximum(band_hi, EPS))
+            events.at[event, "freqMean"] = float(np.exp(
+                (tile_energy @ np.log(centre)) / max(tile_energy.sum(), EPS)))
 
     return events[DETECTOR_EVENT_COLUMNS]
 
@@ -683,6 +752,54 @@ def event_coefficients(graph: DetectorGraph, labels=None,
                       (np.abs(np.asarray(value_of[node], dtype=float))[keep]
                        / sigma)[inside])
         out[int(label)] = EventWavegram(grid, bin_seconds, bands, first)
+    return out
+
+
+def event_waveform(graph, labels=None, cluster_id=None):
+    """The event's reconstruction in the time domain.
+
+    The second thing the assembled map is for. Each member window is inverted
+    and lays down its own step region, so the pieces tile the covered span
+    exactly once and no sample is counted twice. Window lengths are not
+    combined: each is a complete description of the same strain, so the one
+    carrying most of the event's energy is the one reconstructed, and the others
+    are what a search at a single length would have produced instead.
+
+    :type graph: DetectorGraph
+    :param graph: the detector's level-one graph.
+    :param labels: component label per node, or None to take every edge.
+    :type cluster_id: int | None
+    :param cluster_id: the event to reconstruct; every event when None.
+    :return: dict -- ``{cluster_id: (gps_start, samples, n_coeff)}``.
+    """
+    from wdf.analysis.reconstruction import stitch
+
+    nodes = graph.nodes
+    if nodes.empty:
+        return {}
+    labels = graph.components() if labels is None else np.asarray(labels)
+
+    strides = window_strides(nodes)
+    energy = nodes["EnWDF"].to_numpy(dtype=float) ** 2
+    scale = nodes["n_coeff"].to_numpy(dtype=float)
+    rate = nodes["fs"].to_numpy(dtype=float)
+
+    out = {}
+    for label in ([cluster_id] if cluster_id is not None
+                  else np.unique(labels)):
+        members = np.flatnonzero(labels == int(label))
+        if not members.size:
+            continue
+        # The length that carries most of this event's energy.
+        lengths, inverse = np.unique(scale[members], return_inverse=True)
+        carried = np.bincount(inverse, weights=energy[members],
+                              minlength=len(lengths))
+        best = float(lengths[int(np.argmax(carried))])
+        here = members[scale[members] == best]
+
+        fs = float(rate[here[0]])
+        overlap = int(round(best - strides[best] * fs))
+        out[int(label)] = stitch(nodes.iloc[here], fs, int(best), overlap) + (int(best),)
     return out
 
 

@@ -347,3 +347,66 @@ def test_the_map_can_be_placed_in_time_and_frequency():
     assert np.allclose(np.diff(times), rendered.bin_seconds)
     # The map is centred on the event, so the transient falls inside its span.
     assert times[0] < triggers.gpsCentroid.mean() < times[-1]
+
+
+def test_the_event_is_described_by_its_own_coefficients():
+    """A long event's parameters follow its energy over the whole extent, not
+    the average of what each window saw of it. Two windows an octave apart give
+    an event whose band covers both, where averaging their summaries would put
+    it between them and describe neither."""
+    import numpy as np
+    from wdf.analysis.detector_graph import event_tiles
+
+    triggers = _walking_coefficients(_triggers([512], 6), [8, 8, 8, 400, 400, 400])
+    triggers = triggers.assign(freqQ05=100.0, freqQ95=110.0, duration90=0.01)
+
+    graph = build_detector_graph(triggers)
+    labels = np.zeros(len(graph.nodes), dtype=int)
+    events = detector_events(graph, labels=labels)
+
+    lo, hi, band_lo, band_hi, energy = event_tiles(graph.nodes,
+                                                   np.arange(len(graph.nodes)))
+    assert energy.size == len(graph.nodes), "one surviving coefficient each"
+    # The members claim a band of 100 to 110 Hz each; the coefficients say
+    # otherwise, and it is the coefficients the event follows.
+    assert events.freqQ95.iloc[0] > 2 * events.freqQ05.iloc[0]
+    assert band_lo.min() < events.freqQ05.iloc[0] < events.freqQ95.iloc[0] < band_hi.max()
+    # And the extent follows the tiles rather than the members' own duration90.
+    assert events.duration90.iloc[0] > 0.05
+
+
+def test_the_event_has_a_waveform_and_not_only_a_number():
+    """The assembled map exists to give three things: the parameters, a
+    reconstruction in the time domain, and something to compare across
+    detectors. This is the second."""
+    import numpy as np
+    from wdf.analysis.detector_graph import event_waveform
+
+    triggers = _fixed_coefficients(_triggers([512], 5), [64, 65])
+    graph = build_detector_graph(triggers)
+    labels = np.zeros(len(graph.nodes), dtype=int)
+
+    waveforms = event_waveform(graph, labels)
+    gps_start, samples, length = waveforms[0]
+
+    assert length == 512
+    assert samples.ndim == 1 and samples.size > 512, \
+        "an event of five windows is longer than any one of them"
+    assert np.isfinite(samples).all()
+    assert gps_start == pytest.approx(float(graph.nodes.gps.min()))
+
+
+def test_a_different_basis_can_be_asked_to_break_continuity():
+    """The competition's verdict is a statement about the shape in a window, so
+    two windows it assigned to different bases can be asked to be two events.
+    Off by default: a transient may legitimately change character."""
+    triggers = _fixed_coefficients(_triggers([512], 8), [64])
+    triggers = triggers.assign(
+        wave=["DaubC12" if k < 4 else "Coif2" for k in range(len(triggers))])
+
+    together = build_detector_graph(triggers)
+    apart = build_detector_graph(
+        triggers, config=DetectorGraphConfig(same_basis=True))
+
+    assert len(apart.edges) < len(together.edges)
+    assert apart.components().max() > together.components().max()
