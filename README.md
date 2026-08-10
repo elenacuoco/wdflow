@@ -179,13 +179,12 @@ pip uninstall wdf                             # if it points into site-packages
 
 ## What comes next
 
-[`ROADMAP.md`](https://github.com/elenacuoco/wdflow/blob/master/ROADMAP.md) records what is deliberately left for after this
-release: storing the coefficients sparsely, which is what the algorithm
-actually produces and what a real-time implementation would transport; a
-percolation clustering that scales past an investigative window; training the
-learned coincidence on real noise rather than simulated; and parameter
-estimation by normalising flow on the coefficient matrix an event already
-carries.
+Deliberately left for after this release: storing the coefficients sparsely,
+which is what the algorithm actually produces and what a real-time
+implementation would transport; a percolation clustering that scales past an
+investigative window; training the learned coincidence on real noise rather
+than simulated; and parameter estimation by normalising flow on the coefficient
+matrix an event already carries.
 
 ## Contributing
 
