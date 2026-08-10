@@ -140,6 +140,13 @@ class BackgroundAnomalyScorer(nn.Module):
         edges = [int(d.cross_edge_attr.shape[0]) for d in data]
         total_edges = float(sum(edges)) or 1.0
 
+        # A shared card can have less free memory than one graph's features need,
+        # and that is not a reason to lose the fit: every stage here runs on the
+        # processor in minutes. The fallback is taken once, on the first
+        # allocation that fails, rather than guessed at beforehand.
+        def out_of_memory(reason):
+            return "out of memory" in str(reason).lower()
+
         optimiser = torch.optim.Adam(self.parameters(), lr=lr)
         history = []
         self.train()
@@ -149,12 +156,51 @@ class BackgroundAnomalyScorer(nn.Module):
             for one, count in zip(data, edges):
                 if not count:
                     continue
-                loss = self._residuals(one).sum() / total_edges
-                loss.backward()
+                try:
+                    loss = self._residuals(one).sum() / total_edges
+                    loss.backward()
+                except (RuntimeError, torch.OutOfMemoryError) as reason:
+                    if self.device == "cpu" or not out_of_memory(reason):
+                        raise
+                    import warnings
+
+                    warnings.warn(
+                        f"the graphics device could not hold the fit "
+                        f"({reason}); continuing on the processor",
+                        RuntimeWarning)
+                    torch.cuda.empty_cache()
+                    self.device = "cpu"
+                    self.to("cpu")
+                    optimiser = torch.optim.Adam(self.parameters(), lr=lr)
+                    optimiser.zero_grad()
+                    epoch_loss = 0.0
+                    for again, count_again in zip(data, edges):
+                        if not count_again:
+                            continue
+                        loss = self._residuals(again).sum() / total_edges
+                        loss.backward()
+                        epoch_loss += float(loss.detach().cpu())
+                    break
                 epoch_loss += float(loss.detach().cpu())
             optimiser.step()
             history.append(epoch_loss)
         return history
+
+    def release(self):
+        """Give the graphics device its memory back.
+
+        Two things hold it. The tensors this object owns stay alive as long as
+        it does, and the allocator keeps what it has freed in a cache rather
+        than returning it, so a device can read as full when nothing is using
+        it. Both are released here, which matters on a shared card and between
+        two fits in one session.
+
+        :return: None
+        """
+        self.to("cpu")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 
     @torch.no_grad()
     def score(self, graph) -> pd.DataFrame:
