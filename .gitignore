@@ -7,3 +7,6 @@ dist/
 .pytest_cache/
 docs/_build/
 *.bak
+
+# Built artefact, regenerated from the package.
+wdflow.tar.tgz
