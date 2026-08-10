@@ -179,12 +179,13 @@ pip uninstall wdf                             # if it points into site-packages
 
 ## What comes next
 
-Deliberately left for after this release: storing the coefficients sparsely,
-which is what the algorithm actually produces and what a real-time
-implementation would transport; a percolation clustering that scales past an
-investigative window; training the learned coincidence on real noise rather
-than simulated; and parameter estimation by normalising flow on the coefficient
-matrix an event already carries.
+Parameter estimation by normalising flow, on the coefficient matrix an event
+already carries. The coefficients a trigger keeps are a fixed-length description
+of the transient on the time-frequency plane, already on the noise scale, so a
+flow can be conditioned on them directly without a spectrogram in between. That
+is where the question of what a transient *is* belongs -- after the selection,
+never inside it -- and it is the reason the search stores the coefficients
+rather than a summary of them.
 
 ## Contributing
 
