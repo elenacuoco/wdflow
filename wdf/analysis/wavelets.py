@@ -150,9 +150,9 @@ def plot_wavelet_tiles(ax, wt: np.ndarray, fs: float, t0: float = 0.0, top_frac:
 
     # A zero coefficient is not a faint tile, it is a tile thresholding removed,
     # and drawing it says the search found something there. It also breaks the
-    # percentile: at the measured density of about half a per cent, the 90th
-    # percentile of |wt| is exactly zero, so every tile clears the cut and the
-    # overlay becomes a solid block covering whatever it was drawn over.
+    # percentile: thresholding leaves so few coefficients that most percentiles
+    # of |wt| are exactly zero, every tile clears the cut, and the overlay
+    # becomes a solid block covering whatever it was drawn over.
     surviving = mags > 0
     thresh = np.percentile(mags[surviving], 100 * (1 - top_frac))
     vmax = mags.max()

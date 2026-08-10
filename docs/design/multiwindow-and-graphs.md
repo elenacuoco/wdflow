@@ -83,15 +83,12 @@ spreads, and they must overlap in band. These are the candidates
 the learned and the classical statistic rank one population.
 
 The test is on the events' extents and not on any instant of them. An extended
-transient has no arrival time: which instant a detector calls its centroid or its
+transient has no arrival time: which moment a detector calls its centroid or its
 peak depends on its own noise, its antenna response and which coefficients
-survived threshold. On the simulated set two detectors seeing one compact binary
-put their centroids a median of 77 ms apart and their peaks 14 ms apart, against
-a light travel time of 10 ms — so gating on either admitted 19 of 108 coincident
-injections while gating on the extents admitted 71. For a transient shorter than
-the light travel time the two statements coincide, which is why the extent test
-is the general one. The arrival-time difference is still measured and still ranks
-the survivors; it no longer decides which pairs exist.
+survived threshold, so the two detectors do not agree on it. For a transient
+shorter than the light travel time the two statements coincide, which is why the
+extent test is the general one. The arrival-time difference is still measured
+and still ranks the survivors; it no longer decides which pairs exist.
 
 An edge carries the arrival-time difference, the shared fraction of band and of
 time support, the log ratio of the two energies, and the agreement between the

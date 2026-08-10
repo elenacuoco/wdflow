@@ -278,9 +278,9 @@ class TriggerGraphBuilder:
 
         energy = _coefficient_energy(nodes_df)
         # The support is what decides admissibility, and it is wide by
-        # construction: on three hours of the simulated set its overlap has a
-        # median of exactly one, so as a ranking quantity it carries nothing.
-        # The band the energy occupies varies from pair to pair.
+        # construction, so its overlap is near one for almost every admitted
+        # pair and carries little as a ranking quantity. The band the energy
+        # occupies varies from pair to pair, and does.
         band_lo = _numeric(nodes_df, ("freqQ05", "freqMin"), default=np.nan)
         band_hi = _numeric(nodes_df, ("freqQ95", "freqMax"), default=np.nan)
         spread = _numeric(nodes_df, ("tSpread",), default=0.0)

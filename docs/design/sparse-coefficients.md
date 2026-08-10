@@ -1,22 +1,12 @@
 # What a trigger stores
 
 A window of $N$ samples transforms into $N$ coefficients, and thresholding at
-$\sigma\sqrt{2\ln N}$ leaves very few of them. Measured on the triggers of a
-real run: **2.2 to 3.0 coefficients survive** per trigger, out of 256, 512 or
-1024. That is a density between 0.2 and 1 per cent.
-
-So a trigger is stored as the pairs that survive --- `wt_index`, the position in
-the transform, and `wt_value`, the coefficient --- and not as a vector of $N$
-numbers of which all but three are zero.
-
-| window | surviving | density | dense record | sparse record | ratio |
-|---:|---:|---:|---:|---:|---:|
-| 256  | 2.5 | 1.0 % | 2048 B | 15 B | 137 |
-| 512  | 2.3 | 0.4 % | 4096 B | 14 B | 301 |
-| 1024 | 2.2 | 0.2 % | 8192 B | 13 B | 609 |
-
-Dense is $N$ doubles; sparse is one `uint16` index and one `float32` value per
-surviving coefficient.
+$\sigma\sqrt{2\ln N}$ leaves very few of them --- a fraction of one per cent on
+noise, a handful on a transient. So a trigger is stored as the pairs that
+survive: `wt_index`, the position in the transform, and `wt_value`, the
+coefficient. A dense record is $N$ doubles; a sparse one is a `uint16` index and
+a `float32` value per survivor, which for the window lengths this search uses is
+two to three orders of magnitude smaller.
 
 ## Why it is the right representation and not only a smaller one
 

@@ -100,10 +100,10 @@ def inject_into_strain(
     The two differ only by the injections, so their difference is the injected
     waveform and the background is the same noise without it.
 
-    `minimum_gap` defaults to well beyond the longest signal drawn: on the
-    simulated set a binary-neutron-star injection lasts of order two hundred
-    seconds, and injections packed closer than they are long leave no stretch of
-    noise between them to measure a background against.
+    `minimum_gap` defaults to well beyond the longest signal drawn: a
+    binary-neutron-star injection runs to a few hundred seconds, and injections
+    packed closer than they are long leave no stretch of noise between them to
+    measure a background against.
 
     :type outdir: str
     :param outdir: directory to write the frames, FFL indices and truth table to.

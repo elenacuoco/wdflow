@@ -565,12 +565,9 @@ class IndexedCoincidenceFinder:
         them. An extended transient has no arrival time: a chirp lasting
         seconds is spread over all of them, and which instant a detector calls
         its centroid or its peak depends on its own noise, its antenna response
-        and which coefficients survived threshold. Measured on the simulated
-        set, two detectors seeing one compact binary put their centroids a
-        median of 81 ms apart and their peaks 15.6 ms, against a light travel
-        time of 10 ms --- so no instant agrees, while the stretches covered do.
-        For a transient shorter than the light travel time the two statements
-        coincide, which is why this is the general one.
+        and which coefficients survived threshold, so the two detectors do not
+        agree on it. For a transient shorter than the light travel time the two
+        statements coincide, which is why this is the general one.
 
         `dt` is still measured and carried, and ranks the survivors; it no
         longer decides which pairs exist.
