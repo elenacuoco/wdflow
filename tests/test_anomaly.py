@@ -80,3 +80,37 @@ def test_the_pair_has_no_preferred_order():
     np.testing.assert_allclose(model.score(graph)["anomaly_score"].to_numpy(),
                                model.score(swapped)["anomaly_score"].to_numpy(),
                                rtol=1e-5, atol=1e-6)
+
+
+def test_a_broken_gpu_is_not_a_reason_to_stop():
+    """CUDA reporting itself available says a driver and a device were found,
+    not that this build can use them. Every stage here runs on the processor in
+    minutes, so falling back beats failing."""
+    import warnings
+
+    from wdf.analysis import gnn
+
+    class Unusable:
+        @staticmethod
+        def is_available():
+            return True
+
+    real = gnn.torch.cuda
+    gnn.torch.cuda = Unusable()
+    real_zeros = gnn.torch.zeros
+
+    def refuse(*args, **kwargs):
+        if kwargs.get("device") == "cuda":
+            raise RuntimeError("no kernel image is available")
+        return real_zeros(*args, **kwargs)
+
+    gnn.torch.zeros = refuse
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert gnn.usable_device() == "cpu"
+            assert any("not usable" in str(w.message) for w in caught)
+        assert gnn.usable_device("cuda") == "cuda", "an explicit choice is obeyed"
+    finally:
+        gnn.torch.cuda = real
+        gnn.torch.zeros = real_zeros

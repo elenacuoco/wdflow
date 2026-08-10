@@ -24,7 +24,8 @@ import pandas as pd
 import torch
 from torch import nn
 
-from wdf.analysis.gnn import _IntraMessagePassing, _to_pyg_data
+from wdf.analysis.gnn import (_IntraMessagePassing, _to_pyg_data,
+                              usable_device)
 
 
 class BackgroundAnomalyScorer(nn.Module):
@@ -52,7 +53,7 @@ class BackgroundAnomalyScorer(nn.Module):
         """
         super().__init__()
         torch.manual_seed(seed)
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = usable_device(device)
         self.encoder = nn.Sequential(nn.Linear(node_dim, hidden), nn.ReLU())
         self.intra_mp = _IntraMessagePassing(hidden)
         self.decoder = nn.Sequential(

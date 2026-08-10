@@ -133,7 +133,7 @@ class GNNCoincidenceScorer(nn.Module):
         """
         super().__init__()
         torch.manual_seed(seed)
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = usable_device(device)
         self.encoder = nn.Sequential(nn.Linear(node_dim, hidden), nn.ReLU())
         self.intra_mp = _IntraMessagePassing(hidden)
         self.edge_head = nn.Sequential(
@@ -309,7 +309,7 @@ class DetectorEdgeScorer(nn.Module):
         """
         super().__init__()
         torch.manual_seed(seed)
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = usable_device(device)
         self.encoder = nn.Sequential(nn.Linear(node_dim, hidden), nn.ReLU())
         self.rounds = nn.ModuleList(
             [_EdgeMessagePassing(hidden, edge_dim) for _ in range(layers)])
@@ -459,3 +459,31 @@ def edge_labels_from_injections(graph, injection_times, tolerance_s: float = 0.5
         return np.zeros(0)
     i, j = graph.edges[:, 0], graph.edges[:, 1]
     return ((owner[i] >= 0) & (owner[i] == owner[j])).astype(float)
+
+
+def usable_device(requested=None):
+    """The device to run on, preferring the GPU only when it really works.
+
+    `torch.cuda.is_available()` answers whether a driver and a device were
+    found, not whether this build can use them: a runtime built against one
+    CUDA version, a driver from another, or a device already full will report
+    available and then raise on the first allocation. Since every stage here
+    runs on the processor in seconds to minutes, falling back is always better
+    than failing.
+
+    :param requested: a device name to use as given, or None to choose.
+    :return: str -- the device name.
+    """
+    if requested is not None:
+        return str(requested)
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        torch.zeros(1, device="cuda") + 1
+    except Exception as reason:  # a broken GPU is not a reason to stop
+        import warnings
+
+        warnings.warn(f"CUDA reported available but is not usable ({reason}); "
+                      "running on the processor", RuntimeWarning)
+        return "cpu"
+    return "cuda"
