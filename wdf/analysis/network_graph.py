@@ -15,7 +15,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-from wdf.analysis.detector_graph import WAVEGRAM_TIME_BINS
+from wdf.analysis.detector_graph import WAVEGRAM_TIME_BINS, tile_coherence
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import (
     EPS,
@@ -43,7 +43,7 @@ from wdf.analysis.robust_events import (
 EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
                  "time_overlap", "log_energy_ratio",
                  "wavegram_overlap", "energy_band_overlap", "dt_over_tolerance",
-                 "network_correlation", "coherent_statistic"]
+                 "network_correlation", "coherent_statistic", "tile_coherence"]
 
 # The coherent energy alone is large wherever two events are loud together,
 # which a strong instrumental transient in one detector paired with a strong
@@ -144,6 +144,12 @@ class TriggerGraph:
         # ranking rather than in the gate.
         table["network_min_enwdf_timed"] = (
             table["network_min_enwdf"] / (1.0 + table["dt_over_tolerance"]))
+
+        # The morphological statistic, on the coefficients themselves. Where
+        # network_min_enwdf asks only that both detectors were loud, this asks
+        # that they were loud in the same places on the plane --- which is what
+        # the whole representation was built to be able to ask.
+        table["network_morphology"] = table["tile_coherence"]
         return table
 
 
@@ -195,7 +201,7 @@ class TriggerGraphBuilder:
 
         :return: tuple -- (frames, grids, grid_shape, bin_seconds).
         """
-        frames, grids = [], []
+        frames, grids, clouds = [], [], []
         grid_shape = (0, self.wavegram_time_bins)
         # Like the width, the duration of a column comes from the grids that
         # arrived: level one measures it from the data the search was run on.
@@ -216,7 +222,8 @@ class TriggerGraphBuilder:
                 grid_shape = grid.shape
                 bin_seconds = getattr(rendered, "bin_seconds", bin_seconds)
                 grids.append(grid.ravel())
-        return frames, grids, grid_shape, bin_seconds
+                clouds.append(getattr(rendered, "tiles", None))
+        return frames, grids, grid_shape, bin_seconds, clouds
 
     def build(self, clustered: dict[str, pd.DataFrame],
               coefficients: dict[str, dict],
@@ -243,12 +250,13 @@ class TriggerGraphBuilder:
         :raises KeyError: if an event has no coefficients.
         """
         ifos = self.ifos or list(clustered.keys())
-        frames, grids, grid_shape, bin_seconds = self._stack(
+        frames, grids, grid_shape, bin_seconds, clouds = self._stack(
             clustered, coefficients, ifos)
         if comparison is None:
             fine, fine_shape, fine_bin = grids, grid_shape, bin_seconds
         else:
-            _, fine, fine_shape, fine_bin = self._stack(clustered, comparison, ifos)
+            _, fine, fine_shape, fine_bin, _ = self._stack(
+                clustered, comparison, ifos)
         nodes_df = pd.concat(frames, ignore_index=True)
 
         # |coefficient|/sigma spans decades, so compress before standardising;
@@ -328,6 +336,15 @@ class TriggerGraphBuilder:
             # and the pair carries its own dt, so how the two morphologies
             # correspond in time is left for the network to learn rather than
             # answered here.
+            # The morphology at the resolution the transform has, with no grid
+            # in between: the two events' own coefficients, paired where their
+            # tiles cover the same place.
+            travel = self.coincidence.travel_time((ifo_a, ifo_b))
+            coherence = np.array([
+                tile_coherence(clouds[a], clouds[b], travel)
+                if clouds[a] is not None and clouds[b] is not None else 0.0
+                for a, b in zip(i_sel, j_sel)])
+
             similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
             coherent = np.maximum(np.einsum("ij,ij->i", raw[i_sel], raw[j_sel]), 0.0)
             overlap = np.sqrt(coherent)
@@ -355,6 +372,7 @@ class TriggerGraphBuilder:
                     EPS),
                 correlation,
                 overlap * correlation,
+                np.sqrt(coherence),
             ]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)

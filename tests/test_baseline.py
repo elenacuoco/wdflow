@@ -28,6 +28,10 @@ def _table(n, seed=0, separable=True):
         "dt_over_tolerance": rng.uniform(0, 1, n),
         "network_correlation": rng.uniform(0, 1, n) * 0.5 + 0.4 * shift,
         "coherent_statistic": rng.uniform(0, 20, n) + 25.0 * shift,
+        # The morphology at coefficient level, which separates for the
+        # same reason: two events of one transient are loud in the same
+        # places on the plane and two of noise are not.
+        "tile_coherence": rng.uniform(0, 15, n) + 20.0 * shift,
     }), labels
 
 

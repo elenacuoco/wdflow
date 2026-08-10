@@ -410,3 +410,45 @@ def test_a_different_basis_can_be_asked_to_break_continuity():
 
     assert len(apart.edges) < len(together.edges)
     assert apart.components().max() > together.components().max()
+
+
+def test_the_morphology_is_measured_on_the_coefficients_not_on_a_grid():
+    """Two events of one transient are loud in the same places on the plane.
+    Asking that at the resolution the transform has needs no grid, and so no
+    cell size chosen by hand -- too fine and two detectors share nothing, too
+    coarse and everything agrees."""
+    import numpy as np
+    from wdf.analysis.detector_graph import event_tiles, tile_coherence
+
+    same = _fixed_coefficients(_triggers([512], 4), [64, 65])
+    elsewhere = _fixed_coefficients(_triggers([512], 4, seed=5), [400, 401])
+
+    def cloud(triggers):
+        graph = build_detector_graph(triggers)
+        return event_tiles(graph.nodes, np.arange(len(graph.nodes)))
+
+    together = tile_coherence(cloud(same), cloud(same), 0.01)
+    apart = tile_coherence(cloud(same), cloud(elsewhere), 0.01)
+
+    assert together > 0.0
+    assert apart == 0.0, "tiles that share no band cohere not at all"
+
+
+def test_the_event_carries_the_coefficients_its_map_is_a_view_of():
+    """One source of truth per event: the map, the parameters, the waveform and
+    the comparison across detectors all derive from the same coefficients, so
+    they cannot come to describe different things."""
+    import numpy as np
+    from wdf.analysis.detector_graph import event_coefficients
+
+    triggers = _fixed_coefficients(_triggers([512], 5), [64, 65])
+    graph = build_detector_graph(triggers)
+    labels = np.zeros(len(graph.nodes), dtype=int)
+    rendered = event_coefficients(graph, labels)[0]
+
+    assert rendered.tiles is not None
+    t_lo, t_hi, f_lo, f_hi, energy = rendered.tiles
+    assert energy.size == 2 * len(graph.nodes), "every survivor of every member"
+    # The grid holds the same energy the tiles do, up to what falls outside it.
+    assert rendered.grid.sum() > 0
+    assert (f_lo <= f_hi).all() and (t_lo <= t_hi).all()

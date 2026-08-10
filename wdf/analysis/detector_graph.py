@@ -634,14 +634,22 @@ class EventWavegram:
         `bin_seconds` and `bands` this places the map in time and frequency; a
         map that cannot be placed is not a map, and rederiving the placement at
         the point of use puts two copies of the same arithmetic in the code.
+    :param tiles: the event's coefficients as tiles on the plane, as
+        `event_tiles` returns them --- the lossless description the grid is a
+        projection of. Everything an event is asked for should derive from this
+        one object: the map, the parameters, the reconstruction and the
+        comparison across detectors, so that they cannot describe different
+        things.
     """
 
     def __init__(self, grid: np.ndarray, bin_seconds: float = 1.0,
-                 bands: np.ndarray | None = None, gps_first: float = 0.0):
+                 bands: np.ndarray | None = None, gps_first: float = 0.0,
+                 tiles=None):
         self.grid = grid
         self.bin_seconds = float(bin_seconds)
         self.bands = np.zeros((len(grid), 2)) if bands is None else np.asarray(bands)
         self.gps_first = float(gps_first)
+        self.tiles = tiles
 
     def times(self) -> np.ndarray:
         """The left edge of every column, in GPS seconds.
@@ -751,7 +759,8 @@ def event_coefficients(graph: DetectorGraph, labels=None,
             np.add.at(grid, (rows[index[keep]][inside], column[inside]),
                       (np.abs(np.asarray(value_of[node], dtype=float))[keep]
                        / sigma)[inside])
-        out[int(label)] = EventWavegram(grid, bin_seconds, bands, first)
+        out[int(label)] = EventWavegram(grid, bin_seconds, bands, first,
+                                        tiles=event_tiles(nodes, members))
     return out
 
 
@@ -801,6 +810,45 @@ def event_waveform(graph, labels=None, cluster_id=None):
         overlap = int(round(best - strides[best] * fs))
         out[int(label)] = stitch(nodes.iloc[here], fs, int(best), overlap) + (int(best),)
     return out
+
+
+def tile_coherence(left, right, tolerance):
+    """Coherent energy of two events, on their coefficients and not on a grid.
+
+    Every surviving coefficient is a rectangle on the plane, and two events
+    describe the same transient where their rectangles cover the same place.
+    The statistic is the geometric mean of the two energies over the tiles that
+    meet, summed --- an inner product taken at the resolution the transform
+    actually has, with no grid in between and so no resolution chosen by hand.
+
+    A grid answers the same question after rounding both events onto cells whose
+    size someone had to pick: too fine and two detectors share nothing, too
+    coarse and everything agrees.
+
+    :param left: one event's tiles, as `event_tiles` returns them.
+    :param right: the other event's tiles.
+    :type tolerance: float
+    :param tolerance: how far the two may be displaced in time and still be
+        taken to cover the same place, seconds.
+    :return: float -- the coherent energy, in units of the noise scale squared.
+    """
+    t_lo, t_hi, f_lo, f_hi, energy = left
+    u_lo, u_hi, g_lo, g_hi, other = right
+    if not energy.size or not other.size:
+        return 0.0
+
+    # Every pair of tiles, which is affordable because thresholding leaves a
+    # handful per window: an event of twenty windows has tens of tiles, not the
+    # thousands a dense representation would pair.
+    meets_in_time = (np.minimum(t_hi[:, None], u_hi[None, :] + tolerance)
+                     >= np.maximum(t_lo[:, None], u_lo[None, :] - tolerance))
+    meets_in_band = (np.minimum(f_hi[:, None], g_hi[None, :])
+                     >= np.maximum(f_lo[:, None], g_lo[None, :]))
+    together = meets_in_time & meets_in_band
+    if not together.any():
+        return 0.0
+    product = np.sqrt(energy[:, None] * other[None, :])
+    return float(product[together].sum())
 
 
 def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
