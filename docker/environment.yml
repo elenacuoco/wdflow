@@ -1,0 +1,42 @@
+# The environment wdflow needs, including what p4TSA's compiled core is built
+# against. It is a conda environment and not a requirements file because
+# `framel` --- the frame-file library p4TSA reads GWF with --- has no wheel on
+# PyPI, which is the same reason `pip install wdflow[pipeline]` cannot pull the
+# core in for you.
+name: base
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+
+  # Building p4TSA
+  - cmake>=3.15
+  - make
+  - cxx-compiler
+  - scikit-build-core>=0.10
+  - pybind11>=2.12
+  - gsl
+  - fftw
+  - framel
+  - libboost-headers
+  - cereal
+
+  # wdflow itself
+  - numpy
+  - scipy
+  - pandas>=2.0
+  - scikit-learn>=1.2
+  - matplotlib>=3.7
+  - pyarrow
+  - h5py
+  - coloredlogs
+
+  # Reading real strain, and drawing the simulated set
+  - gwpy>=3.0
+  - pycbc
+
+  # Running the tutorials
+  - jupyterlab
+  - ipykernel
+  - nbclient

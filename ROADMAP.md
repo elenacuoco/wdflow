@@ -61,7 +61,7 @@ is reading the same object the hardware would emit.
 - `wdf/analysis/reconstruction.py` and `robust_events.py` — both discover the
   `wt*` columns the same way.
 - `wdf/analysis/report.py` — the tile plots.
-- The notebooks in `wdf-detection-pipeline`, which read the columns directly.
+- Downstream notebooks, which read the columns directly.
 
 Six modules and one writer, all going through two helpers that find the columns.
 Introducing the sparse form behind those helpers, and keeping a reader for the

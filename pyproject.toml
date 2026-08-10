@@ -43,8 +43,10 @@ docs = ["sphinx>=7", "sphinx-rtd-theme>=2", "myst-nb>=1"]
 all = ["wdflow[pipeline,gnn,data,dev,tutorials,mock,docs]"]
 
 [project.urls]
-"Homepage" = "https://github.com/elenacuoco/wdflow"
-"Bug Tracker" = "https://github.com/elenacuoco/wdflow/issues"
+"Homepage" = "https://elenacuoco.github.io/wdflow/"
+"Source" = "https://github.com/elenacuoco/wdflow"
+"Documentation" = "https://wdflow.readthedocs.io"
+"Issues" = "https://github.com/elenacuoco/wdflow/issues"
 
 [build-system]
 requires = ["hatchling"]

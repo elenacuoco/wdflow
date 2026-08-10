@@ -10,3 +10,8 @@ docs/_build/
 
 # Built artefact, regenerated from the package.
 wdflow.tar.tgz
+
+# Local assistant configuration, not part of the project.
+CLAUDE.md
+AGENTS.md
+.claude/
