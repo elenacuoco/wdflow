@@ -17,6 +17,7 @@ tutorials/03_coincidence_and_significance
 :hidden:
 
 api
+design/sparse-coefficients
 design/multiwindow-and-graphs
 design/event-candidates
 design/whitening

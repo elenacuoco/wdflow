@@ -395,6 +395,34 @@
   </section>
 
   <section class="wrap">
+    <p class="label">What a trigger stores</p>
+    <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">Three numbers, not a thousand.</h2>
+    <div class="cols" style="margin-top:1.5rem;">
+      <div class="prose">
+        <p>A window of <em>N</em> samples transforms into <em>N</em> coefficients, and thresholding at the Donoho&ndash;Johnstone level leaves very few. Measured on the triggers of a real run: <b>2.2 to 3.0 coefficients survive</b> out of 256, 512 or 1024 &mdash; a density between 0.2 and 1 per cent.</p>
+        <p>So a trigger keeps the pairs that survived, the index and the value, and not a vector of a thousand numbers of which all but three are zero. The record goes from kilobytes to about fifteen bytes.</p>
+      </div>
+      <div class="prose">
+        <p>It is not a compression applied afterwards. Hard thresholding sets a coefficient to zero or leaves it exactly as it was, so the zeros are the algorithm's statement that nothing was there &mdash; and writing them down at eight bytes each records that statement a thousand times per window.</p>
+        <p><b>It is also what hardware can carry.</b> The per-window arithmetic is a fixed sequence of multiply-accumulate steps, with no iteration to convergence and no data-dependent branching, so it can be placed on an FPGA. What such an implementation cannot comfortably do is buffer and ship a dense vector per window, per length, per detector. A few index-value pairs is a small record whose size is known before the data arrives, which is the kind of object a hardware pipeline is built around.</p>
+      </div>
+    </div>
+    <figure style="margin:2rem 0 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead><tr style="text-align:right;border-bottom:1px solid var(--rule);">
+          <th style="text-align:left;padding:0.4rem 0;">window</th><th>surviving</th><th>density</th><th>dense record</th><th>sparse record</th><th>ratio</th>
+        </tr></thead>
+        <tbody style="text-align:right;">
+          <tr><td style="text-align:left;padding:0.3rem 0;">256</td><td>2.5</td><td>1.0&thinsp;%</td><td>2048&thinsp;B</td><td>15&thinsp;B</td><td>137</td></tr>
+          <tr><td style="text-align:left;padding:0.3rem 0;">512</td><td>2.3</td><td>0.4&thinsp;%</td><td>4096&thinsp;B</td><td>14&thinsp;B</td><td>301</td></tr>
+          <tr><td style="text-align:left;padding:0.3rem 0;">1024</td><td>2.2</td><td>0.2&thinsp;%</td><td>8192&thinsp;B</td><td>13&thinsp;B</td><td>609</td></tr>
+        </tbody>
+      </table>
+      <figcaption style="font-size:0.86rem;color:var(--fg-dim);margin-top:0.5rem;">Dense is <em>N</em> doubles; sparse is one 16-bit index and one 32-bit value per surviving coefficient. Measured on the triggers of a real run, not estimated.</figcaption>
+    </figure>
+  </section>
+
+  <section class="wrap">
     <p class="label">Software</p>
     <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">A compiled core and the pipeline built on it.</h2>
 
