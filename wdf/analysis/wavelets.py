@@ -189,49 +189,6 @@ def tile_frequency(f_lo: float, f_hi: float) -> float:
     return float(np.sqrt(f_lo * f_hi))
 
 
-def dominant_tile(wt: np.ndarray, fs: float, sigma: float | None = None) -> dict:
-    """The time-frequency tile carrying the largest wavelet coefficient.
-
-    The transform is orthogonal and the data are whitened, so a coefficient
-    divided by the noise scale is the signal-to-noise ratio of that one tile;
-    the largest coefficient is therefore the tile where the local
-    signal-to-noise ratio peaks, and its band is the frequency the transient
-    deposits most of its amplitude in.
-
-    :type wt: numpy.ndarray
-    :param wt: wavelet coefficients of one analysis window.
-    :type fs: float
-    :param fs: sampling frequency the coefficients were computed at, Hz.
-    :type sigma: float or None
-    :param sigma: noise scale the tile signal-to-noise ratio is expressed in.
-    :return: dict -- `freq`, `f_lo`, `f_hi`, `time`, `t_lo`, `t_hi`,
-        `magnitude` and `snr` of that tile; empty when `wt` carries no energy.
-    """
-    wt = np.asarray(wt, dtype=float).reshape(-1)
-    if wt.size == 0:
-        return {}
-
-    magnitudes = np.abs(wt)
-    k = int(np.argmax(magnitudes))
-    if magnitudes[k] <= 0.0:
-        return {}
-
-    t_lo, t_hi = coeff_time_bounds(wt.size, fs)
-    f_lo, f_hi = coeff_freq_bands(wt.size, fs)
-
-    magnitude = float(magnitudes[k])
-    return {
-        "freq": tile_frequency(f_lo[k], f_hi[k]),
-        "f_lo": float(f_lo[k]),
-        "f_hi": float(f_hi[k]),
-        "time": 0.5 * float(t_lo[k] + t_hi[k]),
-        "t_lo": float(t_lo[k]),
-        "t_hi": float(t_hi[k]),
-        "magnitude": magnitude,
-        "snr": float(magnitude / sigma) if (sigma is not None and sigma > 0) else float("nan"),
-    }
-
-
 def wavegram_ridge(wt: np.ndarray, fs: float, sigma: float | None = None,
                    n_time_bins: int | None = None) -> dict:
     """The time-frequency track of the loudest tile in each time bin.

@@ -146,3 +146,63 @@ def test_a_long_event_covering_an_injection_is_not_a_false_alarm():
     remaining = false_alarms(candidates, injections, window_s=0.5)
     assert len(remaining) == 1
     assert float(remaining.gpsPeak.iloc[0]) == 500.0
+
+
+def _unclaimed_input(times, spans=0.0, statistic=None):
+    import pandas as pd
+    times = np.asarray(times, dtype=float)
+    spans = np.full(times.shape, spans) if np.isscalar(spans) else np.asarray(spans)
+    frame = pd.DataFrame(dict(gpsPeak=times, gpsStart=times, duration=spans))
+    frame["EnWDF"] = np.arange(len(times), 0, -1) if statistic is None else statistic
+    return frame
+
+
+def test_a_second_candidate_on_our_own_injection_is_not_unexplained():
+    """The looser rule: covering the injection is enough, being loudest is not."""
+    import pandas as pd
+    from wdf.analysis.injections import unclaimed_candidates
+
+    injections = pd.DataFrame(dict(gps=[100.0]))
+    # Two candidates on the one injection, and one far away.
+    candidates = _unclaimed_input([100.0, 100.2, 500.0])
+    left = unclaimed_candidates(candidates, injections, window_s=0.5,
+                                statistic="EnWDF")
+    assert len(left) == 1
+    assert float(left.gpsPeak.iloc[0]) == 500.0
+
+
+def test_a_long_candidate_is_claimed_by_an_injection_inside_it():
+    import pandas as pd
+    from wdf.analysis.injections import unclaimed_candidates
+
+    injections = pd.DataFrame(dict(gps=[120.0]))
+    candidates = _unclaimed_input([100.0], spans=[50.0])
+    assert unclaimed_candidates(candidates, injections, window_s=0.0).empty
+
+
+def test_the_list_is_ordered_and_can_be_cut():
+    import pandas as pd
+    from wdf.analysis.injections import unclaimed_candidates
+
+    candidates = _unclaimed_input([10.0, 20.0, 30.0], statistic=[3.0, 9.0, 5.0])
+    left = unclaimed_candidates(candidates, pd.DataFrame(dict(gps=[])),
+                                statistic="EnWDF", limit=2)
+    assert list(left.EnWDF) == [9.0, 5.0]
+
+
+def test_with_no_injections_nothing_is_claimed():
+    import pandas as pd
+    from wdf.analysis.injections import unclaimed_candidates
+
+    candidates = _unclaimed_input([10.0, 20.0])
+    assert len(unclaimed_candidates(candidates, None)) == 2
+    assert len(unclaimed_candidates(candidates, pd.DataFrame())) == 2
+
+
+def test_an_unknown_statistic_is_refused():
+    import pandas as pd
+    from wdf.analysis.injections import unclaimed_candidates
+
+    with pytest.raises(KeyError, match="network_enwdf"):
+        unclaimed_candidates(_unclaimed_input([1.0]), pd.DataFrame(dict(gps=[])),
+                             statistic="network_enwdf")

@@ -484,3 +484,79 @@ def test_a_map_cannot_resolve_below_the_tiles_it_is_made_of():
     width = np.asarray(t_hi) - np.asarray(t_lo)
     assert width.max() > 0.2, "the lowest band spans most of the window"
     assert width.min() < 0.001, "the highest band is a handful of samples"
+
+
+def _network_inputs(seed=0):
+    """Two detectors' events and their maps, as level one produces them."""
+    from _synth import triggers_from_signal
+    from wdf.analysis.detector_graph import (
+        DetectorGraphConfig, build_detector_graph, detector_events,
+        event_coefficients,
+    )
+    rng = np.random.default_rng(seed)
+    fs, window, overlap = 2048.0, 512, 256
+    events, maps = {}, {}
+    for k, ifo in enumerate(("H1", "L1")):
+        n = 24 * window
+        t = np.arange(n) / fs
+        signal = 6.0 * np.sin(2.0 * np.pi * (120.0 + 20 * k) * t) \
+            + rng.normal(size=n)
+        triggers = triggers_from_signal(signal, fs, window, overlap, ifo=ifo)
+        graph = build_detector_graph(triggers, config=DetectorGraphConfig())
+        labels = graph.components()
+        events[ifo] = detector_events(graph, labels=labels)
+        maps[ifo] = event_coefficients(graph, labels)
+    return events, maps
+
+
+def test_preparing_the_nodes_once_gives_the_same_graph():
+    """The split is a rearrangement, so it must change nothing it produces."""
+    from wdf.analysis.network_graph import TriggerGraphBuilder
+
+    events, maps = _network_inputs()
+    builder = TriggerGraphBuilder(ifos=["H1", "L1"])
+
+    whole = builder.build(events, maps)
+    split = builder.build_from_prepared(events, builder.prepare(events, maps))
+
+    assert np.array_equal(whole.cross_edges, split.cross_edges)
+    assert np.allclose(whole.cross_edge_features, split.cross_edge_features,
+                       equal_nan=True)
+    assert np.allclose(whole.node_features, split.node_features)
+
+
+def test_prepared_nodes_survive_a_time_slide():
+    """A slide moves the events and not what they are, which is the point."""
+    from wdf.analysis.network_graph import TriggerGraphBuilder
+
+    events, maps = _network_inputs()
+    builder = TriggerGraphBuilder(ifos=["H1", "L1"])
+    prepared = builder.prepare(events, maps)
+
+    slid = dict(events)
+    shifted = events["L1"].copy()
+    for column in ("gps", "gpsStart", "gpsCentroid", "gpsPeak"):
+        if column in shifted:
+            shifted[column] = shifted[column] + 7.0
+    slid["L1"] = shifted
+
+    reused = builder.build_from_prepared(slid, prepared)
+    rebuilt = builder.build(slid, maps)
+    assert np.array_equal(reused.cross_edges, rebuilt.cross_edges)
+    assert np.allclose(reused.cross_edge_features, rebuilt.cross_edge_features,
+                       equal_nan=True)
+
+
+def test_prepared_nodes_refuse_a_different_event_set():
+    """Indexing them with other events would attach one event's shape to
+    another's time, and produce a plausible wrong graph."""
+    import pytest
+    from wdf.analysis.network_graph import TriggerGraphBuilder
+
+    events, maps = _network_inputs()
+    builder = TriggerGraphBuilder(ifos=["H1", "L1"])
+    prepared = builder.prepare(events, maps)
+
+    fewer = {ifo: frame.iloc[:-1].copy() for ifo, frame in events.items()}
+    with pytest.raises(ValueError, match="not the ones prepared"):
+        builder.build_from_prepared(fewer, prepared)

@@ -1,3 +1,12 @@
+"""The trigger, as the search hands it on.
+
+One analysis block that passed threshold: the coefficients that survived, the
+noise scale they were measured against, the basis that won, and the parameters
+those coefficients imply. Everything a later stage does --- grouping,
+reconstruction, coincidence, ranking --- is a function of what this record
+carries, so the record is what has to be complete rather than the stage that
+produced it.
+"""
 __author__ = "Elena Cuoco"
 __copyright__ = "Copyright 2017, Elena Cuoco"
 __credits__ = ["http://www.giantflyingsaucer.com/"]

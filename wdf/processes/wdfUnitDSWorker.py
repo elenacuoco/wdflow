@@ -1,3 +1,13 @@
+"""One segment, from frames to trigger files, with the conditioning downsampled.
+
+The unit of work a run is divided into. It reads a segment block by block,
+conditions it once --- band-pass, downsample, whiten --- and searches the
+conditioned stream at the configured analysis window, writing the triggers of
+that segment.
+
+The conditioning is shared and the search reads its output, so the expensive
+part of the chain is done once per block however the search is configured.
+"""
 __author__ = "Elena Cuoco"
 __copyright__ = "Copyright 2017, Elena Cuoco"
 __credits__ = []

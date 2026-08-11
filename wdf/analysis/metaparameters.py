@@ -72,11 +72,29 @@ def energy_quantile(lo, hi, energy, quantiles):
     # Energy a segment receives from each interval covering it, in proportion to
     # how much of that interval the segment is. A zero-width interval puts all
     # of its energy on the segment starting at it.
-    covers = (lo[:, None] <= left[None, :]) & (hi[:, None] >= right[None, :])
-    share = np.where(width[:, None] > 0.0,
-                     (right - left)[None, :] / np.maximum(width, EPS)[:, None],
-                     (left[None, :] == lo[:, None]).astype(float))
-    mass = (energy[:, None] * share * covers).sum(axis=0)
+    #
+    # The segments an interval covers are contiguous, the breakpoints being
+    # sorted, so each interval adds a constant density over a range of segments
+    # and the sum over intervals is the cumulative sum of those range additions.
+    # Asking instead which of every interval and segment pair overlap builds a
+    # matrix of their product, which for an event of many coefficients is where
+    # the time goes.
+    spread = width > 0.0
+    density = np.zeros(left.size + 1)
+    if spread.any():
+        first = np.searchsorted(left, lo[spread], side="left")
+        last = np.searchsorted(right, hi[spread], side="right")
+        height = energy[spread] / np.maximum(width[spread], EPS)
+        np.add.at(density, np.minimum(first, left.size), height)
+        np.add.at(density, np.minimum(last, left.size), -height)
+    mass = np.cumsum(density)[:left.size] * (right - left)
+
+    if not spread.all():
+        # A zero-width interval sits on a breakpoint and gives its energy to the
+        # segment starting there.
+        at = np.searchsorted(left, lo[~spread], side="left")
+        inside = at < left.size
+        np.add.at(mass, at[inside], energy[~spread][inside])
 
     cumulative = np.concatenate(([0.0], np.cumsum(mass)))
     if cumulative[-1] <= 0.0:
@@ -126,8 +144,8 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     centroid = float(energy @ t_mid) / total
     # A tile is an interval, not a point, so its own width contributes to the
     # spread: uniformly distributed energy over a width w has variance w^2/12.
-    # It matters most where the tiles differ in width, which is exactly what
-    # searching at several window lengths produces.
+    # It matters where the tiles differ in width, which within one window is
+    # what a transient spread across octaves produces.
     variance = float(energy @ ((t_mid - centroid) ** 2 + (t_hi - t_lo) ** 2 / 12.0))
     spread = np.sqrt(max(variance / total, 0.0))
 

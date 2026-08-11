@@ -168,3 +168,73 @@ def efficiency(matched, bins=None, injected_snr_column="network_snr", group_colu
                 row[group_column] = name
             rows.append(row)
     return pd.DataFrame(rows)
+
+
+def unclaimed_candidates(candidates, injections, window_s=0.5,
+                         candidate_time="gpsPeak", injection_time="gps",
+                         statistic=None, limit=None):
+    """Candidates that no injection accounts for, loudest first.
+
+    On simulated data every candidate above threshold should be either an
+    injection or an accident, and the list this returns should be short and
+    should look like the background. On real data it is where a real signal
+    would appear: something the search found, that is not one of ours, and that
+    the accidental rate does not comfortably explain.
+
+    A candidate is claimed when its own time span, widened by `window_s`,
+    contains any injection --- not merely when it is the loudest candidate an
+    injection matched. The looser rule is the right one here: a second, weaker
+    candidate on the same injection is still that injection's, and calling it
+    unexplained would fill the list with our own signals.
+
+    Nothing about the astrophysical origin of what remains is decided here. The
+    list is what has to be looked at, against a catalogue and against the
+    detectors' state, and it is deliberately short enough to look at.
+
+    :type candidates: pandas.DataFrame
+    :param candidates: search output, one row per candidate.
+    :type injections: pandas.DataFrame
+    :param injections: the injections made, whatever their strength: a weak
+        injection that was recovered is still not an unexplained candidate.
+    :type window_s: float
+    :param window_s: how far outside its own extent a candidate still counts as
+        covering an injection, seconds. It must be the tolerance the efficiency
+        was measured with, or a candidate can be missing from both lists.
+    :type candidate_time: str
+    :param candidate_time: column holding the candidate time, used where a
+        candidate records no extent.
+    :type injection_time: str
+    :param injection_time: column holding the injection time.
+    :type statistic: str or None
+    :param statistic: column to sort by, descending. The order the list is read
+        in; None leaves the candidates in the order given.
+    :type limit: int or None
+    :param limit: keep only this many, after sorting. None keeps all.
+    :return: pandas.DataFrame -- the rows of `candidates` that no injection
+        covers, sorted and truncated as asked.
+    :raises KeyError: if `statistic` is not a column of `candidates`.
+    """
+    if statistic is not None and statistic not in candidates:
+        raise KeyError(f"{statistic!r} is not a column of the candidates")
+    if candidates.empty:
+        return candidates.copy()
+
+    start, end = candidate_spans(candidates, candidate_time=candidate_time)
+    if injections is None or injections.empty:
+        claimed = np.zeros(len(candidates), dtype=bool)
+    else:
+        times = np.sort(
+            pd.to_numeric(injections[injection_time], errors="coerce")
+            .to_numpy(dtype=float))
+        times = times[np.isfinite(times)]
+        # An injection inside the widened span claims the candidate. Searching
+        # the sorted injection times asks that of every candidate at once,
+        # instead of pairing each candidate with every injection.
+        first = np.searchsorted(times, start - float(window_s), side="left")
+        last = np.searchsorted(times, end + float(window_s), side="right")
+        claimed = last > first
+
+    out = candidates.loc[~claimed]
+    if statistic is not None:
+        out = out.sort_values(statistic, ascending=False)
+    return out.head(limit) if limit is not None else out

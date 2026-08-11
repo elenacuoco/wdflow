@@ -16,14 +16,34 @@ from wdf.analysis.cluster_coefficients import (
     iter_cluster_coefficients,
     score_events_by_reconstruction,
 )
-from wdf.analysis.reconstruction import combined_snr, reconstruct_clusters, stitch
-from wdf.analysis.wavelets import dominant_tile, wavegram_ridge
+from wdf.analysis.reconstruction import (
+    combined_snr,
+    phase_residual,
+    reconstruct_clusters,
+    stitch,
+    waveform_overlap,
+)
+from wdf.analysis.wavelets import wavegram_ridge
 from wdf.analysis.coincidence import CoincidenceFinder as LegacyCoincidenceFinder
 from wdf.analysis.evaluation import (
     compare_statistics,
     efficiency_at_far,
     temporal_split,
     threshold_at_far,
+)
+from wdf.analysis.event_significance import EventCalibration
+from wdf.analysis.injections import unclaimed_candidates
+from wdf.analysis.ridge import (
+    RIDGE_FEATURES,
+    event_ridge,
+    event_ridge_features,
+)
+from wdf.analysis.skymap import credible_area, localise, sky_grid
+from wdf.analysis.modes import (
+    DetectionMode,
+    compare_modes,
+    mode_roc,
+    mode_threshold,
 )
 from wdf.analysis.output_schema import ensure_enwdf_column
 from wdf.analysis.robust_events import (
@@ -67,13 +87,29 @@ __all__ = [
     "combined_snr",
     "reconstruct_clusters",
     "stitch",
-    "dominant_tile",
+    "phase_residual",
+    "waveform_overlap",
     "wavegram_ridge",
     "CoincidenceFinder",
     "compare_statistics",
     "efficiency_at_far",
     "temporal_split",
     "threshold_at_far",
+    "DetectionMode",
+    "compare_modes",
+    "mode_roc",
+    "mode_threshold",
+    "EventCalibration",
+    "unclaimed_candidates",
+    "event_ridge",
+    "event_ridge_features",
+    "RIDGE_FEATURES",
+    "localise",
+    "credible_area",
+    "sky_grid",
+    "localise",
+    "credible_area",
+    "sky_grid",
     "ensure_enwdf_column",
     "cluster_detector_triggers",
     "select_events_for_coincidence",

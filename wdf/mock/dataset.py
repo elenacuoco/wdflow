@@ -11,6 +11,23 @@ Compact-binary ``gps`` values are geocentric merger times. Glitch ``gps``
 values are the centre of the generated sample array. The truth table also
 contains the actual time support in every detector, which is the preferred
 quantity for matching long CBC signals to WDF triggers.
+
+A compact binary is placed on the sky and projected, not copied. Each is drawn
+isotropically -- uniform in right ascension and in the sine of declination, with
+a uniform polarisation and an inclination uniform in its cosine -- and
+``project_cbc`` forms each detector's strain from that detector's own antenna
+response, with the arrival time delayed by the geometry. The two detectors
+therefore see different amplitudes, and arrival times differing by up to the
+light travel time between them, for one source. Only the overall normalisation
+is imposed: the network signal-to-noise ratio is scaled to the requested value,
+and how it divides between the detectors follows from where the source is. A
+coincidence test is then asked the question it will be asked on real data,
+rather than being shown one detector's data copied into the other.
+
+Glitches are single-detector by construction and are not projected: each exists
+in the detector it was placed in. In coincidence they can therefore only measure
+the accidental floor, which is what makes them useful there --- an efficiency at
+that floor is not evidence of recovery.
 """
 from __future__ import annotations
 
@@ -136,8 +153,31 @@ def optimal_snr(
 def project_cbc(hp, hc, ra, dec, polarization, gps, detectors=("H1", "L1")):
     """Project plus and cross polarisations onto the detector network.
 
-    Returns ``{ifo: (strain, arrival_gps)}``, where ``arrival_gps`` is the
-    detector merger time and ``strain`` retains the sample support of ``hp``.
+    Each detector sees `F+ hp + Fx hc`, with its own antenna response evaluated
+    for the source's position and polarisation at that time, and its own arrival
+    time delayed from the geocentre by the geometry. This is what makes the two
+    detectors' data a network view of one source rather than two copies: the
+    amplitude ratio and the arrival-time difference are then properties of where
+    the source is, and are exactly what the coincidence stage has to survive.
+
+    :type hp: array-like
+    :param hp: plus polarisation, sampled uniformly in time.
+    :type hc: array-like
+    :param hc: cross polarisation, on the same samples as `hp`.
+    :type ra: float
+    :param ra: right ascension of the source, radians.
+    :type dec: float
+    :param dec: declination of the source, radians.
+    :type polarization: float
+    :param polarization: polarisation angle, radians.
+    :type gps: float
+    :param gps: geocentric time the response is evaluated at, seconds. The
+        response depends on it through the Earth's orientation.
+    :type detectors: iterable of str
+    :param detectors: the detectors to project onto.
+    :return: dict -- `{ifo: (strain, arrival_gps)}`, where `strain` keeps the
+        sample support of `hp` and `arrival_gps` is that detector's merger time.
+    :raises ValueError: if `hp` and `hc` do not have the same shape.
     """
     from pycbc.detector import Detector
 
@@ -156,9 +196,31 @@ def project_cbc(hp, hc, ra, dec, polarization, gps, detectors=("H1", "L1")):
     return out
 
 
-def _draw_cbc(rng, snr_range):
-    """Draw physical parameters for one compact-binary injection."""
-    subclass = str(rng.choice(waveforms.CBC_CLASSES, p=[0.50, 0.28, 0.22]))
+# How a drawn compact binary divides between the classes, in the order of
+# `waveforms.CBC_CLASSES`. It is a property of the set being generated and not
+# of the search: an efficiency averaged over classes says as much about this
+# mixture as about the pipeline, so a set states the mixture it was drawn with.
+DEFAULT_CBC_MIX = (0.50, 0.28, 0.22)
+
+
+def _draw_cbc(rng, snr_range, cbc_mix=DEFAULT_CBC_MIX):
+    """Draw physical parameters for one compact-binary injection.
+
+    :param rng: the generator the draw comes from.
+    :param snr_range: the network signal-to-noise ratio to scale to.
+    :param cbc_mix: probability of each class, in the order of
+        `waveforms.CBC_CLASSES`. Normalised internally, so weights need not
+        sum to one.
+    :return: dict -- the injection's physical parameters.
+    :raises ValueError: if the mixture does not give one non-negative weight
+        per class.
+    """
+    mix = np.asarray(cbc_mix, dtype=float)
+    if mix.size != len(waveforms.CBC_CLASSES) or mix.min() < 0.0 or mix.sum() <= 0:
+        raise ValueError(
+            "cbc_mix must give one non-negative weight per class "
+            f"{tuple(waveforms.CBC_CLASSES)}, got {tuple(cbc_mix)}")
+    subclass = str(rng.choice(waveforms.CBC_CLASSES, p=mix / mix.sum()))
 
     if subclass == "bbh":
         mass1 = rng.uniform(15.0, 50.0)
@@ -298,6 +360,7 @@ def draw_injections(
     minimum_gap=1.0,
     detector_delay_pad=0.02,
     strict=True,
+    cbc_mix=DEFAULT_CBC_MIX,
 ):
     """Draw and place non-overlapping CBC and glitch injections.
 
@@ -313,7 +376,7 @@ def draw_injections(
         raise ValueError("minimum_gap must be non-negative")
 
     rng = np.random.default_rng(seed)
-    specs = [_draw_cbc(rng, snr_range) for _ in range(n_cbc)]
+    specs = [_draw_cbc(rng, snr_range, cbc_mix) for _ in range(n_cbc)]
     specs.extend(_draw_glitch(rng, snr_range, detectors) for _ in range(n_glitch))
     specs = [_prepare_injection_support(spec, sample_rate) for spec in specs]
     rng.shuffle(specs)
@@ -718,6 +781,7 @@ def generate_dataset(
     frame_length=1024.0,
     minimum_injection_gap=1.0,
     strict=True,
+    cbc_mix=DEFAULT_CBC_MIX,
 ):
     """Generate and write a complete mock foreground/background data set.
 
@@ -769,6 +833,7 @@ def generate_dataset(
         detectors=detectors,
         minimum_gap=minimum_injection_gap,
         strict=strict,
+        cbc_mix=cbc_mix,
     )
 
     requested = int(n_cbc) + int(n_glitch)

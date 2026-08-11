@@ -58,6 +58,18 @@ wdf.processes.wavelet_energy
 .. automodule:: wdf.processes.wavelet_energy
    :members:
 
+wdf.processes.ar_lv_io
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.ar_lv_io
+   :members:
+
+wdf.processes.Coloring
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.Coloring
+   :members:
+
 wdf.observers.ParameterEstimationObserver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -74,6 +86,12 @@ wdf.structures.eventPE
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.structures.eventPE
+   :members:
+
+wdf.structures.array2SeqView
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.structures.array2SeqView
    :members:
 
 Downstream analysis
@@ -127,6 +145,12 @@ wdf.analysis.significance
 .. automodule:: wdf.analysis.significance
    :members:
 
+wdf.analysis.event_significance
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.event_significance
+   :members:
+
 wdf.analysis.evaluation
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -137,6 +161,12 @@ wdf.analysis.roc
 ~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.roc
+   :members:
+
+wdf.analysis.modes
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.modes
    :members:
 
 wdf.analysis.pairs
@@ -174,6 +204,12 @@ wdf.analysis.baseline
 
 .. automodule:: wdf.analysis.detectors
    :members:
+
+wdf.analysis.skymap
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.skymap
+   :members:
    :undoc-members:
    :show-inheritance:
 
@@ -195,6 +231,12 @@ wdf.analysis.wavelets
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.wavelets
+   :members:
+
+wdf.analysis.ridge
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.ridge
    :members:
 
 wdf.analysis.reconstruction
@@ -245,4 +287,16 @@ wdf.mock.dataset
 ~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.mock.dataset
+   :members:
+
+wdf.mock.noise
+~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.mock.noise
+   :members:
+
+wdf.mock.real_data
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.mock.real_data
    :members:

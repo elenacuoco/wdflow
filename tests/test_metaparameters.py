@@ -287,3 +287,31 @@ def test_the_peak_tile_is_never_louder_than_the_whole_window():
         features = meta_features(index, value, 512, 2048.0, sigma)
         enwdf = float(np.linalg.norm(value) / sigma)
         assert features["snrPeak"] <= enwdf + 1e-9
+
+
+def test_a_tile_of_no_width_still_carries_its_energy():
+    """A degenerate interval sits on a point and is not silently dropped."""
+    from wdf.analysis.metaparameters import energy_quantile
+
+    # Almost all the energy is on the two points; the quantiles must sit there
+    # rather than on the one interval that has any width.
+    lo = np.array([0.0, 1.0, 2.0])
+    hi = np.array([0.0, 3.0, 2.0])
+    energy = np.array([100.0, 1.0, 100.0])
+
+    low, high = energy_quantile(lo, hi, energy, (0.05, 0.95))
+    assert low < 1.0
+    assert high > 1.0
+
+
+def test_the_quantiles_do_not_depend_on_the_order_of_the_tiles():
+    from wdf.analysis.metaparameters import energy_quantile
+
+    rng = np.random.default_rng(3)
+    lo = rng.uniform(0.0, 10.0, 50)
+    hi = lo + rng.uniform(0.01, 2.0, 50)
+    energy = rng.uniform(0.1, 5.0, 50)
+    order = rng.permutation(50)
+
+    assert energy_quantile(lo, hi, energy, (0.05, 0.5, 0.95)) == pytest.approx(
+        energy_quantile(lo[order], hi[order], energy[order], (0.05, 0.5, 0.95)))

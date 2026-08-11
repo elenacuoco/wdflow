@@ -1,3 +1,13 @@
+"""The search itself: transform a block, threshold it, and emit what survived.
+
+Each analysis block is transformed in every candidate basis, the basis that
+represents it most compactly wins, and the coefficients that stand above the
+noise are kept. What leaves this stage is those coefficients and the noise scale
+they were measured against, which is the whole of what a trigger is.
+
+The stage is an observable: it does not know what happens to a trigger, and the
+parameter estimation, the writing and any diagnostics attach as observers.
+"""
 __author__ = "Elena Cuoco"
 __project__ = "wdf"
 

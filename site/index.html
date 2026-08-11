@@ -350,16 +350,16 @@
   </section>
 
   <section class="wrap">
-    <p class="label">Several window lengths</p>
-    <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">One pass over the data, searched at every scale at once.</h2>
+    <p class="label">One analysis window</p>
+    <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">One window length, because the transform already is multi-resolution.</h2>
     <div class="cols" style="margin-top:1.5rem;">
       <div class="prose">
-        <p>A transient longer than the analysis window cannot have its extent measured inside one, and only a longer window reaches the bands below. So the search runs at several window lengths at once, over a single conditioning pass: the expensive part is done once, and each length keeps its own stride and its own grid.</p>
-        <p>Doubling the window does not add bands between the octaves. It extends the ladder one octave downward and makes every tile twice as long &mdash; a longer window buys duration and low frequency, and resolution in frequency only indirectly.</p>
+        <p>A dyadic transform ties the level of a coefficient to the band it occupies, so a tile of a given band lasts the same however long the block is. Doubling the window does not insert bands between the octaves and does not lengthen the tiles of the bands already there: it extends the ladder one octave downward, below the low-frequency cut.</p>
+        <p>Searching at several lengths therefore repeats one tiling on shifted grids of blocks rather than adding resolution, and pays a trials factor for the repetition. Measured at a fixed false-alarm rate on the simulated set, the ladder cost several units of threshold and recovered nothing the single length did not.</p>
       </div>
       <div class="prose">
-        <p>The lengths are never added together. The same strain is read by all of them, and the statistic of a window depends on how many coefficients that window holds, so a sum would count one transient several times over and compare quantities that are not the same.</p>
-        <p>Each length is mapped instead through its own measured background, onto a significance that means the same thing everywhere. Taking the best of several lengths is then a look-elsewhere effect, and the price is measured rather than assumed &mdash; the lengths search the same data, so they are far from independent.</p>
+        <p>The transient longer than the block is the grouping's problem, not the window's. The block is a unit of computation; the event is the physical object, assembled afterwards from the coefficients of every block it touched, and its statistic is measured on the reconstruction stitched across them.</p>
+        <p>The length stays a parameter, and the machinery that makes several of them comparable stays with it: each is mapped through its own measured background onto a significance that means the same thing everywhere, so that taking the best of several is a look-elsewhere effect whose price is measured rather than assumed.</p>
       </div>
     </div>
 
@@ -490,7 +490,7 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
     <p class="label">Tutorials</p>
     <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">Three notebooks, each generating its own data.</h2>
     <p class="measure" style="color:var(--fg-dim);margin-top:1rem;">No external data set and no frame file is required, so they run on a fresh checkout. The third needs no compiled core at all.</p>
-    <p class="measure" style="color:var(--fg-dim);margin-top:1rem;">Beyond them the pipeline has been run on recorded LIGO strain: the segments around GW250114 and GW170817, and six independent four-hour stretches of O4 with compact-binary signals injected into them, each conditioned on its own noise model. Across all of them the calibration of the statistic holds at every window length and in both detectors &mdash; the property the multi-window construction rests on, and the one a simulated set cannot test.</p>
+    <p class="measure" style="color:var(--fg-dim);margin-top:1rem;">Beyond them the pipeline has been run on recorded LIGO strain: the segments around GW250114 and GW170817, and eight independent four-hour stretches of O4 with compact-binary signals injected into them, each conditioned on its own noise model. Across all of them the calibration of the statistic holds in both detectors &mdash; the property the ranking rests on, and the one a simulated set cannot test.</p>
 
     <ol class="tutorials">
       <li>
@@ -510,6 +510,12 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
         <h3>Coincidence and significance</h3>
         <p>Multi-detector coincidence within the light-travel time, accidental background from unphysical time shifts, false-alarm probability and ROC — using the analysis layer alone.</p>
         <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/03_coincidence_and_significance.ipynb">open notebook</a> <span class="dep">no compiled core</span></p>
+      </li>
+      <li>
+        <span class="n">Notebook 4</span>
+        <h3>Reconstruction across blocks, and the phase</h3>
+        <p>A chirp longer than the analysis window, reassembled from the coefficients of every block it touched. Why the weight that joins two blocks has to vanish at their edges, and why the case for it is made on the phase and not on the amplitude &mdash; an average agrees while a phase walks.</p>
+        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/04_reconstruction_and_phase.ipynb">open notebook</a> <span class="dep">requires pytsa</span></p>
       </li>
     </ol>
   </section>

@@ -1,3 +1,19 @@
+"""Events, coincidence and background, from trigger files to a false-alarm rate.
+
+The stages that turn one detector's triggers into a network candidate with a
+rate attached: cleaning a trigger file, grouping consecutive triggers into
+events, admitting pairs of events across detectors on the geometry a real
+signal must satisfy, and measuring how often that admission happens by accident.
+
+The timing tolerance of a pair is not a fixed number. It is the light travel
+time between the detectors, widened by the two events' own declared timing
+spreads and capped, so that one rule fits a burst of a few milliseconds and a
+transient of several seconds without either being treated as a special case.
+
+The accidental rate is measured by shifting the detectors against each other by
+more than any signal could explain, so every coincidence a shift produces is
+accidental by construction and none of them has to be identified as such.
+"""
  
 from __future__ import annotations
 
@@ -414,11 +430,10 @@ class CoincidenceConfig:
     zero spread, which is a statement about the tiling, not about the signal.
 
     :param light_travel_time_s: largest arrival-time difference a real signal
-        can have between the detectors, seconds. None takes it from the
-        detectors named in `ifos`, which is a distance rather than a number
-        chosen for one pair; a value overrides that.
-    :param ifos: the detectors in the network, used to resolve the light travel
-        time when it is not given.
+        can have between the detectors, seconds. None resolves it from the
+        detectors the pair is being evaluated for, passed to the methods below,
+        which is a distance rather than a number chosen for one pair; a value
+        set here overrides that for every pair.
     :param timing_jitter_s: floor on an event's timing spread, seconds. It is a
         floor and not the timing error: an event living in one tile declares
         zero spread, which is a statement about the tiling. Set so that the

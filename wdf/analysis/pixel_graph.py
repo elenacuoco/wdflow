@@ -2,14 +2,13 @@
 
 A node is one surviving wavelet coefficient -- a time-frequency tile, at the
 window length it was found at. Edges join tiles that could belong to the same
-transient: neighbours in time within the same band, and tiles of different
-window lengths whose cells cover the same region.
+transient: neighbours in time within the same band, and, when a run is
+configured at more than one window length, tiles of different lengths whose
+cells cover the same region.
 
-The cross-scale edges are what makes this more than three overlaid
-spectrograms. A short impulse is loud at the shortest window and diluted at the
-longest, a long narrow-band transient does the opposite, and the edges carry
-that relation explicitly rather than leaving it to be inferred from three
-separate clusterings that would have to be reconciled afterwards.
+The length is carried as a coordinate rather than resolved away, so that tiles
+found at different lengths are related by the same rule that relates tiles found
+at one, instead of by a reconciliation between separate clusterings.
 
 Assembling the connected components of this graph gives one detector's events,
 which are the nodes of level two, the inter-detector network graph in

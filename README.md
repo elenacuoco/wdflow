@@ -198,9 +198,8 @@ Beyond the tutorials, which generate their own data, the pipeline has been run
 on recorded LIGO strain: the segments around GW250114 and GW170817, and six
 independent four-hour stretches of O4 with compact-binary signals injected into
 them, each conditioned on its own noise model. Across all of them the
-calibration of the statistic holds at every window length and in both detectors,
-which is the property the multi-window construction rests on and the one a
-simulated set cannot test.
+calibration of the statistic holds in both detectors, which is the property the
+ranking rests on and the one a simulated set cannot test.
 
 ## How to cite
 

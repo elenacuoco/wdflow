@@ -1,3 +1,14 @@
+"""Band-pass and downsample, before anything is estimated from the data.
+
+The strain is dominated by frequencies the search does not use, and modelling
+noise it will not look at spends the model's order where it buys nothing. This
+stage restricts the band and reduces the rate to match it, so the noise model
+and the transform that follow work on the band the search actually searches.
+
+The filter is applied so that its own settling is accounted for rather than
+left in the output: a filter has a memory, and the samples that carry only that
+memory are not data.
+"""
 __author__ = "Francesco Di Renzo, Elena Cuoco"
 __project__ = "wdf"
 

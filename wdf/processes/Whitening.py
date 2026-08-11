@@ -1,3 +1,15 @@
+"""Whitening by an adaptive autoregressive model of the noise.
+
+The noise model is estimated from the data as they arrive and updated with
+them, so a change in the spectrum is followed rather than being fixed at the
+start of a run. What the search sees is the residual: a series whose spectrum is
+flat where the model is right, on which one threshold means the same thing at
+every frequency.
+
+The filter estimated here is causal. `zero_phase_whitening` builds the
+square-root filter that removes the same colour without moving the transient in
+time, which is what the reconstruction needs.
+"""
 __author__ = "Elena Cuoco"
 __project__ = "pytsa"
 

@@ -249,6 +249,34 @@ class TriggerGraphBuilder:
         :return: TriggerGraph
         :raises KeyError: if an event has no coefficients.
         """
+        return self.build_from_prepared(
+            clustered, self.prepare(clustered, coefficients, comparison))
+
+    def prepare(self, clustered: dict[str, pd.DataFrame],
+                coefficients: dict[str, dict],
+                comparison: dict[str, dict] | None = None) -> dict:
+        """Everything about the nodes that does not depend on when they happened.
+
+        A time slide moves a detector's events, so it changes which pairs are
+        admissible; it changes nothing about what those events are. Their maps,
+        their feature vectors, their unit-norm shapes, their energy and their
+        bands are properties of the coefficients, so they are computed once here
+        and reused by every `build_from_prepared` that follows. That is what
+        keeps a background estimate proportional to the number of slides instead
+        of to the number of slides times the number of events.
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: ``{ifo: event catalogue}``, carrying `cluster_id`.
+        :type coefficients: dict[str, dict]
+        :param coefficients: ``{ifo: {cluster_id: EventWavegram}}``, the
+            assembly map. Every event must have an entry.
+        :type comparison: dict[str, dict] | None
+        :param comparison: the same events rendered for the cross-detector
+            comparison; the assembly map when None.
+        :return: dict -- the node-side arrays, to be given to
+            `build_from_prepared` together with the events they describe.
+        :raises KeyError: if an event has no coefficients.
+        """
         ifos = self.ifos or list(clustered.keys())
         frames, grids, grid_shape, bin_seconds, clouds = self._stack(
             clustered, coefficients, ifos)
@@ -279,11 +307,6 @@ class TriggerGraphBuilder:
         # The width comes from the grids that arrived, not from this builder's
         # own constant: a multi-window event is rendered on the shared band grid
         # by its own level, which need not have chosen the same number of bins.
-        panels = shapes.reshape(len(shapes), *fine_shape) if shapes.size else \
-            shapes.reshape(len(shapes), 0, self.wavegram_time_bins)
-        energy_panels = raw.reshape(len(raw), *fine_shape) if raw.size else \
-            raw.reshape(len(raw), 0, self.wavegram_time_bins)
-
         energy = _coefficient_energy(nodes_df)
         # The support is what decides admissibility, and it is wide by
         # construction, so its overlap is near one for almost every admitted
@@ -293,6 +316,52 @@ class TriggerGraphBuilder:
         band_hi = _numeric(nodes_df, ("freqQ95", "freqMax"), default=np.nan)
         spread = _numeric(nodes_df, ("tSpread",), default=0.0)
         spread = np.where(np.isfinite(spread), spread, 0.0)
+        return dict(
+            ifos=ifos, node_features=X, shapes=shapes, raw=raw, clouds=clouds,
+            energy=energy, band_lo=band_lo, band_hi=band_hi, spread=spread,
+            fine_bin=fine_bin,
+            # The order the arrays are in, so that a later call cannot silently
+            # index them with a different event set.
+            order=[(ifo, int(label))
+                   for ifo in ifos
+                   for label in clustered[ifo]["cluster_id"].astype(int)])
+
+    def build_from_prepared(self, clustered: dict[str, pd.DataFrame],
+                            prepared: dict) -> TriggerGraph:
+        """The graph, from events whose node-side quantities are already known.
+
+        Only the times are read from `clustered`: everything else comes from
+        `prepared`. The two must therefore describe the same events in the same
+        order, which is checked rather than assumed --- indexing the prepared
+        arrays with a different event set would attach one event's morphology to
+        another's time and produce a plausible, wrong graph.
+
+        :type clustered: dict[str, pandas.DataFrame]
+        :param clustered: ``{ifo: event catalogue}``, at the times to use.
+        :type prepared: dict
+        :param prepared: what `prepare` returned for these events.
+        :return: TriggerGraph
+        :raises ValueError: if the events are not the ones that were prepared.
+        """
+        ifos = prepared["ifos"]
+        order = [(ifo, int(label))
+                 for ifo in ifos
+                 for label in clustered[ifo]["cluster_id"].astype(int)]
+        if order != prepared["order"]:
+            raise ValueError(
+                "the events given are not the ones prepared: the node-side "
+                "arrays are indexed by position, so they cannot be reused for "
+                "a different event set or a different order")
+
+        X = prepared["node_features"]
+        shapes, raw, clouds = prepared["shapes"], prepared["raw"], prepared["clouds"]
+        energy = prepared["energy"]
+        band_lo, band_hi = prepared["band_lo"], prepared["band_hi"]
+        spread = prepared["spread"]
+        fine_bin = prepared["fine_bin"]
+
+        nodes_df = pd.concat([clustered[ifo].reset_index(drop=True).assign(ifo=ifo)
+                              for ifo in ifos], ignore_index=True)
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
         gps = nodes_df["gpsPeak"].to_numpy(dtype=float)
 
@@ -430,3 +499,66 @@ def edge_labels_from_injections(graph, injection_times, window_s: float = 0.5):
 
     i, j = graph.cross_edges[:, 0], graph.cross_edges[:, 1]
     return ((owner[i] >= 0) & (owner[i] == owner[j])).astype(float)
+
+
+class WavegramCoincidenceFinder:
+    """A finder whose candidates carry what the wavegrams say about them.
+
+    `IndexedCoincidenceFinder` admits pairs and describes them with times,
+    bands and energies; the agreement between two events' wavegrams is added by
+    the graph, which needs their coefficient maps. Anything that ranks a
+    candidate on that agreement therefore has to see the graph's table, and so
+    does the background it is calibrated against --- a statistic measured on
+    the foreground and absent from the background cannot be given a rate.
+
+    This wraps the two so that one object produces the same table for both. It
+    satisfies the interface `TimeSlideFAR` expects, so the accidental
+    population is built the same way as the zero-lag one rather than by a
+    second route that would have to be kept in step.
+
+    The node-side quantities are prepared once and reused for every slide. A
+    slide moves an event in time and does not change its coefficients, and the
+    map two detectors are compared on is centred on each event's own energy
+    rather than on an absolute time, so nothing prepared depends on the shift.
+    Rebuilding them per slide would make the cost of a background estimate grow
+    as the number of slides times the number of events.
+
+    :param finder: the finder deciding which pairs are admissible.
+    :param builder: the builder rendering the admitted pairs as a graph.
+    :param coefficients: `{ifo: {cluster_id: EventWavegram}}`, the assembly map.
+    :param comparison: the same events rendered for the cross-detector
+        comparison; the assembly map when None.
+    :param events: the events the maps belong to, used to prepare the node-side
+        arrays once. None prepares them on the first call instead.
+    """
+
+    def __init__(self, finder, builder, coefficients, comparison=None,
+                 events=None):
+        self.finder = finder
+        self.builder = builder
+        self.coefficients = coefficients
+        self.comparison = comparison
+        self._prepared = (None if events is None
+                          else builder.prepare(events, coefficients, comparison))
+
+    def find(self, events_by_ifo) -> pd.DataFrame:
+        """The admitted pairs, described by the graph.
+
+        :type events_by_ifo: dict
+        :param events_by_ifo: `{ifo: event catalogue}`.
+        :return: pandas.DataFrame -- `TriggerGraph.candidate_table`'s schema;
+            empty when no pair is admitted.
+        """
+        ifos = list(events_by_ifo)
+        if any(events_by_ifo[ifo].empty for ifo in ifos):
+            return pd.DataFrame()
+        if self._prepared is None:
+            self._prepared = self.builder.prepare(
+                events_by_ifo,
+                {ifo: self.coefficients[ifo] for ifo in ifos},
+                comparison=None if self.comparison is None
+                else {ifo: self.comparison[ifo] for ifo in ifos})
+        graph = self.builder.build_from_prepared(events_by_ifo, self._prepared)
+        if not len(graph.cross_edges):
+            return pd.DataFrame()
+        return graph.candidate_table()

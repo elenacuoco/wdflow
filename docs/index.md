@@ -9,6 +9,7 @@
 tutorials/01_the_statistic_and_the_parameters
 tutorials/02_the_wavegram_and_long_signals
 tutorials/03_coincidence_and_significance
+tutorials/04_reconstruction_and_phase
 ```
 
 ```{toctree}
@@ -18,7 +19,7 @@ tutorials/03_coincidence_and_significance
 
 api
 design/sparse-coefficients
-design/multiwindow-and-graphs
+design/windows-and-graphs
 design/event-candidates
 design/whitening
 design/warm-up

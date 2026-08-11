@@ -125,3 +125,146 @@ def test_an_empty_frame_has_no_centroid():
 
     assert spectral_centroid(
         pd.DataFrame(columns=["n_coeff", "fs", "wave", "wt_index", "wt_value"])).size == 0
+
+
+def _boundary_jumps(samples, window, overlap, n_windows):
+    """Sample-to-sample change at each window boundary of a stitched series."""
+    step = window - overlap
+    edges = [k * step for k in range(1, n_windows)]
+    return np.array([abs(samples[e] - samples[e - 1])
+                     for e in edges if 0 < e < len(samples)])
+
+
+def _thresholded(triggers, window, sigma=1.0):
+    """The triggers as the search writes them, one threshold per window.
+
+    Two windows covering the same samples keep different coefficients, so their
+    reconstructions of the overlapped region disagree. That disagreement is the
+    only thing a stitching policy has to reconcile, and without it every policy
+    gives the same answer.
+    """
+    from wdf.analysis.coefficients import coefficient_matrix, from_dense
+    from wdf.analysis.wavelets import donoho_johnstone_threshold
+
+    cut = donoho_johnstone_threshold(sigma, window)
+    kept = [from_dense(np.where(np.abs(row) > cut, row, 0.0))
+            for row in coefficient_matrix(triggers)]
+    triggers = triggers.copy()
+    triggers["wt_index"] = [index for index, _ in kept]
+    triggers["wt_value"] = [value for _, value in kept]
+    return triggers
+
+
+@pytest.mark.parametrize("overlap", [32, 256])
+def test_overlap_add_crosses_the_window_boundary_without_a_step(overlap):
+    """A boundary is not visible as a jump the signal does not make itself.
+
+    Both the overlap the search runs at and half a window: the crossfade ramp
+    is as long as the overlap, so a short one is the case that could fail.
+    """
+    from _synth import triggers_from_signal
+    from wdf.analysis.reconstruction import stitch
+
+    fs, window = 2048.0, 512
+    n = 4 * window
+    t = np.arange(n) / fs
+    rng = np.random.default_rng(0)
+    signal = 6.0 * np.sin(2.0 * np.pi * 150.0 * t) + rng.normal(size=n)
+    triggers = _thresholded(triggers_from_signal(signal, fs, window, overlap),
+                            window)
+
+    _, smooth = stitch(triggers, fs, window, overlap,
+                       overlap_policy="overlap_add")
+    _, hard = stitch(triggers, fs, window, overlap,
+                     overlap_policy="central_window")
+
+    smooth_edges = _boundary_jumps(smooth, window, overlap, len(triggers))
+    hard_edges = _boundary_jumps(hard, window, overlap, len(triggers))
+    typical = float(np.median(np.abs(np.diff(smooth))))
+    assert len(smooth_edges)
+    assert smooth_edges.max() < hard_edges.max()
+    assert smooth_edges.max() <= 1.5 * typical
+
+
+def test_overlap_add_recovers_the_signal_it_was_cut_from():
+    """Averaging the two estimates does not bias the reconstruction."""
+    from _synth import triggers_from_signal
+    from wdf.analysis.reconstruction import stitch
+
+    fs, window, overlap = 2048.0, 512, 256
+    n = 4 * window
+    t = np.arange(n) / fs
+    signal = 20.0 * np.sin(2.0 * np.pi * 150.0 * t) * np.exp(-((t - 0.5) ** 2) / 0.02)
+    triggers = triggers_from_signal(signal, fs, window, overlap)
+
+    _, stitched = stitch(triggers, fs, window, overlap)
+    covered = slice(0, len(stitched))
+    reference = signal[covered]
+    error = np.linalg.norm(stitched - reference) / np.linalg.norm(reference)
+    assert error < 0.05
+
+
+def test_the_synthesis_weight_vanishes_where_two_windows_meet():
+    """The weight is zero at the block edge, which is what removes the step."""
+    from wdf.analysis.reconstruction import synthesis_weight
+
+    weight = synthesis_weight(512, 256)
+    assert weight[0] < 0.05 and weight[-1] < 0.05
+    assert weight.max() == pytest.approx(1.0, rel=1e-3)
+    assert np.all(np.diff(weight[:256]) > 0)
+    assert np.all(weight > 0)
+
+
+def test_an_unknown_overlap_policy_is_refused():
+    from _synth import triggers_from_signal
+    from wdf.analysis.reconstruction import stitch
+
+    triggers = triggers_from_signal(np.zeros(1024), 2048.0, 512, 256)
+    with pytest.raises(ValueError, match="unknown overlap policy"):
+        stitch(triggers, 2048.0, 512, 256, overlap_policy="average")
+
+
+def test_the_overlap_is_blind_to_a_drift_the_phase_residual_sees():
+    """An aggregate agreement can hide a phase that walks between windows."""
+    from wdf.analysis.reconstruction import phase_residual, waveform_overlap
+
+    fs, window, n = 2048.0, 512, 4 * 512
+    t = np.arange(n) / fs
+    injected = np.sin(2.0 * np.pi * 120.0 * t) * np.exp(-((t - 0.5) ** 2) / 0.05)
+
+    # The same waveform, but each window placed one sample late: every piece is
+    # correct on its own and the whole is not.
+    drifted = injected.copy()
+    for k in range(1, n // window):
+        piece = slice(k * window, (k + 1) * window)
+        drifted[piece] = np.roll(injected[piece], k)
+
+    # The overlap still reads as a recovery, while the phase is wrong by a
+    # sizeable fraction of a radian: one is an average over the series and the
+    # other is a statement about each sample.
+    assert waveform_overlap(drifted, injected)["overlap"] > 0.8
+    walked = phase_residual(drifted, injected)
+    clean = phase_residual(injected, injected)
+    assert clean["median_abs"] == pytest.approx(0.0, abs=1e-9)
+    assert np.abs(walked["residual"]).max() > 0.3
+
+
+def test_a_reconstruction_out_of_phase_does_not_score_as_recovered():
+    """The overlap is phase sensitive, not a comparison of envelopes."""
+    from wdf.analysis.reconstruction import waveform_overlap
+
+    fs, n = 2048.0, 2048
+    t = np.arange(n) / fs
+    envelope = np.exp(-((t - 0.5) ** 2) / 0.01)
+    injected = envelope * np.sin(2.0 * np.pi * 120.0 * t)
+    inverted = envelope * np.sin(2.0 * np.pi * 120.0 * t + np.pi)
+
+    assert waveform_overlap(injected, injected)["overlap"] == pytest.approx(1.0)
+    assert waveform_overlap(inverted, injected)["overlap"] < -0.9
+
+
+def test_series_of_different_lengths_are_refused():
+    from wdf.analysis.reconstruction import waveform_overlap
+
+    with pytest.raises(ValueError, match="common time base"):
+        waveform_overlap(np.zeros(10), np.zeros(11))

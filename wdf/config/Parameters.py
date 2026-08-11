@@ -1,3 +1,15 @@
+"""The run configuration, read from JSON and shared by every stage.
+
+One object carries what the search is told: which channel of which frames over
+which segments, the conditioning parameters, the analysis window and its
+overlap, and where the output goes. Stages read it rather than being given
+arguments one at a time, so a run is described by one file and reproduced from
+it.
+
+Nothing here decides anything. A value that is not in the configuration is not
+a parameter of the search, and a parameter of the search is not written
+anywhere else.
+"""
 __author__ = "Elena Cuoco"
 __copyright__ = "Copyright 2017, Elena Cuoco"
 __credits__ = []
@@ -71,11 +83,12 @@ class Parameters(object):
 def window_schedule(par):
     """The analysis windows a run searches at, as (window, overlap) pairs.
 
-    The same data may be searched at several window lengths at once: a
-    transient longer than the window cannot have its extent measured within
-    one, and only a longer window reaches the lower frequency bands. Each of
-    `window` and `overlap` is either a single value, applying to every window
-    length, or a list.
+    A run searches at one window length. The schedule accepts several, each
+    with its own overlap, because the length is a parameter and not a property
+    of the search; searching at more than one repeats the same tiling on a
+    shifted grid of blocks, and pays a trials factor for it. Each of `window`
+    and `overlap` is either a single value, applying to every window length, or
+    a list.
 
     :param par: run configuration carrying `window` and `overlap`, in samples.
     :return: list[tuple[int, int]] -- (window, overlap), in the order given.

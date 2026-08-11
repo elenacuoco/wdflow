@@ -131,31 +131,6 @@ def test_plot_wavelet_tiles_draws_top_fraction():
     plt.close(fig)
 
 
-def test_dominant_tile_is_the_band_of_the_largest_coefficient():
-    """freqPeak is read off the tile where the local signal-to-noise ratio peaks."""
-    from wdf.analysis.wavelets import coeff_freq_bands, dominant_tile
-
-    fs, n = 2048.0, 512
-    wt = np.zeros(n)
-    k = 100
-    wt[k] = 5.0
-    wt[7] = 1.0
-
-    f_lo, f_hi = coeff_freq_bands(n, fs)
-    tile = dominant_tile(wt, fs, sigma=2.0)
-
-    assert tile["f_lo"] == f_lo[k]
-    assert tile["f_hi"] == f_hi[k]
-    assert f_lo[k] <= tile["freq"] <= f_hi[k]
-    assert tile["snr"] == 2.5
-
-
-def test_dominant_tile_ignores_a_window_with_no_energy():
-    from wdf.analysis.wavelets import dominant_tile
-
-    assert dominant_tile(np.zeros(64), 2048.0) == {}
-
-
 def test_wavegram_ridge_follows_a_rising_track():
     """One frequency per time bin, taken from the loudest tile in that bin."""
     from wdf.analysis.wavelets import coeff_levels, wavegram_ridge

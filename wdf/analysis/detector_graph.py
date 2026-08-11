@@ -1,11 +1,17 @@
-"""Level one: one detector's triggers, across window lengths, as a graph.
+"""Level one: one detector's triggers as a graph, and its events.
 
-A node is one WDF trigger -- one analysis window's surviving coefficients, at
-the window length it was found at. Edges join triggers that could belong to the
-same transient: neighbours in time at the same window length, and triggers of
-different window lengths covering the same region of the time-frequency plane.
-The connected components are the detector's events, which are the nodes of
-level two, the inter-detector network graph in `wdf.analysis.network_graph`.
+A node is one WDF trigger -- one analysis block's surviving coefficients, at the
+window length it was found at. Edges join triggers that could belong to the same
+transient: close in time, with energy in bands that overlap or touch, and
+continuous in coefficient energy. The connected components are the detector's
+events, which are the nodes of level two, the inter-detector network graph in
+`wdf.analysis.network_graph`.
+
+The block is a unit of computation and the event is the physical object, so no
+quantity an event reports may depend on where the analysis grid happened to
+start. A run searches at one window length; the rule below is written over the
+length as well, so that a run configured at more than one joins their triggers
+by the same test rather than by a second one.
 
 The trigger is the right node for this. The labels that train it exist there
 and only there -- an edge is a positive when both triggers belong to the same
@@ -32,6 +38,7 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.metaparameters import energy_quantile
+from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import EPS, _UnionFind
 from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds
@@ -48,7 +55,7 @@ DETECTOR_EVENT_COLUMNS = [
     "freqQ05", "freqQ95", "EnWDF", "sigma", "snrPeak",
     "significance", "n_triggers", "n_scales", "scale_best", "n_coeff", "fs",
     "EnWDF_window",
-]
+] + RIDGE_FEATURES
 
 WAVEGRAM_TIME_BINS = 64
 
@@ -149,6 +156,43 @@ def wavegram_bin_seconds(triggers: pd.DataFrame) -> float:
     return min(strides.values()) if strides else 1.0
 
 
+def _flat_coefficients(triggers: pd.DataFrame, where: np.ndarray):
+    """Every trigger's coefficients laid end to end, with their owners.
+
+    The coefficients are a ragged column, and every use of them is a reduction
+    over one trigger's share. Concatenating once and carrying the owner of each
+    coefficient turns those reductions into single array operations.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers carrying `wt_index` and `wt_value`.
+    :type where: numpy.ndarray
+    :param where: the row each trigger occupies in the caller's output.
+    :return: tuple -- `(index, value, owner)`, one entry per coefficient.
+    """
+    counts = triggers["wt_index"].map(len).to_numpy()
+    if not counts.sum():
+        return (np.zeros(0, dtype=np.int64), np.zeros(0),
+                np.zeros(0, dtype=np.int64))
+    index = np.concatenate([np.asarray(i, dtype=np.int64)
+                            for i in triggers["wt_index"]])
+    value = np.concatenate([np.asarray(v, dtype=float)
+                            for v in triggers["wt_value"]])
+    return index, value, np.repeat(where, counts)
+
+
+def _positive_sigma(triggers: pd.DataFrame) -> np.ndarray:
+    """Each trigger's noise scale, with anything unusable read as one.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers that may carry `sigma`.
+    :return: numpy.ndarray -- one scale per trigger, all finite and positive.
+    """
+    if "sigma" not in triggers:
+        return np.ones(len(triggers))
+    sigma = pd.to_numeric(triggers["sigma"], errors="coerce").to_numpy(float)
+    return np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, 1.0)
+
+
 def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
                       time_bins: int) -> np.ndarray:
     """Each trigger's coefficients on a band-by-time grid of one fixed shape.
@@ -162,13 +206,19 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
     :return: numpy.ndarray -- (n_triggers, n_bands * time_bins), the coefficient
         magnitudes on the noise scale that produced the trigger.
     """
-    grid = np.zeros((len(triggers), len(bands), time_bins))
+    cells = len(bands) * time_bins
     if triggers.empty:
-        return grid.reshape(len(triggers), -1)
+        return np.zeros((0, cells))
 
     band_of = {(round(lo, 9), round(hi, 9)): row
                for row, (lo, hi) in enumerate(bands)}
     positions = np.arange(len(triggers))
+    sigma = _positive_sigma(triggers)
+
+    # One accumulation over every coefficient of every trigger at once. Walking
+    # the triggers instead costs a Python iteration and a scattered add each,
+    # which at a search's trigger rate is where the grouping spends its time.
+    flat_cell, flat_value = [], []
     for (n_coeff, fs), group in triggers.groupby(["n_coeff", "fs"], sort=False):
         n_coeff, fs = int(n_coeff), float(fs)
         t_lo, t_hi = coeff_time_bounds(n_coeff, fs)
@@ -180,18 +230,24 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
             (0.5 * (t_lo + t_hi) / span * time_bins).astype(int), 0, time_bins - 1)
 
         where = positions[triggers.index.get_indexer(group.index)]
-        for slot, (_, trigger) in zip(where, group.iterrows()):
-            index = np.asarray(trigger["wt_index"], dtype=int)
-            # On the noise scale, as the statistic is: the raw coefficients are
-            # strain, of order 1e-22, and a grid of those is numerically zero
-            # once compressed or multiplied by another.
-            sigma = float(trigger.get("sigma", 1.0))
-            sigma = sigma if np.isfinite(sigma) and sigma > 0.0 else 1.0
-            value = np.abs(np.asarray(trigger["wt_value"], dtype=float)) / sigma
-            keep = row_of[index] >= 0
-            np.add.at(grid[slot], (row_of[index[keep]], column_of[index[keep]]),
-                      value[keep])
-    return grid.reshape(len(triggers), -1)
+        index, value, owner = _flat_coefficients(group, where)
+        if not index.size:
+            continue
+        keep = row_of[index] >= 0
+        index, value, owner = index[keep], value[keep], owner[keep]
+        # On the noise scale, as the statistic is: the raw coefficients are
+        # strain, of order 1e-22, and a grid of those is numerically zero once
+        # compressed or multiplied by another.
+        flat_cell.append(owner * cells + row_of[index] * time_bins
+                         + column_of[index])
+        flat_value.append(np.abs(value) / sigma[owner])
+
+    if not flat_cell:
+        return np.zeros((len(triggers), cells))
+    grid = np.bincount(np.concatenate(flat_cell),
+                       weights=np.concatenate(flat_value),
+                       minlength=len(triggers) * cells)
+    return grid.reshape(len(triggers), cells)
 
 
 def occupied_bands(triggers: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
@@ -229,9 +285,16 @@ def occupied_bands(triggers: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
                                         .astype(np.uint64)),
                           np.uint64(0))
         where = position[triggers.index.get_indexer(group.index)]
-        for slot, index in zip(where, group["wt_index"]):
-            mask[slot] = np.bitwise_or.reduce(
-                bit_of[np.asarray(index, dtype=int)], initial=np.uint64(0))
+        index, _, _ = _flat_coefficients(group, where)
+        if not index.size:
+            continue
+        # One reduction over the concatenated coefficients: a trigger's bits are
+        # contiguous in it, so the union per trigger is a segmented OR rather
+        # than a pass per trigger.
+        counts = group["wt_index"].map(len).to_numpy()
+        carrying = counts > 0
+        starts = np.concatenate(([0], np.cumsum(counts)[:-1]))[carrying]
+        mask[where[carrying]] = np.bitwise_or.reduceat(bit_of[index], starts)
     return mask
 
 
@@ -275,12 +338,22 @@ class DetectorGraph:
         :param keep: boolean mask over the edges; default, every edge.
         :return: numpy.ndarray -- one label per node.
         """
-        union = _UnionFind(len(self.nodes))
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        n = len(self.nodes)
         edges = self.edges if keep is None else self.edges[np.asarray(keep, dtype=bool)]
-        for i, j in edges:
-            union.union(int(i), int(j))
-        roots = np.array([union.find(i) for i in range(len(self.nodes))])
-        _, labels = np.unique(roots, return_inverse=True)
+        if n == 0:
+            return np.zeros(0, dtype=int)
+        if not len(edges):
+            return np.arange(n)
+        # A union-find in Python costs a pass per edge and a find per node, which
+        # at a search's trigger rate dominates the grouping. The relation is the
+        # same either way: components of the undirected graph the edges define.
+        adjacency = coo_matrix(
+            (np.ones(len(edges), dtype=np.int8), (edges[:, 0], edges[:, 1])),
+            shape=(n, n))
+        _, labels = connected_components(adjacency, directed=False)
         return labels
 
 
@@ -465,11 +538,12 @@ def detector_events(graph: DetectorGraph, significance=None,
     This is the step from level one to level two: the result is the node set of
     the inter-detector network graph, in the schema that graph reads.
 
-    The event's statistic is that of its loudest member rather than a sum over
-    members. Overlapping windows and several window lengths all describe the
-    same strain, so summing would count one transient's energy several times;
-    a maximum over correlated searches is a look-elsewhere effect instead, and
-    is calibrated on the background rather than asserted.
+    The event's statistic is measured on the reconstruction stitched across its
+    members, which counts each sample once. Summing the members instead would
+    count one transient's energy several times, since consecutive windows
+    overlap, and taking the loudest member would discard the accumulation the
+    grouping exists to recover. The loudest member is kept beside it as
+    `EnWDF_window`, since that is what a search without this step would report.
 
     :type graph: DetectorGraph
     :param graph: the detector's level-one graph.
@@ -553,8 +627,10 @@ def detector_events(graph: DetectorGraph, significance=None,
 
     start = lowest(gps)
     first_tile = lowest(onset)
-    scales_seen = np.array([len(np.unique(scale[order][a:a + n]))
-                            for a, n in zip(starts, sizes)])
+    # Distinct window lengths per event, counted by reduction: a pass per event
+    # is a Python loop over the whole event list.
+    pairs = np.unique(np.column_stack([grouped, scale[order]]), axis=0)
+    scales_seen = np.bincount(pairs[:, 0].astype(np.int64), minlength=n_events)
 
     events = pd.DataFrame({
         "cluster_id": np.arange(n_events),
@@ -595,12 +671,22 @@ def detector_events(graph: DetectorGraph, significance=None,
     for name in quantile_columns:
         events[name] = column(name, np.nan)[peak]
 
+    # The track the event's tiles lie on, where they lie on one. It describes a
+    # morphology and decides nothing: admissibility is geometry and physics, and
+    # a shape preference there would make the injections a description of the
+    # search rather than a check on it.
+    for name in RIDGE_FEATURES:
+        events[name] = np.nan
+
     if {"wt_index", "wt_value"} <= set(nodes.columns):
         for event in np.flatnonzero(sizes > 1):
             members = order[starts[event]:starts[event] + sizes[event]]
             lo, hi, band_lo, band_hi, tile_energy = event_tiles(nodes, members)
             if not tile_energy.size:
                 continue
+            for name, value in event_ridge_features(
+                    lo, hi, band_lo, band_hi, tile_energy).items():
+                events.at[event, name] = value
             events.at[event, "duration90"] = float(np.diff(energy_quantile(
                 lo, hi, tile_energy, (0.05, 0.95)))[0])
             band = energy_quantile(np.log(np.maximum(band_lo, EPS)),

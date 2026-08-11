@@ -1,10 +1,10 @@
-# Several window lengths, and two levels of graph
+# The analysis window, and two levels of graph
 
-The search runs at more than one analysis window length, and what it produces is
+The search reads the strain in blocks of one length, and what it produces is
 read through two graphs: one inside a detector, one across the network.
 
 ```
-h_d(t) → multi-window WDF
+h_d(t) → WDF, one analysis window
        → level one: the detector's triggers as a graph over (t, f, scale)
        → single-detector events
        → level two: those events as an inter-detector network graph
@@ -12,23 +12,39 @@ h_d(t) → multi-window WDF
        → a false-alarm rate from time slides
 ```
 
-## Why more than one window length
+## Why one window length, and an overlap
 
-A transient longer than the analysis window cannot have its extent measured
-inside one, and only a longer window reaches the bands below. The window is
-therefore a list in the configuration (`wdf.config.Parameters.window_schedule`),
-and every length is a search of its own — its own stride, its own coefficient
-grid, its own trigger file — over a single conditioning pass. The record already
-distinguishes them: `n_coeff` and `fs` are stored per trigger.
+A dyadic transform is already multi-resolution: the level of a coefficient and
+the band it occupies are tied to each other, so a tile of a given band lasts the
+same however long the block is. Doubling the window does **not** insert bands
+between the octaves — it extends the dyadic ladder one octave downward — so
+searching the same strain at several lengths repeats one tiling on shifted grids
+of blocks rather than adding resolution, and pays a trials factor for the
+repetition.
 
-Doubling the window does **not** insert bands between the octaves. It extends the
-dyadic ladder one octave downward and makes every tile twice as long. So a longer
-window buys duration and low frequency directly, and frequency only indirectly.
+The transient longer than the block is therefore not the window's problem but
+the grouping's. The block is a unit of computation; the event is the physical
+object, assembled afterwards from the coefficients of every block it touched,
+and its statistic is measured on the reconstruction stitched across them.
 
-## Making the lengths comparable
+The overlap is what the window length is not. A transient shorter than the block
+that falls astride a boundary is divided between two blocks and has a fraction
+of its energy in each; an overlap of half the window puts every sample in the
+body of two blocks, so such a transient is seen whole at least once. It also
+gives the reconstruction two estimates of every overlapped sample, which is what
+lets the two be crossed over continuously instead of switched between.
 
-`EnWDF` is a norm over a window, and the Donoho–Johnstone threshold deciding
-which coefficients survive depends on how many the window holds, so it is not the
+The window remains a list in the configuration
+(`wdf.config.Parameters.window_schedule`), because the length is a parameter of
+the search and not a property of it. A run configured at more than one length
+searches each as a search of its own — its own stride, its own coefficient grid,
+its own trigger file — over a single conditioning pass, and the record
+distinguishes them, `n_coeff` and `fs` being stored per trigger.
+
+## Making several lengths comparable, when there are several
+
+`EnWDF` is a norm over a block, and the Donoho–Johnstone threshold deciding
+which coefficients survive depends on how many the block holds, so it is not the
 same quantity at two lengths. Every length also reads the same strain, so adding
 the results counts one transient's energy several times.
 
@@ -47,7 +63,8 @@ them, so this is a lookup and not a binning choice.
 how many lengths saw a tile, and how evenly. That maximum is taken over
 correlated searches and carries a look-elsewhere effect whose size is a property
 of the data, so it is measured on the background rather than assumed to be the
-number of lengths.
+number of lengths. Under a run at one length it is degenerate and the
+significance reduces to the single-scale case.
 
 ## Level one: `wdf.analysis.detector_graph`
 

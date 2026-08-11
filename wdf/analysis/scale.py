@@ -1,10 +1,13 @@
 """The analysis window length as a third coordinate, beside time and frequency.
 
-A run may search the same strain at several window lengths at once. The results
-are not three catalogues to be merged, nor three energies to be added: they are
-three tilings of one signal, at different resolutions and strongly correlated,
-since every one of them is computed from the same data. Adding them would count
-one transient's energy several times.
+A run searches at one window length. The schedule accepts several, because the
+length is a parameter of the search rather than a property of it, and this
+module is what makes the results comparable when more than one is used.
+
+Several lengths are not several catalogues to be merged, nor several energies to
+be added: they are tilings of one signal, strongly correlated, since every one
+of them is computed from the same data. Adding them would count one transient's
+energy several times.
 
 They are made comparable instead of combined. The search statistic is not the
 same quantity at two window lengths -- the Donoho-Johnstone threshold deciding
@@ -17,11 +20,10 @@ probability, and from there to a significance
 which means the same thing at every window length. That is the variable the
 pixel cloud carries, and the one a cross-scale comparison can be made on.
 
-The cloud is kept three-dimensional, `(t, f, scale)`. Whether a transient shows
-at one scale or at all of them is a property of the transient -- an impulse is
-loud and localised at the shortest window and diluted at the longest, a long
-narrow-band transient does the opposite -- so it is a feature to be measured,
-not a redundancy to be removed early.
+The cloud is kept three-dimensional, `(t, f, scale)`, so that the length stays a
+coordinate to be measured rather than something averaged over. Under a run at
+one length the third coordinate is degenerate and everything below reduces to
+the single-scale case.
 
 `scale_maximum` forms the first cross-scale statistic, the maximum of S over the
 window lengths that can represent a given tile. Its own distribution is not the
