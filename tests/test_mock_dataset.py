@@ -214,3 +214,28 @@ def test_glitch_duration_is_independent_of_sample_rate(rate):
     """Waveforms follow the data's sampling rate without changing shape."""
     y = w.sine_gaussian(f0=150.0, q=12.0, sample_rate=rate)
     assert len(y) / rate == pytest.approx(0.102, abs=0.005)
+
+
+def test_a_detector_floor_reaches_every_detector():
+    """With a floor no compact binary may lean on one detector alone.
+
+    The share each detector receives follows from the antenna response and the
+    inclination, exactly when the spectra are equal, so the floor can be
+    asserted on the drawn parameters without generating a waveform.
+    """
+    from wdf.mock.dataset import _detector_share, draw_injections
+
+    rows = draw_injections(n_cbc=30, n_glitch=0, duration=30000.0, seed=9,
+                           snr_range=(8.0, 100.0), min_detector_snr=7.0)
+    for row in rows:
+        share = _detector_share(row, row["gps"], ("H1", "L1"))
+        assert (share * row["target_snr"] >= 7.0 - 1e-9).all()
+
+
+def test_an_unreachable_detector_floor_is_refused():
+    """A floor the range's top cannot split across the network must raise."""
+    from wdf.mock.dataset import draw_injections
+
+    with pytest.raises(ValueError, match="floor"):
+        draw_injections(n_cbc=2, n_glitch=0, duration=30000.0, seed=1,
+                        snr_range=(4.0, 9.0), min_detector_snr=7.0)

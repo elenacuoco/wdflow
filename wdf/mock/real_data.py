@@ -88,6 +88,7 @@ def inject_into_strain(
     snr_range=(6.0, 60.0),
     seed=0,
     cbc_mix=None,
+    min_detector_snr=None,
     minimum_gap=400.0,
     edge_pad=400.0,
     low_frequency_cutoff=20.0,
@@ -160,7 +161,9 @@ def inject_into_strain(
         edge_pad=edge_pad, snr_range=snr_range, seed=seed,
         sample_rate=int(sample_rate), detectors=detectors,
         minimum_gap=minimum_gap,
-        **({} if cbc_mix is None else {"cbc_mix": cbc_mix}))
+        **({} if cbc_mix is None else {"cbc_mix": cbc_mix}),
+        **({} if min_detector_snr is None
+           else {"min_detector_snr": min_detector_snr}))
 
     background = {ifo: values.copy() for ifo, values in strain.items()}
     foreground = {ifo: values.copy() for ifo, values in strain.items()}

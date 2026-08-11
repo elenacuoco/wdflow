@@ -347,6 +347,89 @@ def _prepare_injection_support(spec, sample_rate):
     return prepared
 
 
+def _detector_share(spec, gps, detectors):
+    """Each detector's share of the network amplitude, from geometry alone.
+
+    For one waveform seen through equal spectra the signal-to-noise ratio a
+    detector receives is proportional to
+
+        a = sqrt( (F+ (1 + cos^2 i) / 2)^2 + (Fx cos i)^2 ),
+
+    so the shares a_i / sqrt(sum a_i^2) are exact when the detectors' spectra
+    are equal --- the simulated set's case --- and an approximation where they
+    differ.
+
+    :param spec: the injection's drawn parameters.
+    :type gps: float
+    :param gps: geocentric time the antenna response is taken at.
+    :param detectors: the detector names.
+    :return: numpy.ndarray -- one share per detector, unit norm.
+    """
+    from pycbc.detector import Detector
+
+    cosine = np.cos(float(spec["inclination"]))
+    amplitude = []
+    for ifo in detectors:
+        f_plus, f_cross = Detector(ifo).antenna_pattern(
+            float(spec["ra"]), float(spec["dec"]),
+            float(spec["polarization"]), float(gps))
+        amplitude.append(np.hypot(f_plus * (1.0 + cosine * cosine) / 2.0,
+                                  f_cross * cosine))
+    amplitude = np.asarray(amplitude, dtype=float)
+    norm = float(np.linalg.norm(amplitude))
+    if norm <= 0.0:
+        return np.zeros(len(amplitude))
+    return amplitude / norm
+
+
+def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
+                            attempts=500):
+    """Redraw sky and orientation until every detector receives `floor`.
+
+    The population this produces is the one every detector sees: sources whose
+    projection nulls a detector are redrawn, so no injection is carried by one
+    detector alone. The network target is raised where even the best split of
+    the drawn one cannot give each detector its floor, and stays inside
+    `snr_range`.
+
+    :param rng: the generator the redraws come from.
+    :param spec: the injection's parameters, modified in place.
+    :type gps: float
+    :param gps: geocentric time of the merger.
+    :param detectors: the detector names.
+    :param snr_range: the allowed network signal-to-noise ratio.
+    :type floor: float
+    :param floor: least signal-to-noise ratio any detector may receive.
+    :raises ValueError: if the range cannot hold the floor at all, or no
+        acceptable geometry is found.
+    """
+    low, high = float(snr_range[0]), float(snr_range[1])
+    if high < floor * np.sqrt(float(len(detectors))):
+        raise ValueError(
+            f"a per-detector floor of {floor:g} needs a network "
+            f"signal-to-noise ratio of at least "
+            f"{floor * np.sqrt(len(detectors)):.1f}, above the range's top "
+            f"{high:g}")
+    for _ in range(int(attempts)):
+        share = _detector_share(spec, gps, detectors)
+        least = float(share.min())
+        if least > 0.0 and floor / least <= high:
+            target = float(spec["target_snr"])
+            needed = floor / least
+            if target < needed:
+                # The drawn loudness cannot give this geometry its floor, so
+                # the target is redrawn from the part of the range that can.
+                spec["target_snr"] = float(rng.uniform(max(low, needed), high))
+            return
+        spec["inclination"] = float(np.arccos(rng.uniform(-1.0, 1.0)))
+        spec["ra"] = float(rng.uniform(0.0, 2.0 * np.pi))
+        spec["dec"] = float(np.arcsin(rng.uniform(-1.0, 1.0)))
+        spec["polarization"] = float(rng.uniform(0.0, 2.0 * np.pi))
+    raise ValueError(
+        f"no sky and orientation gave every detector {floor:g} within "
+        f"{attempts} redraws")
+
+
 def draw_injections(
     n_cbc=250,
     n_glitch=750,
@@ -361,12 +444,20 @@ def draw_injections(
     detector_delay_pad=0.02,
     strict=True,
     cbc_mix=DEFAULT_CBC_MIX,
+    min_detector_snr=None,
 ):
     """Draw and place non-overlapping CBC and glitch injections.
 
     CBC ``gps`` is the geocentric merger time. Glitch ``gps`` is the centre
     of its generated sample array. Placement uses the actual generated
     waveform support and reserves ``detector_delay_pad`` on both sides.
+
+    ``min_detector_snr``, when given, redraws each compact binary's sky and
+    orientation until every detector receives at least that signal-to-noise
+    ratio, raising the network target inside ``snr_range`` where the geometry
+    needs it. The population is then the one every detector sees; a source
+    projected onto one detector alone cannot occur in it, and the aggregate
+    efficiencies are no longer diluted by signals nothing could recover.
     """
     if n_cbc < 0 or n_glitch < 0:
         raise ValueError("Injection counts must be non-negative")
@@ -438,6 +529,9 @@ def draw_injections(
         item = dict(spec)
         item["injection_id"] = len(placed)
         item["gps"] = float(gps)
+        if item["category"] == "cbc" and min_detector_snr is not None:
+            _enforce_detector_floor(rng, item, float(gps), detectors,
+                                    snr_range, float(min_detector_snr))
         item["gps_start"] = float(gps - support_before)
         item["gps_end"] = float(gps + support_after)
         placed.append(item)
@@ -782,6 +876,7 @@ def generate_dataset(
     minimum_injection_gap=1.0,
     strict=True,
     cbc_mix=DEFAULT_CBC_MIX,
+    min_detector_snr=None,
 ):
     """Generate and write a complete mock foreground/background data set.
 
@@ -834,6 +929,7 @@ def generate_dataset(
         minimum_gap=minimum_injection_gap,
         strict=strict,
         cbc_mix=cbc_mix,
+        min_detector_snr=min_detector_snr,
     )
 
     requested = int(n_cbc) + int(n_glitch)
