@@ -1,3 +1,15 @@
+"""Putting the noise back: the inverse of the whitening filter.
+
+Whitening divides the strain by the autoregressive model of its own noise. This
+module applies that model in the other direction, turning a whitened series back
+into strain units --- what a reconstruction has to pass through before it can be
+compared with anything measured in strain, and what turns a simulated white
+series into one with a chosen spectrum.
+
+It is the same coefficients read by `wdf.processes.ar_lv_io`, so a series
+recoloured here is expressed against the noise model the search actually used
+and not against a design curve.
+"""
 __author__ = "Elena Cuoco"
 __project__ = "wdf"
 

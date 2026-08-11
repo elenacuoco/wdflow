@@ -107,6 +107,17 @@ shorter than the light travel time the two statements coincide, which is why the
 extent test is the general one. The arrival-time difference is still measured
 and still ranks the survivors; it no longer decides which pairs exist.
 
+Where that difference is measured, an event is timed on `gpsPeak`, the centre of
+the tile carrying its largest coefficient, and not on `gpsCentroid`. The two are
+different quantities and only one of them is a clock. A centroid is a moment of
+the energy that survived threshold in that detector; two detectors seeing one
+source at different projected amplitudes keep different portions of it and place
+their centroids differently, and that difference is indistinguishable from
+geometry once it enters the arrival-time difference. The peak tile tracks the
+loudest instant instead, which both detectors share. The remaining uncertainty
+is then the duration of that tile, since the time assigned is its centre rather
+than an instant within it, and `tSpread` is what declares it.
+
 An edge carries the arrival-time difference, the shared fraction of band and of
 time support, the log ratio of the two energies, and the agreement between the
 two wavegrams. No alignment is searched for: each event's map is centred on its

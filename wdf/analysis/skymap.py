@@ -27,12 +27,25 @@ from wdf.analysis.detectors import DETECTOR_VERTEX, SPEED_OF_LIGHT
 
 # Days per sidereal day, and the Greenwich sidereal time at the GPS epoch. The
 # rotation is what turns a baseline fixed in the Earth into one fixed on the sky.
-_GPS_EPOCH_GMST_RAD = 1.7449362732650843
+#
+# The constant is fixed against a reference sidereal time across the whole span
+# of GPS dates rather than taken at the epoch alone, so that no offset survives
+# the decades between that epoch and an observing run. An error here does not
+# look like an error: it rotates every sky map by one angle and leaves every
+# internal consistency check passing, while biasing every arrival-time
+# prediction the map is built from.
+_GPS_EPOCH_GMST_RAD = 1.8272328613543891
 _SIDEREAL_RATE = 2.0 * np.pi * 1.0027379093508615 / 86400.0
 
 
 def greenwich_sidereal_angle(gps) -> np.ndarray:
     """The Earth's rotation angle, from GPS seconds.
+
+    A uniform rotation, which is what a *mean* sidereal time is: nutation and
+    the equation of the equinoxes are not modelled. Against a reference
+    implementation the residual stays below a milliradian over the whole GPS
+    era, which is some tens of microseconds on the longest baseline between
+    ground-based detectors.
 
     :param gps: GPS time, seconds; scalar or array.
     :return: numpy.ndarray -- the angle, radians, wrapped to [0, 2 pi).

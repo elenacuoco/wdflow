@@ -560,3 +560,33 @@ def test_prepared_nodes_refuse_a_different_event_set():
     fewer = {ifo: frame.iloc[:-1].copy() for ifo, frame in events.items()}
     with pytest.raises(ValueError, match="not the ones prepared"):
         builder.build_from_prepared(fewer, prepared)
+
+
+def test_a_saved_scorer_reloads_and_scores_identically(tmp_path):
+    """A model read back must rank a graph exactly as the one that wrote it.
+
+    The weights alone are not the model: the feature scaling is fitted too, and
+    a reload that re-measured it would score the same graph differently.
+    """
+    clustered = {"H1": _synth_clustered("H1", 15, 1000.0, 3),
+                 "L1": _synth_clustered("L1", 15, 1000.0, 4)}
+    coefficients = {ifo: _synth_coefficients(f) for ifo, f in clustered.items()}
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
+    rng = np.random.default_rng(0)
+    labels = (rng.uniform(0, 1, len(graph.cross_edges)) > 0.8).astype(float)
+    scorer = GNNCoincidenceScorer(
+        node_dim=graph.node_features.shape[1],
+        cross_edge_dim=graph.cross_edge_features.shape[1], device="cpu")
+    scorer.fit([(graph, labels)], epochs=5)
+    before = scorer.score(graph)
+
+    path = str(tmp_path / "scorer.pt")
+    scorer.save(path)
+    reloaded = GNNCoincidenceScorer.load(path, device="cpu")
+
+    after = reloaded.score(graph)
+    np.testing.assert_allclose(after.gnn_logit.to_numpy(),
+                               before.gnn_logit.to_numpy(), rtol=0, atol=1e-6)
+    np.testing.assert_allclose(
+        reloaded.feature_scale.numpy(), scorer.feature_scale.cpu().numpy(),
+        rtol=0, atol=0)

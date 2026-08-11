@@ -1,3 +1,15 @@
+"""Writing the search's triggers to disk, one row per trigger.
+
+The observer that terminates the search chain. It receives each trigger as the
+parameter-estimation stage builds it and appends it to a Parquet file through
+`wdf.analysis.coefficients.TriggerWriter`, in the schema every downstream
+consumer reads.
+
+Parquet is written in blocks and its footer only at the end, so the file is
+unreadable until the writer is closed. The observer therefore has an explicit
+`close()`, and a segment whose run ends without one leaves a file that cannot be
+opened at all rather than a short one.
+"""
 __author__ = "Elena Cuoco"
 __copyright__ = "Copyright 2017, Elena Cuoco"
 __credits__ = []

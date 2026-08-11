@@ -1,3 +1,16 @@
+"""Handing a NumPy array to the C++ core.
+
+The `p4TSA` primitives read and write `SeqView`, a view carrying its samples
+together with the time it starts at and the interval between them. This module
+wraps a NumPy array in one, which is how every array assembled in Python enters
+the transform, the whitening or the frame writer.
+
+The epoch and the sampling interval travel with the samples deliberately. A
+series that has passed through the conditioning chain does not begin where it
+was asked to begin, and a consumer that assumes it does places everything
+downstream at the wrong time; carrying the start in the view itself is what lets
+the caller read the time the data actually has.
+"""
 __author__ = "Elena Cuoco"
 __copyright__ = "Copyright 2017, Elena Cuoco"
 __credits__ = []

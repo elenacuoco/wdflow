@@ -109,8 +109,13 @@ class TriggerGraph:
         :return: pandas.DataFrame -- one row per candidate edge.
         """
         i, j = self.cross_edges[:, 0], self.cross_edges[:, 1]
-        gps = self.nodes["gpsCentroid"].to_numpy(dtype=float) \
-            if "gpsCentroid" in self.nodes else self.nodes["gpsPeak"].to_numpy(dtype=float)
+        # The same clock the pair was admitted on, and the one `dt_s` is
+        # measured with. The energy centroid is a property of how much of the
+        # transient each detector recovered, so two detectors seeing one source
+        # at different amplitudes place their centroids differently and that
+        # difference lands in the arrival-time difference, which is the whole of
+        # the coincidence and of the sky position.
+        gps = self.nodes["gpsPeak"].to_numpy(dtype=float)
         enwdf = self.nodes["EnWDF"].to_numpy(dtype=float)
         ifo = self.nodes["ifo"].to_numpy()
         table = pd.DataFrame(dict(
@@ -487,9 +492,7 @@ def edge_labels_from_injections(graph, injection_times, window_s: float = 0.5):
     times = np.sort(np.asarray(injection_times, dtype=float))
     owner = np.full(len(graph.nodes), -1)
     if len(times):
-        start, end = candidate_spans(
-            graph.nodes,
-            candidate_time="gpsCentroid" if "gpsCentroid" in graph.nodes else "gpsPeak")
+        start, end = candidate_spans(graph.nodes, candidate_time="gpsPeak")
         # The nearest injection is the only one an event's own extent can cover.
         slot = np.clip(np.searchsorted(times, start), 0, len(times) - 1)
         for candidate in (slot, np.maximum(slot - 1, 0)):

@@ -779,12 +779,56 @@ class TimeSlideFAR:
         self.config = FARConfig(**kwargs) if config is None else config
         self.n_slides = self.config.n_slides
 
+    def _draw_shifts(self, rng, n_shifted, span):
+        """One displacement per shifted detector, all mutually decorrelating.
+
+        Every detector but the reference is displaced by its own amount, so a
+        real coincidence survives in none of the pairs. Two detectors given
+        nearly the same shift would stay in step with each other and their own
+        pair would keep its real coincidences, so the draw is repeated until
+        every difference, and not only every shift, clears `min_shift_s`.
+
+        :param rng: the generator to draw from.
+        :type n_shifted: int
+        :param n_shifted: how many detectors are displaced.
+        :type span: float
+        :param span: length of the segment, seconds.
+        :return: numpy.ndarray -- one shift per shifted detector, seconds.
+        :raises ValueError: if the span cannot hold that many separated shifts.
+        """
+        least = float(self.config.min_shift_s)
+        for _ in range(64):
+            magnitude = rng.uniform(least, span - least, size=n_shifted)
+            sign = np.where(rng.integers(0, 2, size=n_shifted) > 0, 1.0, -1.0)
+            shifts = magnitude * sign
+            if n_shifted == 1:
+                return shifts
+            gaps = np.abs(shifts[:, None] - shifts[None, :])
+            np.fill_diagonal(gaps, np.inf)
+            if gaps.min() >= least:
+                return shifts
+        raise ValueError(
+            f"could not place {n_shifted} shifts at least {least:g} s apart in "
+            f"a span of {span:g} s; lower min_shift_s or use fewer detectors")
+
     def background_distribution(self, events_by_ifo, segment_bounds):
+        """Accidental coincidences, by displacing every detector but the first.
+
+        :param events_by_ifo: `{ifo: events}`, two or more detectors. The first
+            is the reference and is never moved.
+        :param segment_bounds: `{ifo: (start, end)}`, the stretch each
+            detector's events were found in.
+        :return: pandas.DataFrame -- the accidental candidates, carrying
+            `slide_index` and the shifts applied, with the number of slides and
+            the total slid livetime in `attrs`.
+        :raises ValueError: with fewer than two detectors, or a segment too
+            short for the requested shifts.
+        """
         ifos = list(events_by_ifo)
-        if len(ifos) != 2:
-            raise ValueError("TimeSlideFAR currently requires exactly two IFOs")
-        ref, shifted_ifo = ifos
-        start, end = map(float, segment_bounds[shifted_ifo])
+        if len(ifos) < 2:
+            raise ValueError("time slides need at least two IFOs")
+        ref, shifted_ifos = ifos[0], ifos[1:]
+        start, end = map(float, segment_bounds[shifted_ifos[0]])
         span = end - start
         if span <= 2.0 * self.config.min_shift_s:
             raise ValueError("Segment is too short for the requested time slides")
@@ -795,32 +839,39 @@ class TimeSlideFAR:
 
         template = None
         for slide_index in range(self.config.n_slides):
-            magnitude = rng.uniform(self.config.min_shift_s, span - self.config.min_shift_s)
-            shift = magnitude if rng.integers(0, 2) else -magnitude
-            shifts.append(shift)
+            drawn = self._draw_shifts(rng, len(shifted_ifos), span)
+            shifts.append(float(drawn[0]) if len(drawn) == 1
+                          else tuple(float(s) for s in drawn))
 
-            shifted = events_by_ifo[shifted_ifo].copy()
-            # One displacement per event, applied to all of its times. Wrapping
-            # each column on its own moves an event that straddles the seam by
-            # different amounts in each, so its start no longer precedes its end
-            # and its extent becomes the length of the segment.
-            reference = _numeric(shifted, ("gpsCentroid", "gpsPeak", "gps"))
-            wrapped = start + ((reference - start + shift) % span)
-            displacement = wrapped - reference
-            for column in ("gpsMax", "gpsPeak", "gpsCentroid", "gpsStart", "gpsEnd"):
-                if column in shifted:
-                    shifted[column] = (
-                        pd.to_numeric(shifted[column], errors="coerce") + displacement)
+            slid = {ref: events_by_ifo[ref]}
+            for ifo, shift in zip(shifted_ifos, drawn):
+                shifted = events_by_ifo[ifo].copy()
+                # One displacement per event, applied to all of its times.
+                # Wrapping each column on its own moves an event that straddles
+                # the seam by different amounts in each, so its start no longer
+                # precedes its end and its extent becomes the whole segment.
+                reference = _numeric(shifted, ("gpsCentroid", "gpsPeak", "gps"))
+                wrapped = start + ((reference - start + shift) % span)
+                displacement = wrapped - reference
+                for column in ("gpsMax", "gpsPeak", "gpsCentroid", "gpsStart",
+                               "gpsEnd"):
+                    if column in shifted:
+                        shifted[column] = (pd.to_numeric(shifted[column],
+                                                         errors="coerce")
+                                           + displacement)
+                slid[ifo] = shifted
 
-            candidates = self.coincidence_finder.find(
-                {ref: events_by_ifo[ref], shifted_ifo: shifted}
-            )
+            candidates = self.coincidence_finder.find(slid)
             if template is None:
                 template = candidates.iloc[0:0]
             if len(candidates):
                 candidates = candidates.copy()
                 candidates["slide_index"] = slide_index
-                candidates["slide_shift_s"] = shift
+                # One number with two detectors, one per shifted detector with
+                # more, so the column says what was actually applied.
+                candidates["slide_shift_s"] = (
+                    float(drawn[0]) if len(drawn) == 1
+                    else [tuple(float(s) for s in drawn)] * len(candidates))
                 rows.append(candidates)
 
         # Slides that produced nothing still say what a candidate looks like, so

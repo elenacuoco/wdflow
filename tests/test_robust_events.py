@@ -6,6 +6,7 @@ import pytest
 
 from wdf.analysis.robust_events import (
     ClusterConfig,
+    CoincidenceConfig,
     FARConfig,
     IndexedCoincidenceFinder,
     TimeSlideFAR,
@@ -325,3 +326,27 @@ def test_an_empty_background_keeps_its_columns():
 
     assert len(background) == 0
     assert list(background.columns) == columns
+
+
+def test_time_slides_displace_every_detector_but_the_reference():
+    """With three detectors no pair may keep its real coincidences.
+
+    The reference stays put and every other detector is displaced, so the pairs
+    that include the reference are decorrelated by its own shift. The pair that
+    excludes it is decorrelated only by the *difference* of two shifts, which is
+    the case a two-detector implementation never has to consider.
+    """
+    slides = TimeSlideFAR(IndexedCoincidenceFinder(CoincidenceConfig()), FARConfig(n_slides=25, seed=3,
+                                                            min_shift_s=5.0))
+    rng = np.random.default_rng(0)
+    for _ in range(25):
+        drawn = slides._draw_shifts(rng, 2, span=600.0)
+        assert np.abs(drawn).min() >= 5.0
+        assert abs(drawn[0] - drawn[1]) >= 5.0
+
+
+def test_time_slides_refuse_a_single_detector():
+    slides = TimeSlideFAR(IndexedCoincidenceFinder(CoincidenceConfig()))
+    with pytest.raises(ValueError, match="at least two"):
+        slides.background_distribution({"H1": pd.DataFrame()},
+                                       {"H1": (0.0, 100.0)})

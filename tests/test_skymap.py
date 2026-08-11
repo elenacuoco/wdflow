@@ -81,3 +81,26 @@ def test_a_spread_that_is_not_positive_is_refused():
 def test_a_missing_spread_names_the_detector():
     with pytest.raises(KeyError, match="L1"):
         localise({"H1": GPS, "L1": GPS}, {"H1": 1e-3})
+
+
+def test_the_arrival_delays_agree_with_an_independent_ephemeris():
+    """The Earth's rotation is checked outside this module, not against itself.
+
+    Every internal test of a sky map passes under a constant error in the
+    sidereal angle, because such an error rotates the map and the source
+    together. Only a reference computed elsewhere can catch it, so this test
+    compares the predicted arrival-time differences with pycbc's detector
+    ephemeris and is skipped where that is unavailable.
+    """
+    pycbc_detector = pytest.importorskip("pycbc.detector")
+
+    ra, dec = np.deg2rad(197.450374), np.deg2rad(-23.381495)
+    detectors = {ifo: pycbc_detector.Detector(ifo) for ifo in ("H1", "L1", "V1")}
+    for gps in (1126259462.4, 1187008882.4, 1400000000.0):
+        for a, b in (("H1", "L1"), ("H1", "V1"), ("L1", "V1")):
+            mine = float(arrival_delay(ra, dec, gps, a, b))
+            theirs = (detectors[a].time_delay_from_earth_center(ra, dec, gps)
+                      - detectors[b].time_delay_from_earth_center(ra, dec, gps))
+            # Tens of microseconds is the mean-sidereal approximation; a wrong
+            # epoch constant showed up here as hundreds.
+            assert abs(mine - theirs) < 100e-6, (gps, a, b, mine, theirs)
