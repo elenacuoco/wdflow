@@ -595,8 +595,14 @@ class IndexedCoincidenceFinder:
         :param right: the other detector's events.
         :return: list of (i, j, cost, dt, frequency_overlap, time_overlap).
         """
-        lt = _numeric(left, ("gpsCentroid", "gpsPeak"))
-        rt = _numeric(right, ("gpsCentroid", "gpsPeak"))
+        # The pair's dt is read on the centre of the tile carrying each
+        # event's largest coefficient, the same clock the sky position uses. A
+        # centroid measures how much of a transient survived threshold in that
+        # detector, so two detectors at different projected amplitudes place it
+        # differently and the difference lands in dt, where it is
+        # indistinguishable from geometry.
+        lt = _numeric(left, ("gpsPeak", "gpsCentroid"))
+        rt = _numeric(right, ("gpsPeak", "gpsCentroid"))
         ls = _numeric(left, ("tSpread",), default=0.0)
         rs = _numeric(right, ("tSpread",), default=0.0)
         ls = np.where(np.isfinite(ls), ls, 0.0)
@@ -718,8 +724,10 @@ class IndexedCoincidenceFinder:
 
         sa = _numeric(left, ("EnWDF", "snrMax"), default=0.0)[i]
         sb = _numeric(right, ("EnWDF", "snrMax"), default=0.0)[j]
-        ta = _numeric(left, ("gpsCentroid", "gpsPeak"))[i]
-        tb = _numeric(right, ("gpsCentroid", "gpsPeak"))[j]
+        # The same clock the admissibility used, so a candidate's recorded dt
+        # is the quantity it was admitted and penalised on.
+        ta = _numeric(left, ("gpsPeak", "gpsCentroid"))[i]
+        tb = _numeric(right, ("gpsPeak", "gpsCentroid"))[j]
 
         out = pd.DataFrame({
             f"index_{left_ifo}": i,
