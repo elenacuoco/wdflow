@@ -76,3 +76,35 @@ def test_an_empty_background_is_refused():
 def test_a_missing_column_names_itself():
     with pytest.raises(KeyError, match="n_triggers"):
         EventCalibration.fit(pd.DataFrame(dict(EnWDF=[1.0])))
+
+
+def test_a_loud_event_is_not_pinned_at_the_bin_ceiling():
+    """The empirical survival caps at log of the bin's size; the tail must not.
+
+    A threshold tighter than a bin's ceiling silently vetoes the whole extent
+    class, however loud its events --- which is how the calibrated statistic
+    once lost every multi-block injection while the raw statistic kept them.
+    An event far above everything its bin measured must therefore score far
+    above the ceiling, along the slope the bin's own tail fixed.
+    """
+    rng = np.random.default_rng(7)
+    background = pd.DataFrame({
+        "EnWDF": np.concatenate([rng.exponential(1.0, 3000) + 5.0,
+                                 rng.exponential(2.0, 300) + 7.0]),
+        "n_triggers": np.concatenate([np.ones(3000, dtype=int),
+                                      np.full(300, 4, dtype=int)]),
+    })
+    calibration = EventCalibration.fit(background, statistic="EnWDF")
+
+    ceiling = np.log(301.0)
+    loud = pd.DataFrame({"EnWDF": [60.0], "n_triggers": [4]})
+    significance = float(calibration.significance(loud)[0])
+    assert significance > 2.0 * ceiling
+
+    # Continuity at the anchor: just below and just above must nearly agree.
+    table = calibration.tables[calibration.bin_of([4])[0]]
+    anchor = calibration.tail_starts[calibration.bin_of([4])[0]]
+    near = pd.DataFrame({"EnWDF": [anchor - 1e-6, anchor + 1e-6],
+                         "n_triggers": [4, 4]})
+    below, above = calibration.significance(near)
+    assert abs(above - below) < 0.1

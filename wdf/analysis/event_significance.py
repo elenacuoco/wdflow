@@ -79,11 +79,14 @@ class EventCalibration:
     tables: list = field(default_factory=list)
     statistic: str = "EnWDF"
     size_column: str = "n_triggers"
+    tail_starts: list = field(default_factory=list)
+    tail_scales: list = field(default_factory=list)
+    tail_fraction: float = 0.1
 
     @classmethod
     def fit(cls, background: pd.DataFrame, statistic: str = "EnWDF",
-            size_column: str = "n_triggers",
-            min_count: int = 200) -> "EventCalibration":
+            size_column: str = "n_triggers", min_count: int = 200,
+            tail_fraction: float = 0.1) -> "EventCalibration":
         """Measure the distribution from events built on injection-free data.
 
         The background must come from the same event-building pipeline as the
@@ -99,6 +102,9 @@ class EventCalibration:
         :param size_column: the column holding each event's extent in blocks.
         :type min_count: int
         :param min_count: fewest background events a bin may hold.
+        :type tail_fraction: float
+        :param tail_fraction: upper fraction of each bin the exponential tail
+            is fitted on; at least ten events are used.
         :return: EventCalibration
         :raises ValueError: if the background is empty.
         :raises KeyError: if either column is missing.
@@ -121,8 +127,30 @@ class EventCalibration:
         index = np.clip(np.searchsorted(edges, sizes, side="right") - 1,
                         0, len(edges) - 1)
         tables = [np.sort(values[index == b]) for b in range(len(edges))]
+
+        # The empirical survival cannot fall below one count in the bin, so on
+        # its own it caps the significance at log of the bin's size --- and a
+        # threshold beyond the cap silently vetoes the whole extent class,
+        # however loud its events. Each bin therefore carries an exponential
+        # fitted to its own upper tail, and beyond the anchor the significance
+        # continues along the measured slope instead of stopping. The scale is
+        # the mean excess over the anchor, the maximum-likelihood estimate for
+        # an exponential tail.
+        tail_starts, tail_scales = [], []
+        for table in tables:
+            k = max(int(np.ceil(tail_fraction * table.size)), 10)
+            k = min(k, table.size)
+            if table.size == 0 or k < 2:
+                tail_starts.append(np.nan)
+                tail_scales.append(np.nan)
+                continue
+            anchor = float(table[-k])
+            excess = table[-k:] - anchor
+            tail_starts.append(anchor)
+            tail_scales.append(float(max(excess.mean(), np.finfo(float).tiny)))
         return cls(edges=edges, tables=tables, statistic=statistic,
-                   size_column=size_column)
+                   size_column=size_column, tail_starts=tail_starts,
+                   tail_scales=tail_scales, tail_fraction=tail_fraction)
 
     def bin_of(self, sizes) -> np.ndarray:
         """Which calibration bin each extent falls in.
@@ -139,11 +167,19 @@ class EventCalibration:
     def significance(self, events: pd.DataFrame) -> np.ndarray:
         """`-log P(L' >= L | H0, size)` for every event, in nats.
 
-        The tail probability uses the plug-in estimator `(above + 1)/(N + 1)`,
-        which is bounded away from zero: an event louder than every background
-        event of its extent is assigned the largest significance the background
-        can support rather than an infinite one, and how large that is depends
-        on how much background there is.
+        Inside the measured range the tail probability is the plug-in
+        estimator `(above + 1)/(N + 1)`. Beyond the anchor of the fitted tail
+        it continues along the bin's own exponential,
+
+            S = S(anchor) + (L - anchor) / scale,
+
+        continuous at the anchor and unbounded above: an event far louder than
+        every background event of its extent is far more significant, by the
+        slope its own background measured, rather than pinned at the largest
+        value the empirical count can express --- a cap that would silently
+        veto every extent class whose bin is smaller than the threshold
+        demands. The extrapolation is a stated model of the tail, not a
+        measurement, and the anchor records where the measurement ends.
 
         :type events: pandas.DataFrame
         :param events: events to score, carrying the calibrated columns.
@@ -162,6 +198,17 @@ class EventCalibration:
             rows = np.flatnonzero((index == b) & np.isfinite(values))
             if rows.size == 0 or table.size == 0:
                 continue
-            above = table.size - np.searchsorted(table, values[rows], side="left")
-            out[rows] = -np.log((above + 1.0) / (table.size + 1.0))
+            here = values[rows]
+            above = table.size - np.searchsorted(table, here, side="left")
+            empirical = -np.log((above + 1.0) / (table.size + 1.0))
+
+            anchor = self.tail_starts[b] if b < len(self.tail_starts) else np.nan
+            scale = self.tail_scales[b] if b < len(self.tail_scales) else np.nan
+            if np.isfinite(anchor) and np.isfinite(scale):
+                at_anchor = table.size - np.searchsorted(table, anchor,
+                                                         side="left")
+                base = -np.log((at_anchor + 1.0) / (table.size + 1.0))
+                beyond = here >= anchor
+                empirical[beyond] = base + (here[beyond] - anchor) / scale
+            out[rows] = empirical
         return out
