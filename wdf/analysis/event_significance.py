@@ -168,12 +168,13 @@ class EventCalibration:
         """`-log P(L' >= L | H0, size)` for every event, in nats.
 
         Inside the measured range the tail probability is the plug-in
-        estimator `(above + 1)/(N + 1)`. Beyond the anchor of the fitted tail
-        it continues along the bin's own exponential,
+        estimator `(above + 1)/(N + 1)`, so the calibrated background is
+        exponential with unit rate by construction. Beyond the largest value
+        the bin measured it continues along the bin's own fitted exponential,
 
-            S = S(anchor) + (L - anchor) / scale,
+            S = log((N + 1) / 2) + (L - max) / scale,
 
-        continuous at the anchor and unbounded above: an event far louder than
+        continuous at the edge and unbounded above: an event far louder than
         every background event of its extent is far more significant, by the
         slope its own background measured, rather than pinned at the largest
         value the empirical count can express --- a cap that would silently
@@ -202,13 +203,20 @@ class EventCalibration:
             above = table.size - np.searchsorted(table, here, side="left")
             empirical = -np.log((above + 1.0) / (table.size + 1.0))
 
-            anchor = self.tail_starts[b] if b < len(self.tail_starts) else np.nan
+            # The exponential continues the mapping only where the measurement
+            # ends. Inside the sample the plug-in survival is kept untouched,
+            # so the calibrated background stays exponential with unit rate by
+            # construction; replacing the measured upper decade with a fitted
+            # slope was found to bend the bulk on recorded noise, whose tail is
+            # heavier than one exponential.
             scale = self.tail_scales[b] if b < len(self.tail_scales) else np.nan
-            if np.isfinite(anchor) and np.isfinite(scale):
-                at_anchor = table.size - np.searchsorted(table, anchor,
-                                                         side="left")
-                base = -np.log((at_anchor + 1.0) / (table.size + 1.0))
-                beyond = here >= anchor
-                empirical[beyond] = base + (here[beyond] - anchor) / scale
+            if np.isfinite(scale) and table.size:
+                # Anchored at the plug-in value of the largest measured event,
+                # so the mapping is continuous there; the half-count this keeps
+                # at the edge is conservative by ln 2 and nothing more.
+                edge = float(table[-1])
+                base = -np.log(2.0 / (table.size + 1.0))
+                beyond = here > edge
+                empirical[beyond] = base + (here[beyond] - edge) / scale
             out[rows] = empirical
         return out

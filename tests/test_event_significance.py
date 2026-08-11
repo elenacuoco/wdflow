@@ -101,10 +101,16 @@ def test_a_loud_event_is_not_pinned_at_the_bin_ceiling():
     significance = float(calibration.significance(loud)[0])
     assert significance > 2.0 * ceiling
 
-    # Continuity at the anchor: just below and just above must nearly agree.
+    # Continuity at the edge of the measurement, and exactness inside it:
+    # within the sample the mapping must stay the plug-in survival, so a
+    # calibrated background is exponential with unit rate by construction.
     table = calibration.tables[calibration.bin_of([4])[0]]
-    anchor = calibration.tail_starts[calibration.bin_of([4])[0]]
-    near = pd.DataFrame({"EnWDF": [anchor - 1e-6, anchor + 1e-6],
+    edge = float(table[-1])
+    near = pd.DataFrame({"EnWDF": [edge - 1e-9, edge + 1e-9],
                          "n_triggers": [4, 4]})
     below, above = calibration.significance(near)
     assert abs(above - below) < 0.1
+
+    scored = calibration.significance(background)
+    inside = np.isfinite(scored)
+    assert abs(np.mean(scored[inside] > 3.0) - np.exp(-3)) < 0.01
