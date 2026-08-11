@@ -15,7 +15,8 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-from wdf.analysis.detector_graph import WAVEGRAM_TIME_BINS, tile_coherence
+from wdf.analysis.detector_graph import (WAVEGRAM_TIME_BINS, flatten_clouds,
+                                         tile_coherence_many)
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import (
     EPS,
@@ -323,6 +324,7 @@ class TriggerGraphBuilder:
         spread = np.where(np.isfinite(spread), spread, 0.0)
         return dict(
             ifos=ifos, node_features=X, shapes=shapes, raw=raw, clouds=clouds,
+            cloud_flat=flatten_clouds(clouds),
             energy=energy, band_lo=band_lo, band_hi=band_hi, spread=spread,
             fine_bin=fine_bin,
             # The order the arrays are in, so that a later call cannot silently
@@ -364,6 +366,11 @@ class TriggerGraphBuilder:
         band_lo, band_hi = prepared["band_lo"], prepared["band_hi"]
         spread = prepared["spread"]
         fine_bin = prepared["fine_bin"]
+        # Prepared alongside the clouds; an older prepared dict without it is
+        # flattened here once rather than refused.
+        cloud_flat = prepared.get("cloud_flat")
+        if cloud_flat is None:
+            cloud_flat = flatten_clouds(clouds)
 
         nodes_df = pd.concat([clustered[ifo].reset_index(drop=True).assign(ifo=ifo)
                               for ifo in ifos], ignore_index=True)
@@ -414,10 +421,7 @@ class TriggerGraphBuilder:
             # in between: the two events' own coefficients, paired where their
             # tiles cover the same place.
             travel = self.coincidence.travel_time((ifo_a, ifo_b))
-            coherence = np.array([
-                tile_coherence(clouds[a], clouds[b], travel)
-                if clouds[a] is not None and clouds[b] is not None else 0.0
-                for a, b in zip(i_sel, j_sel)])
+            coherence = tile_coherence_many(cloud_flat, i_sel, j_sel, travel)
 
             similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
             coherent = np.maximum(np.einsum("ij,ij->i", raw[i_sel], raw[j_sel]), 0.0)

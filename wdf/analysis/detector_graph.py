@@ -937,6 +937,73 @@ def tile_coherence(left, right, tolerance):
     return float(product[together].sum())
 
 
+def flatten_clouds(clouds):
+    """Every event's tiles in one set of flat arrays, with offsets.
+
+    :param clouds: one tile tuple per event, as `event_tiles` returns them,
+        or None for an event with no tiles.
+    :return: dict -- the five tile arrays concatenated, with `starts` and
+        `counts` placing each event's stretch inside them.
+    """
+    counts = np.array([0 if c is None else len(c[4]) for c in clouds],
+                      dtype=np.int64)
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    kept = [c for c in clouds if c is not None and len(c[4])]
+    if not kept:
+        empty = np.zeros(0)
+        return dict(t_lo=empty, t_hi=empty, f_lo=empty, f_hi=empty,
+                    energy=empty, starts=starts, counts=counts)
+    field = lambda k: np.concatenate(
+        [np.asarray(c[k], dtype=float) for c in clouds
+         if c is not None and len(c[4])])
+    return dict(t_lo=field(0), t_hi=field(1), f_lo=field(2), f_hi=field(3),
+                energy=field(4), starts=starts, counts=counts)
+
+
+def tile_coherence_many(flat, i_sel, j_sel, tolerance) -> np.ndarray:
+    """`tile_coherence` for many pairs at once, by one reduction.
+
+    The per-pair function forms every pair of tiles inside one call; across a
+    background of slides that call is made once per admitted pair, and a Python
+    loop over tens of thousands of pairs per slide is where the accidental
+    estimate spends its time. Here the cross product of every pair's tiles is
+    laid out as one flat index computation and summed with `bincount`, so the
+    cost is one pass over the tile pairs however many event pairs there are.
+
+    :param flat: the flattened tiles, as `flatten_clouds` returns them.
+    :param i_sel: left event of each pair, as indices into the flattening.
+    :param j_sel: right event of each pair.
+    :type tolerance: float
+    :param tolerance: how far the two may be displaced in time and still be
+        taken to cover the same place, seconds.
+    :return: numpy.ndarray -- the coherent energy of each pair.
+    """
+    i_sel = np.asarray(i_sel, dtype=np.int64)
+    j_sel = np.asarray(j_sel, dtype=np.int64)
+    nl, nr = flat["counts"][i_sel], flat["counts"][j_sel]
+    per_pair = nl * nr
+    total = int(per_pair.sum())
+    out = np.zeros(len(i_sel))
+    if total == 0:
+        return out
+
+    offsets = np.concatenate([[0], np.cumsum(per_pair)[:-1]])
+    pair_id = np.repeat(np.arange(len(i_sel)), per_pair)
+    within = np.arange(total) - offsets[pair_id]
+    right_count = nr[pair_id]
+    left = flat["starts"][i_sel][pair_id] + within // right_count
+    right = flat["starts"][j_sel][pair_id] + within % right_count
+
+    meets = ((np.minimum(flat["t_hi"][left], flat["t_hi"][right] + tolerance)
+              >= np.maximum(flat["t_lo"][left], flat["t_lo"][right] - tolerance))
+             & (np.minimum(flat["f_hi"][left], flat["f_hi"][right])
+                >= np.maximum(flat["f_lo"][left], flat["f_lo"][right])))
+    if not meets.any():
+        return out
+    product = np.sqrt(flat["energy"][left[meets]] * flat["energy"][right[meets]])
+    return np.bincount(pair_id[meets], weights=product, minlength=len(i_sel))
+
+
 def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
     """Each event's statistic over its whole extent, without double counting.
 

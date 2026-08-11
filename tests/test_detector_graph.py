@@ -452,3 +452,36 @@ def test_the_event_carries_the_coefficients_its_map_is_a_view_of():
     # The grid holds the same energy the tiles do, up to what falls outside it.
     assert rendered.grid.sum() > 0
     assert (f_lo <= f_hi).all() and (t_lo <= t_hi).all()
+
+
+def test_batched_tile_coherence_matches_the_pairwise_function():
+    """One reduction over every pair must reproduce the per-pair calls exactly,
+    including events with no tiles and pairs that share nothing."""
+    from wdf.analysis.detector_graph import (flatten_clouds, tile_coherence,
+                                             tile_coherence_many)
+
+    rng = np.random.default_rng(3)
+    clouds = []
+    for _ in range(40):
+        n = int(rng.integers(0, 6))
+        if n == 0:
+            clouds.append(None if rng.integers(0, 2) else
+                          (np.zeros(0),) * 5)
+            continue
+        t_lo = np.sort(rng.uniform(0.0, 10.0, n))
+        f_lo = rng.uniform(20.0, 400.0, n)
+        clouds.append((t_lo, t_lo + rng.uniform(0.05, 0.5, n),
+                       f_lo, f_lo * rng.uniform(1.1, 2.0, n),
+                       rng.exponential(4.0, n)))
+
+    i_sel = rng.integers(0, 40, 300)
+    j_sel = rng.integers(0, 40, 300)
+    tolerance = 0.02
+
+    looped = np.array([
+        tile_coherence(clouds[a], clouds[b], tolerance)
+        if clouds[a] is not None and clouds[b] is not None else 0.0
+        for a, b in zip(i_sel, j_sel)])
+    batched = tile_coherence_many(flatten_clouds(clouds), i_sel, j_sel,
+                                  tolerance)
+    np.testing.assert_allclose(batched, looped, rtol=1e-12, atol=0.0)
