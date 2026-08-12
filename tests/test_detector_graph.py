@@ -485,3 +485,51 @@ def test_batched_tile_coherence_matches_the_pairwise_function():
     batched = tile_coherence_many(flatten_clouds(clouds), i_sel, j_sel,
                                   tolerance)
     np.testing.assert_allclose(batched, looped, rtol=1e-12, atol=0.0)
+
+
+def test_two_extents_of_one_transient_still_agree():
+    """A fragment and a whole event must not be judged different morphologies.
+
+    One detector keeps a single block of a transient and the other keeps five
+    of the same one. Anchored on the loudest tile the two maps overlap where
+    the loud part is; anchored on the energy centroid they would sit a large
+    part of a map apart, and their agreement would measure the difference in
+    extent rather than in shape.
+    """
+    from wdf.analysis.detector_graph import (DetectorGraphConfig,
+                                             build_detector_graph,
+                                             event_coefficients)
+
+    fs, n = 2048.0, 512
+    span = n / fs
+
+    def block(gps, index, value):
+        return dict(gps=gps, gpsStart=gps, gpsCentroid=gps + 0.5 * span,
+                    gpsPeak=gps + 0.5 * span, n_coeff=n, fs=fs, sigma=1.0,
+                    EnWDF=float(np.linalg.norm(value)), duration=span,
+                    freqMin=64.0, freqMax=256.0, freqMean=128.0,
+                    snrPeak=float(np.max(value)), tSpread=0.05,
+                    wt_index=np.asarray(index, dtype=np.uint16),
+                    wt_value=np.asarray(value, dtype=np.float32))
+
+    # The loud block is at the same time in both; one detector also keeps four
+    # later blocks of the same transient, comparable in energy, which drag its
+    # energy centroid forward by a large part of a map's width while leaving
+    # the loudest tile where it was.
+    loud = ([300, 301, 302], [40.0, 38.0, 36.0])
+    quiet = ([300, 301, 302], [23.0, 22.0, 21.0])
+    short = pd.DataFrame([block(1000.0, *loud)])
+    long = pd.DataFrame([block(1000.0, *loud)]
+                        + [block(1000.0 + k * span, *quiet) for k in (1, 2, 3, 4)])
+
+    config = DetectorGraphConfig(time_tolerance=1.0,
+                                 minimum_frequency_overlap=0.0)
+    maps = []
+    for frame in (short, long):
+        graph = build_detector_graph(frame, config=config)
+        rendered = event_coefficients(graph, graph.components(),
+                                      bin_seconds=0.02)
+        maps.append(next(iter(rendered.values())).grid.reshape(-1))
+
+    a, b = (m / max(np.linalg.norm(m), 1e-30) for m in maps)
+    assert float(a @ b) > 0.5, "the loud part of the two maps does not overlap"

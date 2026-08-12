@@ -766,12 +766,16 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     onto itself.
 
     The map is on a **common** time base --- a bin is `bin_seconds` wherever it
-    is drawn --- and centred on the event's energy centroid. Scaling each map to
+    is drawn --- and anchored on the centre of the tile carrying the event's
+    largest coefficient. Scaling each map to
     its own event's extent instead would give a bin a different duration in each
     detector, so two maps compared across the network would be stretched onto
     each other, and the lag that best aligns them would be in no unit at all.
-    An event longer than `time_bins * bin_seconds` is truncated to the centre of
-    its energy; a shorter one leaves the rest of the map empty.
+    An event longer than `time_bins * bin_seconds` is truncated around that
+    anchor; a shorter one leaves the rest of the map empty. The anchor is what
+    makes two maps comparable: it is an instant both detectors measure on the
+    same transient, whereas a centroid is a property of what each of them
+    recovered.
 
     :type graph: DetectorGraph
     :param graph: the detector's level-one graph.
@@ -814,17 +818,26 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     sigma_of = nodes["sigma"].to_numpy(dtype=float)
     span = scale / fs
 
-    centroid_of = nodes["gpsCentroid"].to_numpy(dtype=float) \
-        if "gpsCentroid" in nodes else gps
+    # Anchored on the centre of the tile carrying each event's largest
+    # coefficient, which is an instant both detectors share. The energy centroid
+    # is not: it follows how much of a transient survived threshold in that
+    # detector, so an event recovered as one block and its counterpart recovered
+    # as five have centroids far apart, and two maps anchored on them are
+    # offset by a large part of their own width --- their agreement then
+    # measures the difference in extent and not the difference in morphology.
+    anchor_of = nodes["gpsPeak"].to_numpy(dtype=float) \
+        if "gpsPeak" in nodes else gps
     weight = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
     half = 0.5 * time_bins * float(bin_seconds)
 
     out = {}
     for label, (start, size) in enumerate(zip(starts, sizes)):
         members = order[start:start + size]
-        # Centred on where the energy is, so a truncated map keeps the part that
-        # carries the signal rather than the part that happens to come first.
-        centre = float(np.average(centroid_of[members], weights=weight[members]))
+        # The loudest member's own peak, not an average over the members: an
+        # average is pulled by how many blocks each event happens to span,
+        # which is the asymmetry this anchor exists to avoid.
+        loudest = members[int(np.argmax(weight[members]))]
+        centre = float(anchor_of[loudest])
         first = centre - half
 
         grid = np.zeros((len(bands), time_bins))
