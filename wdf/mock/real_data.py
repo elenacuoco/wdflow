@@ -56,8 +56,11 @@ def measured_psd(strain, sample_rate, segment_s=8.0):
 def read_strain(frames, channels, start_gps, duration):
     """Read one span of strain per detector from GWF.
 
-    :type frames: dict[str, str]
-    :param frames: ``{ifo: path}`` of the GWF files.
+    :type frames: dict[str, str | list[str]]
+    :param frames: ``{ifo: path}``, or ``{ifo: [path, ...]}`` when a stretch is
+        held in several files. A GWF vector cannot exceed 2 GiB, so a long
+        stretch is necessarily written in parts; the parts must be given in
+        time order and are read as one continuous series.
     :type channels: dict[str, str]
     :param channels: ``{ifo: channel}`` to read from each.
     :type start_gps: float
@@ -70,7 +73,10 @@ def read_strain(frames, channels, start_gps, duration):
 
     strain, rate = {}, None
     for ifo, path in frames.items():
-        series = TimeSeries.read(path, channels[ifo], start=start_gps,
+        # gwpy reads a list of files as one series, which is what a stretch
+        # split only by the container's size limit has to be.
+        source = list(path) if isinstance(path, (list, tuple)) else path
+        series = TimeSeries.read(source, channels[ifo], start=start_gps,
                                  end=start_gps + duration)
         strain[ifo] = np.asarray(series.value, dtype=float)
         rate = float(series.sample_rate.value) if rate is None else rate
@@ -85,6 +91,8 @@ def inject_into_strain(
     duration,
     n_cbc=60,
     n_glitch=60,
+    n_ccsn=0,
+    ccsn_catalogue=None,
     snr_range=(6.0, 60.0),
     seed=0,
     cbc_mix=None,
@@ -102,10 +110,12 @@ def inject_into_strain(
     The two differ only by the injections, so their difference is the injected
     waveform and the background is the same noise without it.
 
-    `minimum_gap` defaults to well beyond the longest signal drawn: a
-    binary-neutron-star injection runs to a few hundred seconds, and injections
-    packed closer than they are long leave no stretch of noise between them to
-    measure a background against.
+    No two injections can overlap at any `minimum_gap`, since each reserves its
+    own measured support and the arrival time at every detector is checked, not
+    only the geocentric one. What the gap adds is the clear stretch *between*
+    consecutive supports, and what that stretch has to clear is the machinery
+    downstream --- the window an injection is matched inside, the tolerance
+    triggers are grouped within, and the longest event the search assembles.
 
     :type outdir: str
     :param outdir: directory to write the frames, FFL indices and truth table to.
@@ -121,14 +131,23 @@ def inject_into_strain(
     :param n_cbc: compact-binary signals to draw.
     :type n_glitch: int
     :param n_glitch: single-detector transients to draw.
+    :type n_ccsn: int
+    :param n_ccsn: core-collapse supernova waveforms to draw from
+        ``ccsn_catalogue``. They are astrophysical and reach every detector
+        through the antenna response, as the compact binaries do.
+    :type ccsn_catalogue: dict | None
+    :param ccsn_catalogue: the index
+        :func:`wdf.mock.waveforms.ccsn_catalogue` returns; required when
+        ``n_ccsn`` is non-zero.
     :type snr_range: tuple[float, float]
     :param snr_range: range of optimal network signal-to-noise ratio to draw in.
     :type seed: int
     :param seed: seed for the draw.
     :type minimum_gap: float
     :param minimum_gap: least separation between injections, seconds.
-    :type edge_pad: float
-    :param edge_pad: span kept free at each end, seconds.
+    :type edge_pad: float | tuple[float, float]
+    :param edge_pad: span kept free at each end, seconds; a ``(start, end)``
+        pair where the two ends reserve different amounts.
     :type low_frequency_cutoff: float
     :param low_frequency_cutoff: lower bound of the band signals are drawn in.
     :type high_frequency_cutoff: float | None
@@ -157,7 +176,8 @@ def inject_into_strain(
            for ifo, values in strain.items()}
 
     specs = draw_injections(
-        n_cbc=n_cbc, n_glitch=n_glitch, duration=duration, start_gps=start_gps,
+        n_cbc=n_cbc, n_glitch=n_glitch, n_ccsn=n_ccsn,
+        ccsn_catalogue=ccsn_catalogue, duration=duration, start_gps=start_gps,
         edge_pad=edge_pad, snr_range=snr_range, seed=seed,
         sample_rate=int(sample_rate), detectors=detectors,
         minimum_gap=minimum_gap,

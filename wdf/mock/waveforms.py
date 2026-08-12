@@ -152,6 +152,117 @@ GLITCH_GENERATORS = {
 }
 
 
+# A core-collapse supernova is not written down in closed form. Its waveform is
+# the output of a hydrodynamic simulation, read from a catalogue, and what
+# distinguishes one entry from another is the progenitor model and the direction
+# the observer sits in relative to the simulation's axes --- the same explosion
+# radiates differently along each. Both are drawn, since neither is known in
+# advance for a real source.
+CCSN_FILE_PATTERN = "*_strains_*.txt"
+
+
+def ccsn_catalogue(directory):
+    """Index the core-collapse supernova waveforms a directory holds.
+
+    The index is built from what is on disk rather than from a list written
+    here: a catalogue is data, it is revised upstream, and an entry missing for
+    one direction is a fact about the catalogue and not an error. Drawing from
+    the index therefore draws only from waveforms that exist.
+
+    File names are read as ``<model>_strains_<direction>.txt``.
+
+    :type directory: str
+    :param directory: the directory holding the strain files.
+    :return: dict -- ``{model: {direction: path}}``, both keys sorted by the
+        caller when a deterministic draw is needed.
+    :raises FileNotFoundError: if the directory holds no file of that form.
+    """
+    import glob
+    import os
+
+    found = {}
+    for path in sorted(glob.glob(os.path.join(directory, CCSN_FILE_PATTERN))):
+        stem = os.path.basename(path)[: -len(".txt")]
+        model, _, direction = stem.rpartition("_strains_")
+        if not model or not direction:
+            continue
+        found.setdefault(model, {})[direction] = path
+
+    if not found:
+        raise FileNotFoundError(
+            f"no file matching {CCSN_FILE_PATTERN} under {directory}")
+    return found
+
+
+def ccsn_polarisations(path, sample_rate=2048):
+    """Plus and cross polarisations of one core-collapse supernova model.
+
+    The file carries the time steps the simulation took, which are neither
+    uniform nor the analysis rate: on this catalogue they vary by more than an
+    order of magnitude within one waveform. Interpolating straight onto the
+    analysis grid would fold everything above its Nyquist frequency back into
+    the band, where it would be indistinguishable from signal. The series is
+    therefore put first on a uniform grid fine enough to resolve the steps the
+    simulation actually took, band limited there, and only then read off at the
+    requested rate.
+
+    The overall scale is discarded, as for every generator here: the injection
+    code rescales to a requested signal-to-noise ratio, so only the shape and
+    the relation between the two polarisations carry meaning. Unlike a circular
+    binary's, these two are neither in phase nor scaled copies of one another,
+    which is why the amplitude a detector receives cannot be written as a
+    function of an inclination.
+
+    :type path: str
+    :param path: the strain file, three columns --- time in seconds from core
+        bounce, then the two polarisations.
+    :type sample_rate: int
+    :param sample_rate: rate to return the series at, Hz.
+    :return: tuple -- ``(hp, hc, start_offset)``, the two polarisations as
+        arrays on a uniform grid at `sample_rate`, and the time of their first
+        sample relative to core bounce, seconds. The reference time of the
+        injection is the bounce, so `start_offset` is positive when the
+        catalogue begins after it.
+    :raises ValueError: if the file does not hold at least three columns, or
+        holds fewer than two rows, or its time column does not increase.
+    """
+    from scipy.signal import butter, sosfiltfilt
+
+    table = np.loadtxt(path)
+    if table.ndim != 2 or table.shape[1] < 3 or table.shape[0] < 2:
+        raise ValueError(
+            f"{path} must hold at least two rows of (time, h_plus, h_cross)")
+
+    times = np.asarray(table[:, 0], dtype=float)
+    steps = np.diff(times)
+    if not np.all(steps > 0.0):
+        raise ValueError(f"{path} has a time column that does not increase")
+
+    sample_rate = float(sample_rate)
+
+    # Fine enough to resolve the simulation's own typical step, and a whole
+    # multiple of the target so the final read-off is a decimation of it.
+    oversample = max(int(np.ceil(1.0 / (float(np.median(steps)) * sample_rate))), 1)
+    fine_rate = oversample * sample_rate
+
+    fine = np.arange(times[0], times[-1], 1.0 / fine_rate)
+    columns = [np.interp(fine, times, np.asarray(table[:, k], dtype=float))
+               for k in (1, 2)]
+
+    if oversample > 1:
+        # Below the target Nyquist, with the transition band inside it: what
+        # this removes is a fraction of a per cent of the emitted power, and
+        # what leaving it in would add is that power folded to a frequency it
+        # was never emitted at.
+        sos = butter(8, 0.45 * sample_rate / (0.5 * fine_rate),
+                     btype="lowpass", output="sos")
+        columns = [sosfiltfilt(sos, column) for column in columns]
+
+    coarse = np.arange(times[0], times[-1], 1.0 / sample_rate)
+    hp, hc = (np.interp(coarse, fine, column) for column in columns)
+    return hp, hc, float(times[0])
+
+
 def _symmetric_times(half_length, sample_rate):
     """Time array symmetric about zero, spanning +/- `half_length` seconds."""
     n = int(round(half_length * sample_rate))

@@ -46,6 +46,9 @@ GROUND_TRUTH_COLUMNS = [
     "injection_id",
     "category",
     "subclass",
+    # Which of the simulation's axes the observer sits on, for a waveform read
+    # from a catalogue. Empty for everything generated in closed form.
+    "direction",
     "detector",
     "approximant",
     "gps",
@@ -257,6 +260,82 @@ def _draw_cbc(rng, snr_range, cbc_mix=DEFAULT_CBC_MIX):
     }
 
 
+def _draw_ccsn(rng, snr_range, catalogue):
+    """Draw one core-collapse supernova injection from a waveform catalogue.
+
+    The model and the observer direction are drawn uniformly over what the
+    catalogue holds, since neither is known in advance for a real source and the
+    catalogue is not a population: it is a set of simulations, and weighting it
+    by anything would be asserting a progenitor distribution the set does not
+    carry. Directions are drawn per model, so a model the catalogue holds along
+    two axes is never asked for a third.
+
+    :param rng: the generator the draw comes from.
+    :param snr_range: the network signal-to-noise ratio to scale to.
+    :type catalogue: dict
+    :param catalogue: ``{model: {direction: path}}``, as
+        :func:`wdf.mock.waveforms.ccsn_catalogue` returns.
+    :return: dict -- the injection's parameters. There is no inclination: the
+        orientation that matters is already fixed by the direction drawn.
+    :raises ValueError: if the catalogue is empty.
+    """
+    if not catalogue:
+        raise ValueError("a core-collapse injection needs a waveform catalogue")
+
+    model = str(rng.choice(sorted(catalogue)))
+    direction = str(rng.choice(sorted(catalogue[model])))
+
+    return {
+        "category": "ccsn",
+        "subclass": model,
+        "direction": direction,
+        "waveform_path": catalogue[model][direction],
+        "ra": float(rng.uniform(0.0, 2.0 * np.pi)),
+        "dec": float(np.arcsin(rng.uniform(-1.0, 1.0))),
+        "polarization": float(rng.uniform(0.0, 2.0 * np.pi)),
+        "target_snr": float(rng.uniform(*snr_range)),
+    }
+
+
+def _polarisations(spec, sample_rate):
+    """The two polarisations of one astrophysical injection, and where they start.
+
+    Compact binaries are generated from their parameters and supernovae read
+    from a catalogue, but both reach the detectors the same way --- through the
+    antenna response and the time of flight --- so everything downstream of this
+    takes the same three values and does not ask which it is holding.
+
+    :param spec: the injection's drawn parameters.
+    :type sample_rate: int
+    :param sample_rate: rate to generate at, Hz.
+    :return: tuple -- ``(hp, hc, start_offset)``, the polarisations and the time
+        of their first sample relative to the injection's reference time, which
+        is the merger for a compact binary and core bounce for a supernova.
+    :raises RuntimeError: if the two polarisations differ in length.
+    """
+    if spec["category"] == "ccsn":
+        hp, hc, start_offset = waveforms.ccsn_polarisations(
+            spec["waveform_path"], sample_rate)
+    else:
+        series_p, series_c = waveforms.cbc_polarisations(
+            spec["mass1"],
+            spec["mass2"],
+            spec["spin1z"],
+            spec["spin2z"],
+            inclination=spec["inclination"],
+            f_lower=spec["f_lower"],
+            sample_rate=sample_rate,
+            approximant=spec["approximant"],
+        )
+        hp = np.asarray(series_p, dtype=float)
+        hc = np.asarray(series_c, dtype=float)
+        start_offset = float(series_p.start_time)
+
+    if len(hp) != len(hc):
+        raise RuntimeError("Generated hp and hc have different lengths")
+    return hp, hc, start_offset
+
+
 def _draw_glitch(rng, snr_range, detectors):
     """Draw parameters for one single-detector glitch injection."""
     subclass = str(rng.choice(waveforms.GLITCH_CLASSES))
@@ -318,25 +397,23 @@ def _prepare_injection_support(spec, sample_rate):
     """Attach the actual generated time support to an injection specification."""
     prepared = dict(spec)
 
-    if prepared["category"] == "cbc":
-        hp, hc = waveforms.cbc_polarisations(
-            prepared["mass1"],
-            prepared["mass2"],
-            prepared["spin1z"],
-            prepared["spin2z"],
-            inclination=prepared["inclination"],
-            f_lower=prepared["f_lower"],
-            sample_rate=sample_rate,
-            approximant=prepared["approximant"],
-        )
-        if len(hp) != len(hc):
-            raise RuntimeError("Generated hp and hc have different lengths")
+    if prepared["category"] in ("cbc", "ccsn"):
+        hp, hc, start_offset = _polarisations(prepared, sample_rate)
 
-        start_offset = float(hp.start_time)
         end_offset = start_offset + len(hp) / float(sample_rate)
         prepared["support_before"] = max(-start_offset, 0.0)
         prepared["support_after"] = max(end_offset, 0.0)
         prepared["duration"] = len(hp) / float(sample_rate)
+
+        if prepared["category"] == "ccsn":
+            # The three inner products that decide how the network amplitude
+            # divides between the detectors. They are kept here because this is
+            # where the waveform is already in hand: recomputing them inside the
+            # sky redraws would re-read and resample the catalogue file once per
+            # attempt, for a quantity that does not depend on the sky at all.
+            prepared["hp_energy"] = float(hp @ hp)
+            prepared["hc_energy"] = float(hc @ hc)
+            prepared["cross_energy"] = float(hp @ hc)
     else:
         samples = _glitch_strain(prepared, sample_rate)
         duration = len(samples) / float(sample_rate)
@@ -351,11 +428,19 @@ def _detector_share(spec, gps, detectors):
     """Each detector's share of the network amplitude, from geometry alone.
 
     For one waveform seen through equal spectra the signal-to-noise ratio a
-    detector receives is proportional to
+    detector receives is proportional to the norm of what reaches it. For a
+    circular binary the two polarisations are fixed by the inclination and that
+    norm reduces to
 
         a = sqrt( (F+ (1 + cos^2 i) / 2)^2 + (Fx cos i)^2 ),
 
-    so the shares a_i / sqrt(sum a_i^2) are exact when the detectors' spectra
+    while for a waveform read from a catalogue the polarisations are whatever
+    the simulation produced and the norm is taken on them directly,
+
+        a^2 = F+^2 <h+,h+> + Fx^2 <hx,hx> + 2 F+ Fx <h+,hx>,
+
+    which is the same quantity without the circular-binary assumption. Either
+    way the shares a_i / sqrt(sum a_i^2) are exact when the detectors' spectra
     are equal --- the simulated set's case --- and an approximation where they
     differ.
 
@@ -367,14 +452,27 @@ def _detector_share(spec, gps, detectors):
     """
     from pycbc.detector import Detector
 
-    cosine = np.cos(float(spec["inclination"]))
+    # A waveform read from a simulation has two polarisations that are neither
+    # in phase nor scaled copies of one another, so the amplitude a detector
+    # receives is the norm of `F+ h+ + Fx hx` itself, cross term included, and
+    # not a function of an inclination. The expression above describes a
+    # circular binary and would misstate the split for anything else.
+    from_catalogue = spec["category"] == "ccsn"
+    cosine = 0.0 if from_catalogue else np.cos(float(spec["inclination"]))
+
     amplitude = []
     for ifo in detectors:
         f_plus, f_cross = Detector(ifo).antenna_pattern(
             float(spec["ra"]), float(spec["dec"]),
             float(spec["polarization"]), float(gps))
-        amplitude.append(np.hypot(f_plus * (1.0 + cosine * cosine) / 2.0,
-                                  f_cross * cosine))
+        if from_catalogue:
+            energy = (f_plus * f_plus * float(spec["hp_energy"])
+                      + f_cross * f_cross * float(spec["hc_energy"])
+                      + 2.0 * f_plus * f_cross * float(spec["cross_energy"]))
+            amplitude.append(np.sqrt(max(energy, 0.0)))
+        else:
+            amplitude.append(np.hypot(f_plus * (1.0 + cosine * cosine) / 2.0,
+                                      f_cross * cosine))
     amplitude = np.asarray(amplitude, dtype=float)
     norm = float(np.linalg.norm(amplitude))
     if norm <= 0.0:
@@ -430,9 +528,38 @@ def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
         f"{attempts} redraws")
 
 
+def _edge_pads(edge_pad):
+    """Resolve an edge padding to the pair of spans kept free at the two ends.
+
+    The two ends of a stretch do not reserve the same amount: the start has to
+    clear whatever a search fits its noise model on, the end whatever the
+    conditioning chain reads ahead of what it emits. A scalar is the pair whose
+    ends are equal.
+
+    :param edge_pad: a span in seconds, or a ``(start, end)`` pair of them.
+    :return: tuple[float, float] -- the spans kept free at start and at end.
+    :raises ValueError: if either span is negative, or a sequence is given that
+        is not a pair.
+    """
+    if np.isscalar(edge_pad):
+        pads = (float(edge_pad), float(edge_pad))
+    else:
+        values = tuple(edge_pad)
+        if len(values) != 2:
+            raise ValueError(
+                f"edge_pad takes a span or a (start, end) pair, got "
+                f"{len(values)} values")
+        pads = (float(values[0]), float(values[1]))
+    if pads[0] < 0.0 or pads[1] < 0.0:
+        raise ValueError("edge_pad spans must be non-negative")
+    return pads
+
+
 def draw_injections(
     n_cbc=250,
     n_glitch=750,
+    n_ccsn=0,
+    ccsn_catalogue=None,
     duration=28800.0,
     start_gps=0.0,
     edge_pad=500.0,
@@ -458,23 +585,38 @@ def draw_injections(
     needs it. The population is then the one every detector sees; a source
     projected onto one detector alone cannot occur in it, and the aggregate
     efficiencies are no longer diluted by signals nothing could recover.
+
+    ``edge_pad`` is a span in seconds kept free at each end, or a
+    ``(start, end)`` pair of them where the two ends reserve different amounts.
+    An injection placed inside either is placed where a search does not look,
+    and is then indistinguishable from one it looked for and missed.
+
+    ``n_ccsn`` draws core-collapse supernova waveforms from ``ccsn_catalogue``,
+    the index :func:`wdf.mock.waveforms.ccsn_catalogue` returns. They reach the
+    detectors as compact binaries do, through the antenna response and the time
+    of flight, and differ in carrying no closed-form parameters and no
+    inclination.
     """
-    if n_cbc < 0 or n_glitch < 0:
+    if n_cbc < 0 or n_glitch < 0 or n_ccsn < 0:
         raise ValueError("Injection counts must be non-negative")
-    if duration <= 2.0 * edge_pad:
-        raise ValueError("duration must be larger than 2 * edge_pad")
+    if n_ccsn and not ccsn_catalogue:
+        raise ValueError("n_ccsn needs a ccsn_catalogue to draw from")
+    pad_start, pad_end = _edge_pads(edge_pad)
+    if duration <= pad_start + pad_end:
+        raise ValueError("duration must be larger than the edge padding")
     if minimum_gap < 0.0:
         raise ValueError("minimum_gap must be non-negative")
 
     rng = np.random.default_rng(seed)
     specs = [_draw_cbc(rng, snr_range, cbc_mix) for _ in range(n_cbc)]
+    specs.extend(_draw_ccsn(rng, snr_range, ccsn_catalogue) for _ in range(n_ccsn))
     specs.extend(_draw_glitch(rng, snr_range, detectors) for _ in range(n_glitch))
     specs = [_prepare_injection_support(spec, sample_rate) for spec in specs]
     rng.shuffle(specs)
 
     n_requested = len(specs)
-    usable_start = float(start_gps) + float(edge_pad)
-    usable_end = float(start_gps) + float(duration) - float(edge_pad)
+    usable_start = float(start_gps) + pad_start
+    usable_end = float(start_gps) + float(duration) - pad_end
     usable_span = usable_end - usable_start
 
     protected_lengths = np.asarray(
@@ -529,7 +671,7 @@ def draw_injections(
         item = dict(spec)
         item["injection_id"] = len(placed)
         item["gps"] = float(gps)
-        if item["category"] == "cbc" and min_detector_snr is not None:
+        if item["category"] in ("cbc", "ccsn") and min_detector_snr is not None:
             _enforce_detector_floor(rng, item, float(gps), detectors,
                                     snr_range, float(min_detector_snr))
         item["gps_start"] = float(gps - support_before)
@@ -719,16 +861,7 @@ def _inject_one(
         row[f"gps_end_{ifo}"] = inserted["gps_end"]
         return row
 
-    hp, hc = waveforms.cbc_polarisations(
-        spec["mass1"],
-        spec["mass2"],
-        spec["spin1z"],
-        spec["spin2z"],
-        inclination=spec["inclination"],
-        f_lower=spec["f_lower"],
-        sample_rate=sample_rate,
-        approximant=spec["approximant"],
-    )
+    hp, hc, waveform_start_offset = _polarisations(spec, sample_rate)
     projected = project_cbc(
         hp,
         hc,
@@ -756,10 +889,10 @@ def _inject_one(
     }
     network0 = float(np.sqrt(sum(value * value for value in unscaled_snrs.values())))
     if network0 <= 0.0:
-        raise RuntimeError(f"Zero network SNR for CBC {spec['injection_id']}")
+        raise RuntimeError(
+            f"Zero network SNR for {spec['category']} {spec['injection_id']}")
 
     scale = float(spec["target_snr"]) / network0
-    waveform_start_offset = float(hp.start_time)
     achieved_network_squared = 0.0
 
     for ifo, (samples, arrival) in projected.items():
@@ -862,6 +995,8 @@ def generate_dataset(
     sample_rate=2048,
     n_cbc=250,
     n_glitch=750,
+    n_ccsn=0,
+    ccsn_catalogue=None,
     snr_range=(4.0, 50.0),
     seed=0,
     detectors=("H1", "L1"),
@@ -882,6 +1017,9 @@ def generate_dataset(
 
     ``sample_rate`` is the frame generation rate. ``analysis_sample_rate`` is
     the rate after WDF resampling and is used only to cap the SNR/filter band.
+    ``edge_pad`` is a span in seconds kept free at each end, or a
+    ``(start, end)`` pair of them; see :func:`draw_injections`. ``n_ccsn`` draws
+    that many core-collapse supernova waveforms from ``ccsn_catalogue``.
     """
     from gwpy.timeseries import TimeSeries as GwpyTimeSeries
 
@@ -919,6 +1057,8 @@ def generate_dataset(
     injections = draw_injections(
         n_cbc=n_cbc,
         n_glitch=n_glitch,
+        n_ccsn=n_ccsn,
+        ccsn_catalogue=ccsn_catalogue,
         duration=duration,
         start_gps=start_gps,
         edge_pad=edge_pad,
@@ -932,7 +1072,7 @@ def generate_dataset(
         min_detector_snr=min_detector_snr,
     )
 
-    requested = int(n_cbc) + int(n_glitch)
+    requested = int(n_cbc) + int(n_glitch) + int(n_ccsn)
     if strict and len(injections) != requested:
         raise RuntimeError(
             f"Generated {len(injections)} of {requested} requested injections"
@@ -969,7 +1109,14 @@ def generate_dataset(
                 frame_length,
             )
 
-    foreground = {ifo: noise[ifo].copy() for ifo in detectors}
+    # The background frames are already written, and nothing reads `noise`
+    # again, so the foreground takes the arrays over rather than copying them.
+    # The copy was a second full-length series per detector held for no reader:
+    # at a few days of livetime that is the difference between fitting in
+    # memory and swapping. What is produced is unchanged --- the same samples
+    # from the same seeds --- since injection adds into these arrays in place
+    # either way.
+    foreground = {ifo: noise.pop(ifo) for ifo in detectors}
     rows = [
         _inject_one(
             spec,

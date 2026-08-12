@@ -61,6 +61,89 @@ def test_draw_injections_stay_inside_the_padded_span():
         assert spec["gps"] + spec["support_after"] <= 500.0 + 2400.0 - 64.0
 
 
+def _write_ccsn_catalogue(directory, models=("modelA", "modelB"),
+                          directions=("x", "y", "z"), missing=("modelB", "y")):
+    """Write a catalogue of the shape the published ones have.
+
+    The time column is deliberately non-uniform and finer than any analysis
+    rate, as a simulation's own output is, and one entry is left out so that a
+    model present along fewer axes than the others is exercised.
+    """
+    os.makedirs(directory, exist_ok=True)
+    rng = np.random.default_rng(0)
+    for model in models:
+        for direction in directions:
+            if (model, direction) == tuple(missing):
+                continue
+            steps = rng.uniform(0.5, 1.5, size=4000) / 12000.0
+            t = 0.01 + np.cumsum(steps)
+            # A slow component the analysis band keeps and a fast one above any
+            # analysis Nyquist, so anti-aliasing has something to remove.
+            hp = np.sin(2 * np.pi * 200.0 * t) + 0.5 * np.sin(2 * np.pi * 5000.0 * t)
+            hc = np.cos(2 * np.pi * 180.0 * t)
+            path = os.path.join(directory, f"{model}_strains_{direction}.txt")
+            np.savetxt(path, np.column_stack([t, hp, hc]))
+    return directory
+
+
+def test_catalogue_indexes_only_the_waveforms_on_disk(tmp_path):
+    """A model the catalogue holds along two axes is never asked for a third."""
+    index = w.ccsn_catalogue(_write_ccsn_catalogue(str(tmp_path)))
+    assert sorted(index) == ["modelA", "modelB"]
+    assert sorted(index["modelA"]) == ["x", "y", "z"]
+    assert sorted(index["modelB"]) == ["x", "z"]
+
+
+def test_catalogue_directory_without_waveforms_is_an_error(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        w.ccsn_catalogue(str(tmp_path))
+
+
+def test_catalogue_waveform_is_resampled_without_folding_the_band(tmp_path):
+    """A simulation's grid is neither uniform nor the analysis rate. Reading it
+    off directly would fold what sits above the analysis Nyquist back into the
+    band, where nothing distinguishes it from signal.
+    """
+    index = w.ccsn_catalogue(_write_ccsn_catalogue(str(tmp_path)))
+    rate = 2048
+    hp, hc, start_offset = w.ccsn_polarisations(index["modelA"]["x"], rate)
+
+    assert len(hp) == len(hc)
+    assert start_offset > 0.0
+
+    spectrum = np.abs(np.fft.rfft(hp)) ** 2
+    freqs = np.fft.rfftfreq(len(hp), 1.0 / rate)
+
+    # The 200 Hz component is what the band keeps. The 5 kHz one has to be
+    # gone, not moved: sampled at 2048 Hz it would fold to |5000 - 2*2048| =
+    # 904 Hz and sit there looking exactly like signal.
+    kept = spectrum[np.abs(freqs - 200.0) < 5.0].sum()
+    folded = spectrum[np.abs(freqs - 904.0) < 5.0].sum()
+    assert kept > 100.0 * folded
+
+
+def test_catalogue_injection_reaches_every_detector(tmp_path):
+    """A supernova is astrophysical: it goes to the whole network through the
+    antenna response, unlike a glitch, and its network amplitude is the one
+    asked for.
+    """
+    index = w.ccsn_catalogue(_write_ccsn_catalogue(str(tmp_path / "cat")))
+    table = generate_dataset(str(tmp_path / "out"), duration=1200.0,
+                             start_gps=1400000000.0, n_cbc=0, n_glitch=0,
+                             n_ccsn=4, ccsn_catalogue=index, seed=7,
+                             edge_pad=(100.0, 200.0), write_background=False)
+    assert set(table["category"]) == {"ccsn"}
+    assert table["direction"].isin(["x", "y", "z"]).all()
+    for _, row in table.iterrows():
+        assert row["snr_H1"] > 0.0 and row["snr_L1"] > 0.0
+        assert row["network_snr"] == pytest.approx(row["target_snr"], rel=1e-6)
+
+
+def test_catalogue_injection_needs_a_catalogue():
+    with pytest.raises(ValueError):
+        draw_injections(n_cbc=0, n_glitch=0, n_ccsn=1, duration=1200.0)
+
+
 def test_draw_injections_is_reproducible_from_seed():
     a = draw_injections(n_cbc=3, n_glitch=8, duration=2400.0, edge_pad=100.0, seed=11)
     b = draw_injections(n_cbc=3, n_glitch=8, duration=2400.0, edge_pad=100.0, seed=11)
@@ -194,6 +277,29 @@ def test_start_of_data_is_left_free_for_noise_estimation():
                                  start_gps=1000.0, edge_pad=pad, seed=13)
     first = min(s["gps"] - s["support_before"] for s in injections)
     assert first >= 1000.0 + pad
+
+
+def test_the_two_ends_reserve_what_each_is_given():
+    """The end of a stretch reserves what a chain reading ahead does not reach,
+    which is not what the start reserves for a noise model. An injection past
+    either edge is one no search looked for, counted as one it missed.
+    """
+    start, span, pads = 1000.0, 3600.0, (200.0, 900.0)
+    injections = draw_injections(n_cbc=5, n_glitch=20, duration=span,
+                                 start_gps=start, edge_pad=pads, seed=13)
+    first = min(s["gps"] - s["support_before"] for s in injections)
+    last = max(s["gps"] + s["support_after"] for s in injections)
+    assert first >= start + pads[0]
+    assert last <= start + span - pads[1]
+
+
+def test_edge_padding_rejects_what_it_cannot_resolve():
+    with pytest.raises(ValueError):
+        draw_injections(n_cbc=1, n_glitch=0, duration=600.0, edge_pad=(400.0,))
+    with pytest.raises(ValueError):
+        draw_injections(n_cbc=1, n_glitch=0, duration=600.0, edge_pad=(-1.0, 0.0))
+    with pytest.raises(ValueError):
+        draw_injections(n_cbc=1, n_glitch=0, duration=600.0, edge_pad=(400.0, 400.0))
 
 
 @pytest.mark.parametrize("name", sorted(w.GLITCH_GENERATORS))
