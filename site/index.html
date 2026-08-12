@@ -398,6 +398,20 @@
         <p>A model's output is not a probability of astrophysical origin. Significance comes from time slides, which leave each detector's noise intact while destroying any real coincidence — and the unshifted data is the same construction at zero shift, so foreground and background are one population differently ordered.</p>
         <p style="font-size:0.9rem;color:var(--fg-dim);">A deterministic baseline is ranked through the same background, and a learned statistic that does not beat it at fixed false-alarm rate is not introduced. The learned one is fitted on accidental coincidences alone — candidates built from time-slid data, which are accidental by construction — and scores a pair by how badly a model of that population fails to reproduce it. No injection and no label enters the fit, so the selection cannot depend on the waveform family the model was shown.</p>
         <p style="font-size:0.9rem;color:var(--fg-dim);">Efficiency is read as the excess over an accidental floor. Injections placed in one detector only cannot be recovered in coincidence, so whatever fraction of them a statistic appears to recover measures how often some candidate happens to fall inside the matching window. An efficiency at or below that floor is not evidence of recovery.</p>
+
+        <p>The same coincidence gives a direction. A region of sky needs an
+        arrival time per detector and the uncertainty on it, and both come from
+        the machinery that assembled the event: the time is the centre of the
+        tile carrying the event's largest coefficient, found on its own wavegram
+        over every block it touched, and the uncertainty is that tile's own
+        duration. Neither is a property of where the analysis grid began. The
+        centroid is deliberately not used &mdash; it is a moment of whatever
+        survived threshold in one detector, and two detectors keeping different
+        portions of one signal place it differently, which is indistinguishable
+        from geometry once it enters an arrival-time difference. Two detectors
+        give a ring rather than a point, so the whole weighted grid is reported
+        and no best point is invented; the learned stage decides which
+        coincidences are worth following and never where they lie.</p>
       </div>
     </div>
   </section>
