@@ -205,6 +205,14 @@ wdf.analysis.baseline
 .. automodule:: wdf.analysis.detectors
    :members:
 
+wdf.analysis.submission
+-----------------------
+
+.. automodule:: wdf.analysis.submission
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 wdf.analysis.skymap
 ~~~~~~~~~~~~~~~~~~~
 
