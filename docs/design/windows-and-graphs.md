@@ -107,6 +107,14 @@ shorter than the light travel time the two statements coincide, which is why the
 extent test is the general one. The arrival-time difference is still measured
 and still ranks the survivors; it no longer decides which pairs exist.
 
+The map two detectors are compared on is anchored the same way: on the centre of
+the tile carrying the loudest member's largest coefficient, not on the event's
+energy centroid. An event kept as one block and its counterpart kept as five have
+centroids far apart, so maps centred on them sit a large part of their own width
+from each other and their agreement measures the difference in extent rather than
+the difference in morphology. The anchor is an instant both detectors measure on
+the same transient; the centroid is a property of what each of them recovered.
+
 Where that difference is measured, an event is timed on `gpsPeak`, the centre of
 the tile carrying its largest coefficient, and not on `gpsCentroid`. The two are
 different quantities and only one of them is a clock. A centroid is a moment of
@@ -135,10 +143,28 @@ produces either.
 ## Significance
 
 A model's output is not a probability of astrophysical origin.
-`wdf.analysis.robust_events.TimeSlideFAR` shifts the detectors against each other
-by much more than the light travel time, which leaves each detector's noise intact
-while destroying any real coincidence, and the false-alarm rate follows from the
-resulting distribution.
+`wdf.analysis.robust_events.TimeSlideFAR` displaces every detector but the first
+by an amount of its own, each far larger than the light travel time, which leaves
+each detector's noise intact while destroying any real coincidence; the
+false-alarm rate follows from the resulting distribution. With more than two
+detectors the pair that excludes the reference is decorrelated only by the
+*difference* of two shifts, so the draw is repeated until every difference, and
+not merely every shift, clears the minimum: two detectors moved by nearly the
+same amount would stay in step and their own pair would keep its real
+coincidences.
+
+An event's own statistic is made comparable across extents by
+`wdf.analysis.event_significance`, which maps it through the background
+distribution of events spanning the same number of blocks. Inside the measured
+range the mapping is the empirical survival, so a calibrated background is
+exponential with unit rate by construction. Beyond the largest value a bin
+measured it continues along an exponential fitted to that bin's own upper tail.
+The continuation is what keeps the statistic usable: an empirical survival cannot
+fall below one count in its bin, so on its own it caps the significance at the
+logarithm of the bin's size, and a threshold beyond that cap silently rejects
+every event of that extent however loud it is --- which is exactly the class the
+grouping exists to build. The extrapolation is a stated model of the tail and the
+edge of the sample records where the measurement ends.
 
 The zero-lag candidates and the slid candidates come from the same finder, so they
 are one population differently ordered. `wdf.analysis.baseline` provides a

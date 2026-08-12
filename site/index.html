@@ -326,6 +326,7 @@
             <tr><td>gpsCentroid</td><td>the energy centroid of the tiles in time. It describes where an event's energy sits, and it is not what the coincidence times a pair on: a centroid depends on how much of the transient survived threshold in that detector, so two detectors at different projected amplitudes place it differently</td></tr>
             <tr><td>gpsPeak</td><td>the centre of the tile carrying the largest coefficient — the arrival time the cross-detector stage uses, and the one the difference between detectors is measured on</td></tr>
             <tr><td>tSpread</td><td>the spread of the energy about that centroid, including each tile's own width</td></tr>
+            <tr><td>the wavegram</td><td>the event's coefficients on a band-by-time grid, anchored on the same loudest tile. Anchoring it on the energy centroid instead makes two detectors that kept different amounts of one transient compare maps offset by a large part of their own width, and their agreement then measures the difference in extent rather than in morphology</td></tr>
             <tr><td>duration</td><td>the extent of the surviving tiles</td></tr>
             <tr><td>duration90</td><td>the interval holding the central 90% of the energy; one marginal tile cannot stretch it</td></tr>
             <tr><td>freqMean</td><td>energy-weighted frequency of the tiles, in the log-frequency the dyadic tiling is uniform in</td></tr>

@@ -61,6 +61,27 @@ of per-detector reconstructed waveform data a coherence check would need;
 using it for cross-detector waveform consistency (rather than timing/learned
 scoring alone) is a natural extension, not yet implemented.
 
+## The simulated set the efficiencies are read on
+
+`wdf.mock.dataset` places each compact binary on the sky and projects it onto
+every detector through that detector's own antenna response, so the two strains
+differ by amplitude and by arrival time exactly as a real source would make them
+differ. `min_detector_snr`, when given, redraws the sky and orientation until
+every detector receives at least that signal-to-noise ratio, raising the network
+target inside the requested range where the geometry demands it.
+
+The floor exists because a projection can starve one detector entirely. An
+injection only one detector receives cannot be recovered in coincidence at any
+amplitude, and counting it dilutes every aggregate with a signal no network
+could find. With the floor the population is the one the whole network sees,
+which is the population an efficiency should be quoted on; without it the
+aggregate mixes a statement about the search with a statement about how the sky
+was drawn.
+
+Glitches are single-detector by construction and are never projected. They exist
+to measure the accidental floor of the coincidence, and a glitch placed in both
+detectors would measure something else.
+
 ## Status
 
 Timing coincidence + time-slide FAR is the production-track method: fast,
