@@ -456,9 +456,12 @@ def test_the_map_carries_shape_and_not_arrival_time():
 
     delay = light_travel_time("H1", "L1")
     triggers = _walking_coefficients(_triggers([512], 6), [64] * 6)
+    # Every time the event carries, the anchor included: shifting some and not
+    # others is not moving the event, it is deforming it.
     delayed = triggers.assign(gps=triggers.gps + delay,
                               gpsStart=triggers.gpsStart + delay,
-                              gpsCentroid=triggers.gpsCentroid + delay)
+                              gpsCentroid=triggers.gpsCentroid + delay,
+                              gpsPeak=triggers.gpsPeak + delay)
 
     def rendered(frame, bin_seconds):
         graph = build_detector_graph(frame)
