@@ -57,6 +57,80 @@ def triggers_from_files(paths: list[str], ifo: str) -> pd.DataFrame:
     return df
 
 
+def analysed_span(frames, time_column: str = "gpsStart"):
+    """The stretch a search actually covered, read from the triggers it wrote.
+
+    The span a configuration declares is not the span a search examines. The
+    conditioning chain reads ahead of what it emits and stops before the end of
+    the data it is given, and it needs a stretch at the start to fit its noise
+    model, so the triggers begin after the declared start and end well before
+    the declared end. Dividing a count by the declared span therefore
+    understates every false-alarm rate, and counts injections placed past the
+    last block as missed when nothing ever looked there.
+
+    Given several detectors' triggers the result is their **intersection**, not
+    their union: the livetime that divides a coincidence rate is the stretch
+    every detector searched, since a coincidence cannot be formed where one of
+    them was not looking.
+
+    The span ends at the last block's start rather than its end. A block is
+    short against any livetime worth quoting, and understating by one block is
+    the safe direction: it never claims livetime that was not searched.
+
+    :type frames: iterable of pandas.DataFrame
+    :param frames: one trigger table per detector, as `triggers_from_files`
+        returns.
+    :type time_column: str
+    :param time_column: the column holding each block's start time, seconds.
+    :return: tuple[float, float] -- `(first, last)` GPS. The span is empty,
+        with `last == first`, when the detectors have no stretch in common.
+    :raises ValueError: if no frames are given, if one of them is empty, or if
+        `time_column` is missing from any of them.
+    """
+    frames = list(frames)
+    if not frames:
+        raise ValueError("no trigger frames given")
+
+    firsts, lasts = [], []
+    for k, frame in enumerate(frames):
+        if time_column not in frame:
+            raise ValueError(
+                f"trigger frame {k} has no {time_column!r} column")
+        if not len(frame):
+            raise ValueError(
+                f"trigger frame {k} is empty: a detector that wrote no trigger "
+                "has no analysed span, and treating it as one would put a "
+                "livetime under every rate that nothing measured")
+        times = frame[time_column].to_numpy(dtype=float)
+        firsts.append(float(np.nanmin(times)))
+        lasts.append(float(np.nanmax(times)))
+
+    first, last = max(firsts), min(lasts)
+    return (first, max(last, first))
+
+
+def covered_livetime_days(spans) -> float:
+    """Total livetime of a set of spans, in days.
+
+    The spans are those `analysed_span` returns, one per analysed stretch. They
+    are summed rather than merged: separate stretches of an observing run are
+    disjoint by construction, and a set that overlapped would be double-counting
+    the same data whatever this did about it.
+
+    :type spans: iterable of tuple[float, float]
+    :param spans: `(first, last)` pairs in GPS seconds.
+    :return: float -- their total length, days.
+    :raises ValueError: if a span runs backwards.
+    """
+    total = 0.0
+    for k, (first, last) in enumerate(spans):
+        length = float(last) - float(first)
+        if length < 0.0:
+            raise ValueError(f"span {k} ends before it starts: ({first}, {last})")
+        total += length
+    return total / 86400.0
+
+
 def run_parameters(trigger_path: str):
     """The run configuration a trigger file was produced under.
 

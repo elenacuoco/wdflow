@@ -17,7 +17,7 @@ import pandas as pd
 
 from wdf.analysis.detector_graph import (WAVEGRAM_TIME_BINS, flatten_clouds,
                                          tile_coherence_many)
-from wdf.analysis.pairs import neighbour_pairs
+from wdf.analysis.pairs import neighbour_pairs, paired_dot
 from wdf.analysis.robust_events import (
     EPS,
     _numeric,
@@ -423,11 +423,16 @@ class TriggerGraphBuilder:
             travel = self.coincidence.travel_time((ifo_a, ifo_b))
             coherence = tile_coherence_many(cloud_flat, i_sel, j_sel, travel)
 
-            similarity = np.einsum("ij,ij->i", shapes[i_sel], shapes[j_sel])
-            coherent = np.maximum(np.einsum("ij,ij->i", raw[i_sel], raw[j_sel]), 0.0)
+            # Gathered a block at a time, and on a GPU when there is one. The
+            # plain form --- `shapes[i_sel]` inside an einsum --- builds one
+            # copy of a map per pair before reducing it: at a few million pairs
+            # that is tens of gigabytes held to produce one number each, which
+            # is what makes this stage the memory wall of the run.
+            similarity = paired_dot(shapes, shapes, i_sel, j_sel)
+            coherent = np.maximum(paired_dot(raw, raw, i_sel, j_sel), 0.0)
             overlap = np.sqrt(coherent)
-            present = (np.einsum("ij,ij->i", raw[i_sel], raw[i_sel])
-                       + np.einsum("ij,ij->i", raw[j_sel], raw[j_sel]))
+            present = (paired_dot(raw, raw, i_sel, i_sel)
+                       + paired_dot(raw, raw, j_sel, j_sel))
             correlation = np.clip(2.0 * coherent / np.maximum(present, EPS),
                                   0.0, 1.0)
             cross_edges.append(np.column_stack([i_sel, j_sel]))

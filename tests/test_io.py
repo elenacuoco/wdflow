@@ -7,6 +7,8 @@ from wdf.analysis.coefficients import TriggerWriter
 from wdf.analysis.io import (
     TRIGGER_COLUMNS,
     add_wavelet_energy_diagnostics,
+    analysed_span,
+    covered_livetime_days,
     triggers_from_files,
 )
 from wdf.analysis.metaparameters import meta_features
@@ -78,3 +80,37 @@ def test_the_statistic_can_be_recomputed_from_the_coefficients(tmp_path):
         loaded["EnWDF"].to_numpy(), rel=1e-6)
     assert loaded["EnWDF_residual"].abs().max() < 1e-6
     assert (loaded["nActiveCoeff"] == 3).all()
+
+
+def test_analysed_span_is_what_every_detector_searched():
+    """The livetime that divides a coincidence rate is the stretch both
+    detectors covered: a coincidence cannot be formed where one was not looking.
+    """
+    a = pd.DataFrame({"gpsStart": [100.0, 500.0, 900.0]})
+    b = pd.DataFrame({"gpsStart": [150.0, 800.0]})
+    assert analysed_span([a, b]) == (150.0, 800.0)
+
+
+def test_analysed_span_is_empty_when_the_detectors_never_overlap():
+    a = pd.DataFrame({"gpsStart": [0.0, 10.0]})
+    b = pd.DataFrame({"gpsStart": [100.0, 110.0]})
+    first, last = analysed_span([a, b])
+    assert last == first
+    assert covered_livetime_days([(first, last)]) == 0.0
+
+
+def test_a_detector_that_wrote_nothing_is_an_error_not_a_livetime():
+    """Treating it as covered would put a livetime under a rate nothing
+    measured, which is the failure this whole quantity exists to prevent.
+    """
+    a = pd.DataFrame({"gpsStart": [0.0, 10.0]})
+    with pytest.raises(ValueError):
+        analysed_span([a, pd.DataFrame({"gpsStart": []})])
+    with pytest.raises(ValueError):
+        analysed_span([])
+
+
+def test_covered_livetime_sums_the_stretches():
+    assert covered_livetime_days([(0.0, 86400.0), (0.0, 43200.0)]) == 1.5
+    with pytest.raises(ValueError):
+        covered_livetime_days([(10.0, 0.0)])

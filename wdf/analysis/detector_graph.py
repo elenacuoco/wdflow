@@ -485,7 +485,30 @@ def build_detector_graph(triggers: pd.DataFrame,
                          np.concatenate(features))
 
 
-def event_tiles(nodes, members):
+def tile_context(nodes):
+    """The column arrays and geometry cache `event_tiles` reads.
+
+    Extracted once for a whole detector. The columns belong to the table and
+    not to one event, so rebuilding them per event turns a pass over the
+    coefficients into a pass over the table for every event there is.
+
+    :type nodes: pandas.DataFrame
+    :param nodes: the detector's triggers.
+    :return: dict -- to be passed to `event_tiles` as `context`. The geometry
+        cache is filled lazily, per window length, and shared across events.
+    """
+    return {
+        "gps": nodes["gps"].to_numpy(dtype=float),
+        "scale": nodes["n_coeff"].to_numpy(dtype=int),
+        "rate": nodes["fs"].to_numpy(dtype=float),
+        "sigma": nodes["sigma"].to_numpy(dtype=float),
+        "index_of": nodes["wt_index"].to_numpy(),
+        "value_of": nodes["wt_value"].to_numpy(),
+        "geometry": {},
+    }
+
+
+def event_tiles(nodes, members, context=None):
     """Every surviving coefficient of an event, as tiles in absolute time.
 
     The event's parameters are properties of the coefficients it kept, so they
@@ -496,17 +519,20 @@ def event_tiles(nodes, members):
     :type nodes: pandas.DataFrame
     :param nodes: the detector's triggers.
     :param members: row positions of the event's members.
+    :param context: what `tile_context` returns, built once for the detector.
+        Built here when None, which is correct but reads the whole table on
+        every call: a caller asking for every event's tiles must build it once
+        and pass it, or the cost grows with events times triggers rather than
+        with the coefficients there are.
     :return: tuple -- (t_lo, t_hi, f_lo, f_hi, energy), all numpy arrays over
         the union of the members' surviving coefficients.
     """
-    geometry = {}
+    context = tile_context(nodes) if context is None else context
+    geometry = context["geometry"]
+    gps, scale, rate = context["gps"], context["scale"], context["rate"]
+    sigma = context["sigma"]
+    index_of, value_of = context["index_of"], context["value_of"]
     t_lo, t_hi, f_lo, f_hi, energy = [], [], [], [], []
-    gps = nodes["gps"].to_numpy(dtype=float)
-    scale = nodes["n_coeff"].to_numpy(dtype=int)
-    rate = nodes["fs"].to_numpy(dtype=float)
-    sigma = nodes["sigma"].to_numpy(dtype=float)
-    index_of = nodes["wt_index"].to_numpy()
-    value_of = nodes["wt_value"].to_numpy()
 
     for row in members:
         n = int(scale[row])
@@ -830,36 +856,71 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     weight = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
     half = 0.5 * time_bins * float(bin_seconds)
 
+    # Every event's map is one scatter-add, not one per event and one per
+    # member inside it. The maps differ only in where each coefficient lands,
+    # so the coefficients of the whole detector are placed once, in flat
+    # arrays, and accumulated into a single (event, band, column) volume. The
+    # per-event loop and `np.add.at` it replaces cost more than the grouping
+    # that produced the events.
+    n_labels = int(labels.max()) + 1
+    n_bands = len(bands)
+
+    # The loudest member of each event, taken as the first maximum in node
+    # order so that ties resolve as a stable pass over the members would.
+    key = np.lexsort((np.arange(len(labels)), -weight, labels))
+    in_key = labels[key]
+    heads = np.flatnonzero(np.r_[True, in_key[1:] != in_key[:-1]])
+    loudest = np.zeros(n_labels, dtype=int)
+    loudest[in_key[heads]] = key[heads]
+    first_of = anchor_of[loudest] - half
+
+    # The ragged per-trigger coefficient lists, concatenated once.
+    counts = np.fromiter((len(np.atleast_1d(index_of[n])) for n in range(len(labels))),
+                         dtype=int, count=len(labels))
+    if counts.sum():
+        flat_node = np.repeat(np.arange(len(labels)), counts)
+        flat_index = np.concatenate(
+            [np.atleast_1d(np.asarray(index_of[n], dtype=int)) for n in range(len(labels))])
+        flat_value = np.abs(np.concatenate(
+            [np.atleast_1d(np.asarray(value_of[n], dtype=float)) for n in range(len(labels))]))
+
+        # Band row and tile centre depend only on the window length, of which
+        # there are a handful, so each is resolved for all its coefficients at
+        # once rather than trigger by trigger.
+        flat_row = np.full(flat_node.shape, -1, dtype=int)
+        flat_centre = np.zeros(flat_node.shape, dtype=float)
+        node_scale = scale[flat_node]
+        for length in np.unique(scale):
+            tile_centre, rows = geometry[int(length)]
+            here = node_scale == int(length)
+            flat_row[here] = rows[flat_index[here]]
+            flat_centre[here] = tile_centre[flat_index[here]]
+
+        sigma = sigma_of[flat_node]
+        sigma = np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, 1.0)
+        event = labels[flat_node]
+        when = gps[flat_node] + flat_centre
+        column = np.floor((when - first_of[event]) / float(bin_seconds)).astype(int)
+
+        keep = (flat_row >= 0) & (column >= 0) & (column < time_bins)
+        linear = ((event[keep] * n_bands + flat_row[keep]) * time_bins
+                  + column[keep])
+        grids = np.bincount(linear, weights=flat_value[keep] / sigma[keep],
+                            minlength=n_labels * n_bands * time_bins)
+        grids = grids.reshape(n_labels, n_bands, time_bins)
+    else:
+        grids = np.zeros((n_labels, n_bands, time_bins))
+
+    # Once for the detector, not once per event.
+    tiles = tile_context(nodes)
+
     out = {}
     for label, (start, size) in enumerate(zip(starts, sizes)):
         members = order[start:start + size]
-        # The loudest member's own peak, not an average over the members: an
-        # average is pulled by how many blocks each event happens to span,
-        # which is the asymmetry this anchor exists to avoid.
-        loudest = members[int(np.argmax(weight[members]))]
-        centre = float(anchor_of[loudest])
-        first = centre - half
-
-        grid = np.zeros((len(bands), time_bins))
-        for node in members:
-            tile_centre, rows = geometry[int(scale[node])]
-            index = np.asarray(index_of[node], dtype=int)
-            keep = rows[index] >= 0
-            if not keep.any():
-                continue
-            sigma = sigma_of[node]
-            sigma = sigma if np.isfinite(sigma) and sigma > 0.0 else 1.0
-            # Absolute time, then the event's own extent.
-            when = gps[node] + tile_centre[index[keep]]
-            column = np.floor((when - first) / float(bin_seconds)).astype(int)
-            inside = (column >= 0) & (column < time_bins)
-            if not inside.any():
-                continue
-            np.add.at(grid, (rows[index[keep]][inside], column[inside]),
-                      (np.abs(np.asarray(value_of[node], dtype=float))[keep]
-                       / sigma)[inside])
-        out[int(label)] = EventWavegram(grid, bin_seconds, bands, first,
-                                        tiles=event_tiles(nodes, members))
+        out[int(label)] = EventWavegram(grids[label], bin_seconds, bands,
+                                        float(first_of[label]),
+                                        tiles=event_tiles(nodes, members,
+                                                          context=tiles))
     return out
 
 
