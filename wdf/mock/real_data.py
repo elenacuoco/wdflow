@@ -157,7 +157,8 @@ def inject_into_strain(
     :param minimum_gap: least separation between injections, seconds.
     :type edge_pad: float | tuple[float, float]
     :param edge_pad: span kept free at each end, seconds; a ``(start, end)``
-        pair where the two ends reserve different amounts.
+        pair where the two ends reserve different amounts, the end having to
+        clear the stretch the search reads ahead of what it emits.
     :type low_frequency_cutoff: float
     :param low_frequency_cutoff: lower bound of the band signals are drawn in.
     :type high_frequency_cutoff: float | None

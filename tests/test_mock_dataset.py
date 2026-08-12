@@ -345,3 +345,59 @@ def test_an_unreachable_detector_floor_is_refused():
     with pytest.raises(ValueError, match="floor"):
         draw_injections(n_cbc=2, n_glitch=0, duration=30000.0, seed=1,
                         snr_range=(4.0, 9.0), min_detector_snr=7.0)
+
+
+def test_the_two_ends_can_reserve_different_amounts():
+    """The start clears the noise-model block, the end the chain's read-ahead.
+
+    A search reads ahead of what it emits, so it stops well before the end of
+    the data it was given. An injection placed in that stretch is placed in
+    time nobody searched, and counting it as missed measures the padding and
+    not the search --- which is why the two ends are not symmetric.
+    """
+    from wdf.mock.dataset import draw_injections
+
+    duration, start = 20000.0, 1400000000.0
+    rows = draw_injections(n_cbc=10, n_glitch=0, duration=duration,
+                           start_gps=start, seed=3, snr_range=(8.0, 60.0),
+                           edge_pad=(500.0, 4000.0))
+    gps = np.array([r["gps"] for r in rows])
+    assert gps.min() >= start + 500.0
+    assert gps.max() <= start + duration - 4000.0
+    # And the whole of the reserved tail is honoured, not merely its start.
+    assert (gps > start + duration - 4000.0).sum() == 0
+
+
+def test_a_span_smaller_than_its_padding_is_refused():
+    from wdf.mock.dataset import draw_injections
+
+    with pytest.raises(ValueError, match="padding"):
+        draw_injections(n_cbc=1, n_glitch=0, duration=1000.0,
+                        edge_pad=(600.0, 600.0))
+
+
+def test_no_two_injections_overlap_in_any_detector():
+    """Supports may touch the gap but never each other, geocentre or detector.
+
+    Placement reserves each injection's own measured support, so overlap is
+    impossible by construction rather than by the size of the gap --- and the
+    property has to hold on the arrival times each detector sees, which the
+    light travel time shifts by up to ten milliseconds from the geocentric one,
+    not merely at the geocentre.
+    """
+    import pandas as pd
+
+    from wdf.mock.dataset import draw_injections
+
+    rows = draw_injections(n_cbc=60, n_glitch=40, duration=40000.0,
+                           start_gps=1400000000.0, seed=11,
+                           snr_range=(8.0, 60.0), minimum_gap=1.0,
+                           edge_pad=(500.0, 2000.0))
+    table = pd.DataFrame(rows).sort_values("gps").reset_index(drop=True)
+    starts = table.gps - table.support_before
+    ends = table.gps + table.support_after
+    separation = starts.to_numpy()[1:] - ends.to_numpy()[:-1]
+    assert (separation > 0).all(), (
+        f"{int((separation <= 0).sum())} pairs of injections overlap")
+    # The gap asked for is a floor on that separation, not a nominal value.
+    assert separation.min() >= 1.0 - 1e-6
