@@ -103,9 +103,21 @@ def optimal_snr(
     segment, say -- must supply its own measured spectrum, or the recorded SNR
     describes a different detector than the one the signal was injected into.
 
+    :type strain: pycbc.types.TimeSeries
+    :param strain: the signal as one detector receives it, noise-free.
+    :type sample_rate: int
+    :param sample_rate: sampling rate of `strain`, Hz.
+    :type low_frequency_cutoff: float
+    :param low_frequency_cutoff: lower bound of the band the SNR is counted
+        in, Hz.
+    :type high_frequency_cutoff: float | None
+    :param high_frequency_cutoff: upper bound, Hz; Nyquist when None.
+    :type psd_name: str
+    :param psd_name: analytic model used when no ``psd`` is given.
     :type psd: pycbc.types.FrequencySeries or None
     :param psd: measured noise spectrum, resampled onto the required frequency
         grid if its resolution differs.
+    :return: float -- the optimal matched-filter signal-to-noise ratio.
     """
     from pycbc.filter import sigma
     from pycbc.types import TimeSeries

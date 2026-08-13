@@ -143,6 +143,16 @@ def inject_into_strain(
     :param snr_range: range of optimal network signal-to-noise ratio to draw in.
     :type seed: int
     :param seed: seed for the draw.
+    :type cbc_mix: sequence[float] | None
+    :param cbc_mix: probability of each compact-binary class, in the order of
+        :data:`wdf.mock.waveforms.CBC_CLASSES`; normalised internally, and an
+        even mixture when None.
+    :type min_detector_snr: float | None
+    :param min_detector_snr: least single-detector signal-to-noise ratio an
+        injection must reach in every detector; None places no floor. A source
+        projected away from one detector can be quiet there however loud the
+        network is, and a floor removes draws no single-detector study could
+        count.
     :type minimum_gap: float
     :param minimum_gap: least separation between injections, seconds.
     :type edge_pad: float | tuple[float, float]

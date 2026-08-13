@@ -18,8 +18,13 @@ what a transient is can be decided afterwards.
 - `wdf.config`, `wdf.processes`, `wdf.observers`, `wdf.structures` -- trigger generation. Needs
   the compiled `pytsa`/p4TSA core (`pip install wdflow[pipeline]`).
 - `wdf.analysis` -- clustering, multi-detector coincidence (classical + GNN), background/
-  false-alarm-probability, and ROC analysis. Operates on plain pandas DataFrames / saved trigger
-  files, no `pytsa` dependency, so it works standalone (`pip install wdflow`, no extras needed).
+  false-alarm-probability, ROC analysis and sky localisation. Operates on plain pandas
+  DataFrames / saved trigger files, no `pytsa` dependency, so it works standalone
+  (`pip install wdflow`, no extras needed).
+- `wdf.mock` -- the simulated two-detector data set: coloured Gaussian noise, compact-binary
+  injections projected through the antenna responses, single-detector glitch morphologies, and
+  waveforms read from a catalogue when a class has no closed form. Paired foreground and
+  background frames with a truth table (`pip install wdflow[mock]`).
 
 ## Relationship to the legacy `wdf` package
 
@@ -89,7 +94,7 @@ Changes from the legacy `wdf` package:
   background/false-alarm-probability, and ROC analysis. It has no `pytsa` dependency and operates
   on plain pandas DataFrames / saved trigger files, so it works standalone.
 
-Left behind for now (not used by `wdfUnitDSWorker`'s pipeline, not ported/audited):
+Left behind deliberately (not used by `wdfUnitDSWorker`'s pipeline, not ported or audited):
 `AdaptiveWhitening`, `Coloring`, `createsegmentsMinMax`, `CreateSegments`, `DownSamplingLF`,
 `DownSampling`, `StateVectorSegments`, `wdf_reconstruct`, `wdfUnitBPDSWorker`, `wdfUnitWorker`
 (the last two share the pre-fix `ExtraSize=0` whitening issue -- worth the same fix if/when
@@ -97,7 +102,7 @@ ported), `structures.ClusteredEvent` (an empty data holder), `structures.segment
 
 ## Tutorials
 
-`tutorials/` holds three runnable notebooks. Everything in them is built in the notebook itself --
+`tutorials/` holds four runnable notebooks. Everything in them is built in the notebook itself --
 no data set to download, no frame file to point at:
 
 1. `01_the_statistic_and_the_parameters` -- one window of whitened data, the transform,
@@ -106,6 +111,9 @@ no data set to download, no frame file to point at:
    recovering a signal that spans several analysis windows. Needs `pytsa`.
 3. `03_coincidence_and_significance` -- coincidence, time-slide background, false-alarm
    probability and ROC, using only `wdf.analysis`. **No `pytsa` required.**
+4. `04_reconstruction_and_phase` -- the event's own coefficients inverted and stitched across
+   windows, compared against the waveform that was injected, and the phase read sample by
+   sample. Needs `pytsa`.
 
 ## Install
 
@@ -132,7 +140,7 @@ PyPI.
 | `gnn` | `torch >= 2.1`, `torch_geometric >= 2.5` | `wdf.analysis.gnn` — the learned cross-detector coincidence |
 | `data` | `gwpy >= 3.0` | fetching public strain, e.g. from GWOSC |
 | `pipeline` | `coloredlogs` | trigger-generation logging |
-| `mock` | `pycbc` | `wdf.mock` — generating simulated data sets with CBC injections |
+| `mock` | `pycbc` | `wdf.mock` — generating the simulated data sets: CBC injections, glitch morphologies, catalogue waveforms |
 | `tutorials` | `jupyter`, `nbclient`, `ipykernel` | running `tutorials/` |
 | `docs` | `sphinx >= 7`, `sphinx-rtd-theme >= 2`, `myst-nb >= 1` | building the documentation |
 | `dev` | `pytest >= 7` | the test suite |
