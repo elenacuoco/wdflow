@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 def forward(samples, wave):
     """One window's wavelet coefficients, untouched by thresholding."""
+    # Imported here rather than at module scope so that the generators below,
+    # which fabricate trigger tables and need nothing compiled, stay usable
+    # without it. A caller that does need the transform is skipped, not failed.
+    pytest.importorskip("pytsa")
     from pytsa.tsa import WaveletTransform
     from wdf.structures.array2SeqView import array2SeqView
 

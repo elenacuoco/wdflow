@@ -380,6 +380,9 @@ def test_the_event_has_a_waveform_and_not_only_a_number():
     reconstruction in the time domain, and something to compare across
     detectors. This is the second."""
     import numpy as np
+
+    # The inverse transform is the one thing here that needs the compiled core.
+    pytest.importorskip("pytsa")
     from wdf.analysis.detector_graph import event_waveform
 
     triggers = _fixed_coefficients(_triggers([512], 5), [64, 65])

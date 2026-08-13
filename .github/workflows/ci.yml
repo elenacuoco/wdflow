@@ -120,8 +120,14 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # The same two steps .readthedocs.yaml performs. autodoc imports every
+      # module it documents, so the package and its runtime dependencies have
+      # to be here: conf.py mocks only the compiled and optional imports, and
+      # without the rest every autodoc directive fails and -W fails the build.
       - name: Install docs requirements
-        run: pip install -r docs/requirements.txt
+        run: |
+          pip install -r docs/requirements.txt
+          pip install -e .
 
       # -W: autodoc mocks the compiled and optional imports (see docs/conf.py),
       # and the tutorials are rendered from their committed outputs rather than
