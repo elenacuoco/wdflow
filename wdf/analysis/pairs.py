@@ -63,6 +63,37 @@ def cross_pairs(left_time, right_time, time_eps, block: int = PAIR_BLOCK):
     yield from _blocks(start, stop, block)
 
 
+def interval_pairs(left_lo, left_hi, right_anchor, right_reach=0.0,
+                   block: int = PAIR_BLOCK):
+    """Yield index pairs whose intervals can touch, sized by each interval.
+
+    Enumerates pairs ``(i, j)`` with ``right_anchor[j]`` inside
+    ``[left_lo[i] - right_reach, left_hi[i]]`` on a sorted right axis. With
+    `right_reach` the longest extent any right event adds beyond its anchor,
+    this is a superset of every pair of touching intervals in which each left
+    event sweeps a window set by its own extent: one long event widens its
+    own enumeration and nobody else's. A single global window --- the longest
+    extent either set holds --- multiplies that one event's reach onto every
+    event of both sets, which is quadratic in all but name.
+
+    :param left_lo: lower edge of each left interval, seconds. Any order.
+    :param left_hi: upper edge of each left interval, seconds.
+    :param right_anchor: sorted anchor of each right event, seconds.
+    :param right_reach: how far beyond its anchor a right event can extend,
+        seconds.
+    :param block: how many left indices to expand per yielded block.
+    :return: iterator of (left, right) integer index arrays, indexing
+        `left_lo` and `right_anchor` respectively.
+    """
+    left_lo = np.asarray(left_lo, dtype=float)
+    left_hi = np.asarray(left_hi, dtype=float)
+    right_anchor = np.asarray(right_anchor, dtype=float)
+    start = np.searchsorted(right_anchor, left_lo - float(right_reach),
+                            side="left")
+    stop = np.searchsorted(right_anchor, left_hi, side="right")
+    yield from _blocks(start, stop, block)
+
+
 # Rows gathered per pair are the memory wall of every pairwise stage. A dot
 # product between the maps of two events is one number, but writing it as
 # `(maps[i] * maps[j]).sum(1)` first builds one copy of a map per pair: at a

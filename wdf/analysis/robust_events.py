@@ -26,7 +26,7 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 from wdf.analysis.detectors import network_light_travel_time
-from wdf.analysis.pairs import cross_pairs, neighbour_pairs
+from wdf.analysis.pairs import cross_pairs, interval_pairs, neighbour_pairs
 
 EPS = np.finfo(float).tiny
 
@@ -617,17 +617,32 @@ class IndexedCoincidenceFinder:
         re = np.maximum(_coefficient_energy(right), EPS)
 
         pair = self._pair(left, right)
-        widest = self.coincidence_window(left, right)
 
         # Formed as arrays over the admissible pairs rather than one pair at a
         # time: the per-pair tolerance is the same expression evaluated
         # elementwise, and at these event rates the Python call dominated the
         # whole graph build.
-        left_order = np.argsort(lt, kind="mergesort")
-        right_order = np.argsort(rt, kind="mergesort")
+        #
+        # Enumerated on each event's own extent, not on a global window. The
+        # pairs that can survive are those whose stretches touch within the
+        # tolerance cap, so each left event needs the right events whose
+        # anchor falls between its own start, less the cap and the farthest
+        # any right event reaches past its anchor, and its own end plus the
+        # cap. One long event then widens its own enumeration and nobody
+        # else's; a window of the longest duration either side holds --- what
+        # `coincidence_window` returns --- multiplies that event's reach onto
+        # every event of both detectors, and on data whose noise chains long
+        # events the enumeration alone exhausts the memory.
+        tol_up = float(self.config.maximum_tolerance(pair))
+        l_lo = np.where(np.isfinite(l_start), l_start, lt) - tol_up
+        l_hi = np.where(np.isfinite(l_end), l_end, lt) + tol_up
+        r_anchor = np.where(np.isfinite(r_start), r_start, rt)
+        r_extent = np.where(np.isfinite(r_end - r_anchor), r_end - r_anchor, 0.0)
+        r_reach = float(r_extent.max()) if r_extent.size else 0.0
+        right_order = np.argsort(r_anchor, kind="mergesort")
         blocks = []
-        for a, b in cross_pairs(lt[left_order], rt[right_order], widest):
-            i, j = left_order[a], right_order[b]
+        for i, b in interval_pairs(l_lo, l_hi, r_anchor[right_order], r_reach):
+            j = right_order[b]
             tolerance = self.config.timing_tolerance(ls[i], rs[j], pair)
             dt = lt[i] - rt[j]
             overlap = _overlap_fraction(lf0[i], lf1[i], rf0[j], rf1[j])
