@@ -1034,6 +1034,12 @@ def flatten_clouds(clouds):
                 energy=field(4), starts=starts, counts=counts)
 
 
+# Tile pairs laid out per run of event pairs: enough to keep the reduction
+# vectorised, small enough that the working arrays stay bounded whatever the
+# events' sizes.
+TILE_PAIR_BLOCK = 20_000_000
+
+
 def tile_coherence_many(flat, i_sel, j_sel, tolerance) -> np.ndarray:
     """`tile_coherence` for many pairs at once, by one reduction.
 
@@ -1055,27 +1061,75 @@ def tile_coherence_many(flat, i_sel, j_sel, tolerance) -> np.ndarray:
     i_sel = np.asarray(i_sel, dtype=np.int64)
     j_sel = np.asarray(j_sel, dtype=np.int64)
     nl, nr = flat["counts"][i_sel], flat["counts"][j_sel]
-    per_pair = nl * nr
-    total = int(per_pair.sum())
+    per_pair = (nl * nr).astype(np.int64)
     out = np.zeros(len(i_sel))
-    if total == 0:
+    if not int(per_pair.sum()):
         return out
 
-    offsets = np.concatenate([[0], np.cumsum(per_pair)[:-1]])
-    pair_id = np.repeat(np.arange(len(i_sel)), per_pair)
-    within = np.arange(total) - offsets[pair_id]
-    right_count = nr[pair_id]
-    left = flat["starts"][i_sel][pair_id] + within // right_count
-    right = flat["starts"][j_sel][pair_id] + within % right_count
+    # The flat layout is exact but its working arrays are the size of the
+    # cross product summed over every pair at once: one event assembled from
+    # thousands of windows meets hundreds of partners, and the product of the
+    # two is billions of tile pairs in a single allocation. The pairs are
+    # therefore taken in runs bounded by the tile pairs they lay out, and a
+    # single pair too large for a run on its own is split along its left
+    # tiles; only the per-pair sums survive either way, so the numbers are
+    # the ones the one-shot layout produces.
+    bound = int(TILE_PAIR_BLOCK)
+    edges = np.cumsum(per_pair)
+    first = 0
+    while first < len(i_sel):
+        base = edges[first] - per_pair[first]
+        last = int(np.searchsorted(edges, base + bound, side="left"))
+        last = max(last, first + 1)
 
+        if per_pair[first] > bound and last == first + 1:
+            li, ri = flat["starts"][i_sel[first]], flat["starts"][j_sel[first]]
+            n_left, n_right = int(nl[first]), int(nr[first])
+            step = max(bound // max(n_right, 1), 1)
+            total = 0.0
+            for lo in range(0, n_left, step):
+                left = np.repeat(li + np.arange(lo, min(lo + step, n_left)),
+                                 n_right)
+                right = np.tile(ri + np.arange(n_right),
+                                min(lo + step, n_left) - lo)
+                total += _tile_pair_energy(flat, left, right, tolerance).sum()
+            out[first] = total
+            first = last
+            continue
+
+        sel = slice(first, last)
+        counts = per_pair[sel]
+        offsets = np.concatenate([[0], np.cumsum(counts)[:-1]])
+        pair_id = np.repeat(np.arange(last - first), counts)
+        within = np.arange(int(counts.sum())) - offsets[pair_id]
+        right_count = nr[sel][pair_id]
+        left = flat["starts"][i_sel[sel]][pair_id] + within // right_count
+        right = flat["starts"][j_sel[sel]][pair_id] + within % right_count
+        product = _tile_pair_energy(flat, left, right, tolerance)
+        out[first:last] = np.bincount(pair_id, weights=product,
+                                      minlength=last - first)
+        first = last
+    return out
+
+
+def _tile_pair_energy(flat, left, right, tolerance):
+    """The coherent energy of each tile pair, zero where they do not meet.
+
+    :param flat: the flattened tiles, as `flatten_clouds` returns them.
+    :param left: flat index of each pair's left tile.
+    :param right: flat index of each pair's right tile.
+    :type tolerance: float
+    :param tolerance: displacement in time still counted as the same place.
+    :return: numpy.ndarray -- one energy per tile pair.
+    """
     meets = ((np.minimum(flat["t_hi"][left], flat["t_hi"][right] + tolerance)
               >= np.maximum(flat["t_lo"][left], flat["t_lo"][right] - tolerance))
              & (np.minimum(flat["f_hi"][left], flat["f_hi"][right])
                 >= np.maximum(flat["f_lo"][left], flat["f_lo"][right])))
-    if not meets.any():
-        return out
-    product = np.sqrt(flat["energy"][left[meets]] * flat["energy"][right[meets]])
-    return np.bincount(pair_id[meets], weights=product, minlength=len(i_sel))
+    product = np.zeros(len(left))
+    product[meets] = np.sqrt(flat["energy"][left[meets]]
+                             * flat["energy"][right[meets]])
+    return product
 
 
 def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
