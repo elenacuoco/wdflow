@@ -71,10 +71,14 @@ def resolvable_threshold(far_hz: float, livetime_s: float) -> float:
     :type livetime_s: float
     :param livetime_s: background livetime the rate is read from, seconds.
     :return: float -- the expected number of accidentals above that rate.
-    :raises ValueError: if fewer than one accidental is expected, in which case
-        the background reaches no such rate and quoting one states more than
-        was measured.
+    :raises ValueError: if the rate or the livetime is not positive, or if fewer
+        than one accidental is expected, in which case the background reaches no
+        such rate and quoting one states more than was measured.
     """
+    if float(far_hz) <= 0.0 or float(livetime_s) <= 0.0:
+        raise ValueError(
+            f"a rate and a livetime are both positive quantities; got "
+            f"far_hz={far_hz!r}, livetime_s={livetime_s!r}")
     expected = float(far_hz) * float(livetime_s)
     if expected < 1.0:
         raise ValueError(
@@ -131,7 +135,7 @@ def submission_triggers(candidates, background, livetime_s, statistic,
         ranking statistic is missing.
     """
     if statistic not in candidates:
-        raise KeyError(f"the candidates carry no {statistic!r} to rank on")
+        raise ValueError(f"the candidates carry no {statistic!r} to rank on")
     resolvable_threshold(far_threshold_hz, livetime_s)
 
     rate = false_alarm_rate_hz(candidates[statistic].to_numpy(dtype=float),

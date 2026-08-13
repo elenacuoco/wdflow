@@ -38,6 +38,26 @@ def test_a_rate_the_background_cannot_reach_is_refused():
                                 12.0 * SECONDS_PER_YEAR) > 1.0
 
 
+def test_a_rate_that_is_not_a_rate_is_refused_as_one():
+    """A zero or negative threshold fails the check the loudest way possible.
+
+    The refusal has to reach the caller as the refusal the API documents, not
+    as whatever the arithmetic of describing it happens to raise.
+    """
+    for far_hz in (0.0, -1.0):
+        with pytest.raises(ValueError, match="positive"):
+            resolvable_threshold(far_hz, SECONDS_PER_YEAR)
+    with pytest.raises(ValueError, match="positive"):
+        resolvable_threshold(1.0 / SECONDS_PER_YEAR, 0.0)
+
+
+def test_a_missing_ranking_statistic_is_refused_as_the_api_says():
+    candidates = _candidates()
+    with pytest.raises(ValueError, match="rank on"):
+        submission_triggers(candidates, np.arange(100.0), 1e6,
+                            "no_such_column", 1e-4)
+
+
 def test_the_rate_is_counted_and_never_extrapolated():
     background = np.arange(100.0)
     livetime = 1000.0
