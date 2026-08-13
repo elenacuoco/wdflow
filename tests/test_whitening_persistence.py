@@ -82,3 +82,24 @@ def test_coloring_load_from_saved_ar(tmp_path):
     color.Process(whitened, recolored)
     y = np.array([recolored.GetY(0, i) for i in range(64)])
     assert np.all(np.isfinite(y))
+
+
+def test_only_row_zero_of_the_lattice_errors_carries_information():
+    """The two rows of `ErrorForward`/`ErrorBackward` hold the same value.
+
+    `save_lattice_view` persists row 0 alone, which is lossless only if the
+    rows agree: `SetErrorForward`/`SetErrorBackward` take one index and write
+    both rows, so nothing in the API can make them differ, but the getters are
+    indexed by (row, j) and a reader cannot tell that from the signature. The
+    invariant is checked on a fitted view rather than asserted in prose.
+    """
+    whiten = Whitening(AR_ORDER)
+    whiten.ParametersEstimate(_synthetic_seqview(4000, seed=6))
+    lv = whiten.GetLV()
+
+    rows = range(lv.GetOrder() + 1)
+    forward = [(lv.GetErrorForward(0, j), lv.GetErrorForward(1, j)) for j in rows]
+    backward = [(lv.GetErrorBackward(0, j), lv.GetErrorBackward(1, j)) for j in rows]
+
+    assert all(a == b for a, b in forward)
+    assert all(a == b for a, b in backward)

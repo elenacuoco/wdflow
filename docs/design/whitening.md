@@ -59,15 +59,16 @@ order `q`, so the backward output at sample `i` is
 a finite sum over exactly `q` future samples. Nothing beyond `q` changes the
 answer, so the latency is `q / fs` seconds and is known before the filter runs.
 
-The order can be small because `|A|` is far smoother than `|A|²`: an order-256
-square root matches the whitening quality of the AR(3000) model it comes from.
+The order can be small because `|A|` is far smoother than `|A|²`: the square
+root needs only enough order to follow that smoother magnitude, not the order of
+the model it comes from. `DEFAULT_SQRT_ORDER` is what the pipeline uses.
 
 ## What runs where
 
 | Step | When | Cost |
 |---|---|---|
 | Burg fit of `A` | once per segment | seconds |
-| FFT/IFFT + Levinson for `A₁ᐟ₂` | once per segment | ~2 ms |
+| FFT/IFFT + Levinson for `A₁ᐟ₂` | once per segment | negligible beside the fit |
 | Lattice recursion, both directions | per sample, streaming | — |
 
 No transform ever runs inside the detection loop.

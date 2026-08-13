@@ -34,12 +34,15 @@ inherits it rather than choosing again.
 ## The uncertainty is declared, not chosen
 
 `localise` takes a spread per detector and never invents one. The spread an
-event declares is `tSpread`, the duration of the tile whose centre was taken as
-the time: the time assigned is that centre, so the residual uncertainty is the
-extent of the tile it was read from. Because the tile's duration follows from
-its octave, a high-frequency event declares a tighter time than a
-low-frequency one, and the map widens or narrows accordingly without anything
-being tuned.
+event declares is `tSpread`, the spread of its energy in time about its
+centroid, with each tile's own width folded in as the variance of energy
+distributed uniformly across it. Over an event assembled from several blocks it
+is the members' spreads combined about the event's centroid.
+
+It is a property of how far the event's energy reaches in time, so an event
+confined to one octave and a few tiles declares a tighter time than one smeared
+across octaves and blocks, and the map widens or narrows accordingly without
+anything being tuned.
 
 This matters more than the region's shape. A region drawn with a spread chosen
 to make it look small is a picture and not a measurement, and the only check

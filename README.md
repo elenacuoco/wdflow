@@ -18,7 +18,8 @@ what a transient is can be decided afterwards.
 - `wdf.config`, `wdf.processes`, `wdf.observers`, `wdf.structures` -- trigger generation. Needs
   the compiled `pytsa`/p4TSA core (`pip install wdflow[pipeline]`).
 - `wdf.analysis` -- clustering, multi-detector coincidence (classical + GNN), background/
-  false-alarm-probability, ROC analysis and sky localisation. Operates on plain pandas
+  false-alarm-probability, ROC analysis, sky localisation, and the submission writer that
+  puts the surviving candidates in a challenge's own columns. Operates on plain pandas
   DataFrames / saved trigger files, no `pytsa` dependency, so it works standalone
   (`pip install wdflow`, no extras needed).
 - `wdf.mock` -- the simulated two-detector data set: coloured Gaussian noise, compact-binary
@@ -69,12 +70,13 @@ Changes from the legacy `wdf` package:
   r.m.s. of `x` over its own support divided by `sigma`. `EnWDF` grows as the square root of the
   number of samples a transient occupies, as an energy statistic must; the other two do not.
 
-- **`freqPeak` comes from the wavelet plane, not from a periodogram.** It is the band of the
-  largest surviving coefficient -- the tile where the local signal-to-noise ratio peaks. The
-  maximum of a window's spectrum answers a different question (where the signal deposits the most
-  energy, integrated over time), and for a transient that sweeps in frequency the two can differ
-  by an octave. `freqMean`/`freqMin`/`freqMax` remain spectral moments of the reconstruction,
-  which is what they are defined to be.
+- **Every frequency a trigger reports is a moment over the wavelet tiles**, not a periodogram.
+  `freqMean` is the energy-weighted band, taken in the log-frequency the dyadic tiling is uniform
+  in; `freqMin`/`freqMax` are the support the surviving tiles cover, which is what the band
+  overlap tests read; `freqQ05`/`freqQ95` are the band the energy occupies, which follows the
+  signal rather than its faintest coefficient. There is no single peak frequency: a band an octave
+  wide is what the transform can resolve, and naming one frequency inside it would state more than
+  was measured.
 
 - **Events are clustered on the wavegram and scored on their reconstruction.**
   `wdf.analysis.clustering.wavegram_events` percolates over the time-frequency tiles of the
@@ -215,8 +217,8 @@ ranking rests on and the one a simulated set cannot test.
 
 *This pipeline:*
 
-- E. Cuoco *et al.*, *A real-time un-modelled search for gravitational wave
-  transients in the wavelet domain*, in preparation.
+- E. Cuoco *et al.*, *The Wavelet Detection Filter: a real-time un-modelled
+  search for gravitational wave transients*, in preparation.
 
 *The Wavelet Detection Filter:*
 

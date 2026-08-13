@@ -5,8 +5,8 @@ Whitening/DWhitening/Coloring.
 Replaces p4TSA's `ArBurgEstimator.Save`/`.Load` and `LatticeView.Save`/`.Load`
 -- both go through `eternity::xml_archive`, an old, verbose, uncompressed XML
 serializer (their own `fmt` argument is actually ignored: it is always XML,
-regardless of what is passed). A `ARorder=3000` AR file lands at ~113 KB of
-ASCII text; the equivalent HDF5 file below is a small fraction of that, and
+regardless of what is passed). An AR file lands as verbose ASCII text; the
+equivalent HDF5 file below holds the same coefficients as binary arrays, and
 loads without a bespoke XML parser.
 
 Reads/writes state through `ArBurgEstimator`/`LatticeView`'s own existing
@@ -19,9 +19,9 @@ p4TSA/C++ changes needed.
 
 One subtlety: `LatticeView.GetErrorForward`/`GetErrorBackward` are indexed by
 (row, j) with 2 rows, but `SetErrorForward`/`SetErrorBackward` take only `j`
-and set both rows to the same value -- confirmed (both here and against real
-fitted `LatticeView` instances) that row 0 and row 1 are always identical in
-practice, so this is lossless; only row 0 is persisted.
+and set both rows to the same value, so the two rows cannot differ. Only row 0
+is persisted; `test_whitening_persistence.py` checks the invariant on a fitted
+view rather than leaving it stated here.
 """
 from __future__ import annotations
 

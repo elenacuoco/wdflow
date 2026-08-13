@@ -300,7 +300,7 @@
       <li>
         <span class="n">Stage 4</span>
         <h3>Rank</h3>
-        <p>Connected components of the tile map group the windows a single transient spans, and the reconstruction stitched across them is scored as a whole. Events are matched between detectors within the light-travel time, and unphysical time shifts give the accidental background.</p>
+        <p>Connected components of the tile map group the windows a single transient spans, and the reconstruction stitched across them is scored as a whole. Events are paired between detectors wherever the stretches of time they cover can reach each other once one is allowed to shift by the light travel time, and their bands overlap; unphysical time shifts give the accidental background.</p>
       </li>
     </ol>
   </section>
@@ -312,7 +312,7 @@
         <h2>Transients longer than the analysis window</h2>
         <p>Consecutive windows step by less than their length, so a transient lasting longer than one window is divided across several triggers, each containing only the part that fell inside its own window. The loudest single window then carries a small fraction of the signal-to-noise ratio the whole signal has.</p>
         <p>Mapping every surviving coefficient's tile to absolute time gives a time–frequency representation of the whole run, in which a transient is a connected component. The windows of that component are reassembled — each contributing only the region it alone covers, so no sample is counted twice — and ρ_WDF is evaluated over the full extent of the signal.</p>
-        <p>On simulated binary-neutron-star injections spanning about eight windows, the median recovered fraction of the injected signal-to-noise ratio rises from 0.31 to 0.68.</p>
+        <p>A signal spanning several windows is therefore scored once, over its whole extent, instead of by the best single window that happened to contain part of it.</p>
       </div>
       <div class="prose">
         <p class="label">Parameter estimation</p>
@@ -357,7 +357,7 @@
     <div class="cols" style="margin-top:1.5rem;">
       <div class="prose">
         <p>A dyadic transform ties the level of a coefficient to the band it occupies, so a tile of a given band lasts the same however long the block is. Doubling the window does not insert bands between the octaves and does not lengthen the tiles of the bands already there: it extends the ladder one octave downward, below the low-frequency cut.</p>
-        <p>Searching at several lengths therefore repeats one tiling on shifted grids of blocks rather than adding resolution, and pays a trials factor for the repetition. Measured at a fixed false-alarm rate on the simulated set, the ladder cost several units of threshold and recovered nothing the single length did not.</p>
+        <p>Searching at several lengths therefore repeats one tiling on shifted grids of blocks rather than adding resolution, and pays a trials factor for the repetition. The cost is certain and the gain is not, which is why one length is the default rather than a ladder.</p>
       </div>
       <div class="prose">
         <p>The transient longer than the block is the grouping's problem, not the window's. The block is a unit of computation; the event is the physical object, assembled afterwards from the coefficients of every block it touched, and its statistic is measured on the reconstruction stitched across them.</p>
@@ -403,9 +403,10 @@
         arrival time per detector and the uncertainty on it, and both come from
         the machinery that assembled the event: the time is the centre of the
         tile carrying the event's largest coefficient, found on its own wavegram
-        over every block it touched, and the uncertainty is that tile's own
-        duration. Neither is a property of where the analysis grid began. The
-        centroid is deliberately not used &mdash; it is a moment of whatever
+        over every block it touched, and the uncertainty is <code>tSpread</code>,
+        the spread of the event's energy in time about its centroid, with each
+        tile's own width folded in. Neither is a property of where the analysis
+        grid began. The centroid is deliberately not used as the time &mdash; it is a moment of whatever
         survived threshold in one detector, and two detectors keeping different
         portions of one signal place it differently, which is indistinguishable
         from geometry once it enters an arrival-time difference. Two detectors
@@ -421,8 +422,8 @@
     <h2 class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">Three numbers, not a thousand.</h2>
     <div class="cols" style="margin-top:1.5rem;">
       <div class="prose">
-        <p>A window of <em>N</em> samples transforms into <em>N</em> coefficients, and thresholding at the Donoho&ndash;Johnstone level leaves very few of them &mdash; a fraction of one per cent on noise, a handful on a transient.</p>
-        <p>So a trigger keeps the pairs that survived, the index and the value, and not a vector of a thousand numbers of which all but a few are zero. The record is two to three orders of magnitude smaller.</p>
+        <p>A window of <em>N</em> samples transforms into <em>N</em> coefficients, and thresholding at the Donoho&ndash;Johnstone level leaves very few of them &mdash; on noise, almost none; on a transient, a handful.</p>
+        <p>So a trigger keeps the pairs that survived, the index and the value, and not a dense vector of which all but a few entries are zero. The record is the survivors, and it is smaller by whatever fraction of the window the threshold kept.</p>
       </div>
       <div class="prose">
         <p>It is not a compression applied afterwards. Hard thresholding sets a coefficient to zero or leaves it exactly as it was, so the zeros are the algorithm's statement that nothing was there &mdash; and writing them down at eight bytes each records that statement a thousand times per window.</p>
@@ -545,7 +546,7 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
       <ul class="refs">
         <li>
           E. Cuoco,
-          <i>A real-time un-modelled search for gravitational wave transients in the wavelet domain</i>,
+          <i>The Wavelet Detection Filter: a real-time un-modelled search for gravitational wave transients</i>,
           <span class="who">in preparation.</span>
         </li>
       </ul>

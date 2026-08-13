@@ -251,9 +251,8 @@ def ccsn_polarisations(path, sample_rate=2048):
 
     if oversample > 1:
         # Below the target Nyquist, with the transition band inside it: what
-        # this removes is a fraction of a per cent of the emitted power, and
-        # what leaving it in would add is that power folded to a frequency it
-        # was never emitted at.
+        # leaving it in would add is power folded to a frequency it was never
+        # emitted at.
         sos = butter(8, 0.45 * sample_rate / (0.5 * fine_rate),
                      btype="lowpass", output="sos")
         columns = [sosfiltfilt(sos, column) for column in columns]

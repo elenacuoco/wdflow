@@ -182,15 +182,23 @@ def clean_triggers(
 ) -> pd.DataFrame:
     """Drop WDF numerical-artifact triggers before clustering/coincidence.
 
-    Confirmed against real WDF output on a real detector trigger set: a
-    small number of raw triggers carry `snrPeak` values many orders of
-    magnitude above anything physical (e.g. ~1e21, vs. O(1-100) for real
-    triggers) -- a WDF-internal numerical artifact, not a real high-SNR
-    detection. Left unfiltered, these dominate clustering/coincidence/ROC
-    ranking and hide genuine candidates. `snr_ceiling` guards against that,
-    plus an edge guard dropping triggers within `edge_guard_s` of the
-    analyzed segment's start/end (WDF's own whitening/AR-estimation warm-up
-    and edge effects are least reliable there).
+    A trigger whose `snrPeak` is far above any amplitude a detector can carry is
+    a numerical artifact rather than a loud detection, and because every later
+    stage ranks on amplitude a single one of them outranks everything real.
+    `snr_ceiling` is the amplitude above which a trigger is not treated as a
+    measurement.
+
+    The edge guard drops triggers within `edge_guard_s` of the first and last
+    trigger in the set, where the whitening and the autoregressive fit are still
+    settling and their output is not the conditioned data the rest assumes.
+
+    :type df: pandas.DataFrame
+    :param df: triggers to filter.
+    :type snr_ceiling: float
+    :param snr_ceiling: amplitude at or above which a trigger is discarded.
+    :type edge_guard_s: float
+    :param edge_guard_s: span discarded at each end of the set, seconds.
+    :return: pandas.DataFrame -- the surviving triggers, reindexed.
     """
     out = df[df["snrPeak"] < snr_ceiling].copy()
     if edge_guard_s > 0 and not out.empty:

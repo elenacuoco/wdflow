@@ -41,12 +41,10 @@ def settling_length(sos, sampling, floor=1e-8, limit_s=8.0):
     The floor is set by what happens downstream, not by what looks negligible
     here. Whitening against a high-order autoregressive model applies its
     largest gain at the band edges, which is exactly where the conditioning
-    residual lives, and it amplifies that residual by about five orders of
-    magnitude. Measured on real strain with an AR(3000) model: a floor of 1e-5
-    leaves a per-sample error of 2.5e-4 at the block edges, which the whitening
-    turns into an edge 62 times the block interior; a floor of 1e-8 leaves
-    2.0e-7, and the whitened edge is 1.06. Between the two there is a threshold,
-    not a slope, and going further buys nothing.
+    residual lives, so a residual small enough to ignore in the conditioned data
+    can still dominate the block edges once whitened, where it reads as a short
+    broadband burst. The default is therefore well below what the conditioned
+    data alone would justify.
 
     :type sos: numpy.ndarray
     :param sos: second-order sections.
@@ -134,9 +132,9 @@ class BandPassDownSampling(object):
         self.estimation=estimation
         
 
-        # Measured, not fixed at one second: the old value was tuned to a
-        # Butterworth that settled in 0.34 s, and a steeper filter simply rings
-        # past it, which puts the unsettled transient into the emitted block.
+        # Measured from this filter's own impulse response, not fixed: a value
+        # tuned to a gentler filter is one a steeper one rings past, which puts
+        # the unsettled transient into the emitted block.
         if padlen is None:
             self.padlen = settling_length(self.sos, self.sampling)
         else:
@@ -172,8 +170,8 @@ class BandPassDownSampling(object):
         the timestamps. It is not optional: a block cannot be filtered with zero
         phase before the filter has seen what follows it, and the residual left
         by assuming a boundary instead is small in the conditioned data but is
-        amplified about tenfold by the whitening, which applies its largest gain
-        exactly at the band edges where that residual lives.
+        amplified by the whitening, which applies its largest gain exactly at
+        the band edges where that residual lives.
 
         :type data: pytsa.tsa.SeqView_double_t
         :param data: input data chunk at the original sampling rate.

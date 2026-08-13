@@ -199,34 +199,34 @@ wdf.analysis.network_graph
 .. automodule:: wdf.analysis.network_graph
    :members:
 
-wdf.analysis.baseline
-~~~~~~~~~~~~~~~~~~~~~~
+wdf.analysis.detectors
+~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.detectors
    :members:
 
-wdf.analysis.submission
------------------------
-
-.. automodule:: wdf.analysis.submission
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 wdf.analysis.skymap
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.skymap
    :members:
-   :undoc-members:
-   :show-inheritance:
+
+wdf.analysis.anomaly
+~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.anomaly
    :members:
-   :undoc-members:
-   :show-inheritance:
+
+wdf.analysis.baseline
+~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.baseline
+   :members:
+
+wdf.analysis.submission
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.submission
    :members:
 
 wdf.analysis.gnn

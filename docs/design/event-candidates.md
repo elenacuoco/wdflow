@@ -93,36 +93,25 @@ training set via synthetic signal injection (e.g. bilby/pycbc) rather than
 relying only on catalogued real events is the natural next step, independent
 of the `torch_geometric` batching infrastructure already in place for it.
 
-## SNR statistic: two root causes fixed at the p4TSA/wdflow boundary
+## One noise scale, and an orthonormal candidate list
 
-`EnWDF` (WDF's own internal per-window detection statistic) and
-`snrMean`/`snrPeak` (recomputed in `wdf.processes.wavelet_energy` from the
-same wavelet coefficients) used to disagree by orders of magnitude on real,
-non-stationary data. Two causes, both now fixed:
+Every amplitude a trigger carries is expressed on the same noise scale: the
+per-window sigma of the basis that won the window, which p4TSA exposes as
+`EventFullFeatured.mSigma`. `EnWDF` is normalised by it, and
+`ParameterEstimationObserver` reads the same value for `snrMean`/`snrPeak`, so
+the statistics are comparable to each other and a single one of them can rank
+foreground against background. A sigma estimated once for a run would answer a
+different question in every window, since detector noise is not stationary over
+one.
 
-1. `EnWDF` is normalized by a sigma estimated fresh, per window, from the
-   winning wavelet basis's own coefficients -- appropriate for real
-   non-stationary detector noise. `snrMean`/`snrPeak` were instead normalized
-   by a single sigma estimated once from AR-whitening residuals at the start
-   of a run, drifting further out of sync with `EnWDF`'s convention as real
-   noise conditions moved away from what that one-time estimate saw. p4TSA
-   now exposes the winning basis's own per-window sigma
-   (`EventFullFeatured.mSigma`), and `ParameterEstimationObserver` uses it
-   for `snrMean`/`snrPeak` instead -- both statistics now share one noise
-   convention.
-2. p4TSA's basis-selection candidate list included biorthogonal B-spline
-   wavelets alongside orthonormal ones (Haar, Daubechies). Biorthogonal
-   wavelets don't preserve L2 energy (Parseval's theorem), so a sigma
-   estimator that assumes homoscedastic, orthonormal coefficients
-   systematically misestimates their noise floor -- letting them win basis
-   selection even on pure noise, unrelated to any real signal content. The
-   candidate list is now the full orthonormal GSL wavelet family only.
+The candidate list is orthonormal throughout. Biorthogonal wavelets do not
+preserve L2 energy, so a sigma estimator that assumes orthonormal coefficients
+misestimates their noise floor and lets them win basis selection on noise
+alone; the same identity is what makes the score a matched-filter
+signal-to-noise ratio at all, so the list cannot hold a basis that breaks it.
 
-A further, separate finding: `wavelet_energy_snr` re-applies a
-Donoho-Johnstone threshold to coefficients p4TSA's C++ engine has already
-(soft-)thresholded once -- a survivor shrunk by soft-thresholding often falls
-back under the same threshold when re-tested, zeroing a large fraction of
-triggers' `snrPeak`/`snrMean` a second time. This is independent of both
-causes above (present regardless of which sigma convention is used) and is
-not yet fixed; noted here as a known limitation of the current
-`snrMean`/`snrPeak` statistic.
+The energy statistic sums the coefficients as `WaveletThreshold` emits them and
+does not threshold them a second time. The zeros already carry the significance
+decision, and under soft thresholding a survivor has been shrunk by the
+threshold, so re-testing it against that same threshold would discard it for
+having passed.

@@ -1,8 +1,8 @@
 # Warm-up: the seconds at the start of a segment that are not analysed
 
-A WDF run discards roughly the first four to six seconds of every segment. This
-page says what those seconds are for, why they cannot simply be kept, and what
-would be needed to recover them.
+A WDF run discards the first stretch of every segment. This page says what that
+stretch is for, why it cannot simply be kept, and what would be needed to
+recover it.
 
 ## Why anything has to be discarded
 
@@ -29,24 +29,22 @@ before its own backward pass can produce a good estimate.
 `padlen` is measured, not chosen. `settling_length` drives an impulse through
 the designed filter and finds where the response has decayed below a fraction of
 its peak. This matters because a filter's ringing is not read off its order: a
-Chebyshev type II of order 12 with a steep transition near Nyquist settles in
-about 1.2 s, while a Butterworth of order 5 settles in about 0.34 s.
+steep transition close to Nyquist rings far longer than a gentle one of higher
+order, and the stretch that has to be discarded follows the impulse response
+rather than the parameter that produced it.
 
-That difference is what makes the constraint real. The settling stretch has to
-fit inside a single read, because it is taken from the block that follows the
-one being emitted, and the warm-up reads the stream one second at a time. A
-filter that is asked to settle in less than it needs does not fail -- it emits
+A filter that is asked to settle in less than it needs does not fail -- it emits
 the unsettled transient as if it were data, at the start of every block, where
 it looks like a short broadband burst and lands in the finest wavelet scales.
-This is what a fixed `padlen` of one second, inherited from a Butterworth that
-settled in a third of that, did to a steeper filter that did not.
+Measuring the settling is what prevents that: `padlen` is whatever the designed
+filter turns out to need, so raising `FilterOrder` or steepening the band
+lengthens the discarded stretch instead of corrupting the emitted one.
 
-The default order is therefore chosen so that the filter settles inside one
-read: at order 10 it settles in 0.85 s, with 80 dB of rejection at the frequency
-that folds.
-
-If `FilterOrder` is raised past what the read length can supply, `Process`
-raises rather than producing quietly wrong data.
+The settling stretch does not have to fit inside a single read. `Process`
+buffers what it has read and emits a block only once `padlen` samples of real
+future data have arrived, returning `None` meanwhile, however many reads that
+takes. The cost is therefore latency rather than a constraint on the filter, and
+it is stated in `latency_s` and carried by the timestamps.
 
 ## What is discarded, in order
 
