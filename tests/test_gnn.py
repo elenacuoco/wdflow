@@ -452,7 +452,7 @@ def test_the_map_carries_shape_and_not_arrival_time():
     import numpy as np
     from wdf.analysis.detector_graph import build_detector_graph, event_coefficients
     from wdf.analysis.detectors import light_travel_time
-    from tests.test_detector_graph import _triggers, _walking_coefficients
+    from test_detector_graph import _triggers, _walking_coefficients
 
     delay = light_travel_time("H1", "L1")
     triggers = _walking_coefficients(_triggers([512], 6), [64] * 6)

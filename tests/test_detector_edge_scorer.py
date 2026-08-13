@@ -6,7 +6,7 @@ torch = pytest.importorskip("torch")
 
 from wdf.analysis.detector_graph import build_detector_graph, detector_events
 from wdf.analysis.gnn import DetectorEdgeScorer, edge_labels_from_injections
-from tests.test_detector_graph import _triggers
+from test_detector_graph import _triggers
 
 
 def _graph(scales=(256, 512), n=20, seed=0):

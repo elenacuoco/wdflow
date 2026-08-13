@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.report import build_run_report
-from tests._synth import synth_raw_triggers
+from _synth import synth_raw_triggers
 
 
 class _FakePar:

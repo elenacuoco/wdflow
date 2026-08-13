@@ -6,7 +6,7 @@ torch = pytest.importorskip("torch")
 
 from wdf.analysis.anomaly import BackgroundAnomalyScorer
 from wdf.analysis.network_graph import TriggerGraphBuilder
-from tests.test_gnn import _synth_graph_inputs
+from test_gnn import _synth_graph_inputs
 
 
 def _graph(sizes, seed):
