@@ -31,7 +31,7 @@ def SV_to_array(seqView):
     return y
 
 
-def settling_length(sos, sampling, floor=1e-8, limit_s=8.0):
+def settling_length(sos, sampling, floor=1e-12, limit_s=8.0):
     """How many samples the filter needs before its response has decayed.
 
     Measured from the impulse response rather than assumed from the order: a
