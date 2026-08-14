@@ -217,8 +217,9 @@ ranking rests on and the one a simulated set cannot test.
 
 *This pipeline:*
 
-- E. Cuoco *et al.*, *The Wavelet Detection Filter: a real-time un-modelled
-  search for gravitational wave transients*, in preparation.
+- E. Cuoco, *The Wavelet Detection Filter: a real-time un-modelled search for
+  gravitational wave transients, ranking coincidences with a graph neural
+  network*, (2026), in preparation.
 
 *The Wavelet Detection Filter:*
 
