@@ -16,16 +16,16 @@ what a transient is can be decided afterwards.
 ## Layout
 
 - `wdf.config`, `wdf.processes`, `wdf.observers`, `wdf.structures` -- trigger generation. Needs
-  the compiled `pytsa`/p4TSA core (`pip install wdflow[pipeline]`).
+  the compiled `pytsa`/p4TSA core (`pip install -e ".[pipeline]"`).
 - `wdf.analysis` -- clustering, multi-detector coincidence (classical + GNN), background/
   false-alarm-probability, ROC analysis, sky localisation, and the submission writer that
   puts the surviving candidates in a challenge's own columns. Operates on plain pandas
   DataFrames / saved trigger files, no `pytsa` dependency, so it works standalone
-  (`pip install wdflow`, no extras needed).
+  (`pip install -e .`, no extras needed).
 - `wdf.mock` -- the simulated two-detector data set: coloured Gaussian noise, compact-binary
   injections projected through the antenna responses, single-detector glitch morphologies, and
   waveforms read from a catalogue when a class has no closed form. Paired foreground and
-  background frames with a truth table (`pip install wdflow[mock]`).
+  background frames with a truth table (`pip install -e ".[mock]"`).
 
 ## Relationship to the legacy `wdf` package
 
@@ -121,8 +121,15 @@ no data set to download, no frame file to point at:
 
 ### Requirements
 
-Python 3.10 or newer. Everything below except the compiled core installs from
-PyPI.
+Python 3.10 or newer. `wdflow` is not on an index: it installs from a checkout
+of this repository, and everything it depends on except the compiled core comes
+from PyPI.
+
+```bash
+git clone https://github.com/elenacuoco/wdflow
+cd wdflow
+pip install -e ".[all]"
+```
 
 **Always installed** — the analysis layer runs on these alone:
 
@@ -147,10 +154,6 @@ PyPI.
 | `docs` | `sphinx >= 7`, `sphinx-rtd-theme >= 2`, `myst-nb >= 1` | building the documentation |
 | `dev` | `pytest >= 7` | the test suite |
 | `all` | all of the above | |
-
-```bash
-pip install -e ".[all]"
-```
 
 **Not from an index:**
 
@@ -202,15 +205,6 @@ rather than a summary of them.
 Changes reach `master` through pull requests only, and a pull request merges
 only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdflow/blob/master/CONTRIBUTING.md).
 
-## On recorded data
-
-Beyond the tutorials, which generate their own data, the pipeline has been run
-on recorded LIGO strain: the segments around GW250114 and GW170817, and six
-independent four-hour stretches of O4 with compact-binary signals injected into
-them, each conditioned on its own noise model. Across all of them the
-calibration of the statistic holds in both detectors, which is the property the
-ranking rests on and the one a simulated set cannot test.
-
 ## How to cite
 
 **Use of this code in published work requires citation of the following.**
@@ -219,7 +213,7 @@ ranking rests on and the one a simulated set cannot test.
 
 - E. Cuoco, *The Wavelet Detection Filter: a real-time un-modelled search for
   gravitational wave transients, ranking coincidences with a graph neural
-  network*, (2026), in preparation.
+  network*, (2026), in preparation. VIR-0605A-26
 
 *The Wavelet Detection Filter:*
 
