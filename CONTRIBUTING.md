@@ -43,7 +43,7 @@ Every pull request runs three jobs, all of which must pass:
 If you change trigger generation and the golden-output test fails, that is the
 test doing its job: it pins exact numerics on a fixed synthetic frame. Either
 the change was not meant to move them, or it was — in which case regenerate
-`tests/fixtures/golden_triggers.csv`, and say in the pull request which columns
+`tests/fixtures/golden_triggers.parquet`, and say in the pull request which columns
 moved and why.
 
 ## House style
