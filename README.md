@@ -1,5 +1,7 @@
 # wdflow
 
+[![Documentation](https://readthedocs.org/projects/wdflow/badge/?version=latest)](https://wdflow.readthedocs.io/en/latest/)
+
 A maintained, standalone package for the WDF (Wavelet Detection Filter) trigger-generation
 pipeline for transient time-series signals, built on the C++ core
 [p4TSA](https://github.com/elenacuoco/p4TSA) (exposed to Python as `pytsa`), plus the downstream
