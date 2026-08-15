@@ -211,13 +211,13 @@ only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdf
 
 **Use of this code in published work requires citation of the following.**
 
-*This pipeline:*
+*The Wavelet Detection Filter:*
 
 - E. Cuoco, *The Wavelet Detection Filter: a real-time un-modelled search for
   gravitational wave transients, ranking coincidences with a graph neural
   network*, (2026), in preparation. VIR-0605A-26
 
-*The Wavelet Detection Filter:*
+*WDFX:*
 
 - E. Cuoco, M. Razzano, A. Utina, *Wavelet-based classification of transient
   signals for gravitational wave detectors*, 26th European Signal Processing
