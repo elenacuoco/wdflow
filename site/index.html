@@ -158,21 +158,6 @@
   }
 
   .hero-copy { max-width: 74rem; margin-inline: auto; width: 100%; }
-  /* On a wide screen the copy sits in a right-hand column, so the wavegram
-     stays visible on the left instead of being read through. */
-  @media (min-width: 60rem) {
-    .hero-copy {
-      display: grid;
-      grid-template-columns: minmax(0, 22rem) minmax(0, 32rem);
-      justify-content: space-between;
-      align-items: end;
-      column-gap: 3rem;
-    }
-    .hero-copy .mark,
-    .hero-copy .label,
-    .hero-copy h1 { grid-column: 1; }
-    .hero-lead { grid-column: 2; grid-row: 1 / span 3; align-self: end; }
-  }
   .mark {
     display: block;
     width: clamp(3.4rem, 7vw, 5rem);
@@ -235,52 +220,6 @@
   }
 
 
-  /* ------------------------------------------------------ contents */
-  .toc {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    background: color-mix(in srgb, var(--bg) 92%, transparent);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--rule);
-    font-size: 0.9rem;
-  }
-  .toc-inner {
-    max-width: 74rem;
-    margin-inline: auto;
-    padding-inline: var(--gutter);
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-  }
-  .toc-brand a {
-    font-weight: 600;
-    text-decoration: none;
-    color: var(--fg);
-    white-space: nowrap;
-  }
-  .toc ol {
-    list-style: none;
-    display: flex;
-    gap: 0.15rem;
-    margin: 0;
-    padding: 0.5rem 0;
-    overflow-x: auto;
-    scrollbar-width: thin;
-    -webkit-overflow-scrolling: touch;
-  }
-  .toc li { white-space: nowrap; }
-  .toc a {
-    display: block;
-    padding: 0.35rem 0.6rem;
-    border-radius: 0.35rem;
-    text-decoration: none;
-    color: var(--fg-dim);
-  }
-  .toc ol a:hover, .toc ol a:focus-visible { color: var(--link); background: color-mix(in srgb, var(--link) 12%, transparent); }
-  .toc ol a[aria-current="true"] { color: var(--link); font-weight: 600; }
-  html { scroll-behavior: smooth; scroll-padding-top: 3.5rem; }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 
   /* ------------------------------------------------------ figures */
   figure img { cursor: zoom-in; border-radius: 4px; }
@@ -385,7 +324,10 @@
   code { font-family: var(--mono); font-size: 0.9em; }
 
   .tutorials { list-style: none; margin: 2.5rem 0 0; padding: 0; display: grid; gap: 1px; background: var(--rule); border-block: 1px solid var(--rule); }
-  @media (min-width: 58rem) { .tutorials { grid-template-columns: repeat(3, 1fr); } }
+  /* Two columns, so four notebooks fill the grid exactly: the cell
+     background is what draws the rules, and an empty cell shows as a
+     grey block. */
+  @media (min-width: 58rem) { .tutorials { grid-template-columns: repeat(2, 1fr); } }
   .tutorials li { background: var(--bg); padding: 1.5rem 1.4rem; display: flex; flex-direction: column; gap: 0.5rem; }
   .tutorials .n { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--link); }
   .tutorials h3 { font-size: 1.1rem; font-weight: 600; }
@@ -440,36 +382,15 @@
     </svg>
     <p class="label">Un-modelled transient search</p>
     <h1>WDFlow <span class="expansion">— Real-Time Wavelet Detection Filter</span></h1>
-    <div class="hero-lead">
-      <p class="summary hook">A gravitational-wave burst has no template to match it. WDFlow finds it anyway — in real time, at a latency fixed before the filter runs, and simple enough to put on an <a href="https://en.wikipedia.org/wiki/Field-programmable_gate_array">FPGA</a>.</p>
-      <p class="summary">The data are whitened in the time domain, transformed in ten competing orthonormal wavelet bases, and each analysis window is scored by the norm of the coefficients that survive a threshold set by the noise alone. No template and no signal model: every trigger carries the coefficients that produced it, so what a transient <i>is</i> can be decided afterwards.</p>
-      <div class="hero-cta">
-        <a class="primary" href="#pipeline">How it works</a>
-        <a href="https://github.com/elenacuoco/wdflow">Code on GitHub</a>
-        <a href="https://wdflow.readthedocs.io">Documentation</a>
-      </div>
+    <p class="summary hook">A gravitational-wave burst has no template to match it. WDFlow finds it anyway — in real time, at a latency fixed before the filter runs, and simple enough to put on an <a href="https://en.wikipedia.org/wiki/Field-programmable_gate_array">FPGA</a>.</p>
+    <p class="summary">The data are whitened in the time domain, transformed in ten competing orthonormal wavelet bases, and each analysis window is scored by the norm of the coefficients that survive a threshold set by the noise alone. No template and no signal model: every trigger carries the coefficients that produced it, so what a transient <i>is</i> can be decided afterwards.</p>
+    <div class="hero-cta">
+      <a class="primary" href="#pipeline">How it works</a>
+      <a href="https://github.com/elenacuoco/wdflow">Code on GitHub</a>
+      <a href="https://wdflow.readthedocs.io">Documentation</a>
     </div>
   </div>
 </header>
-
-<nav class="toc" aria-label="Contents">
-  <div class="toc-inner">
-    <span class="toc-brand"><a href="#top">WDFlow</a></span>
-    <ol>
-      <li><a href="#why">Why wavelets</a></li>
-      <li><a href="#pipeline">The pipeline</a></li>
-      <li><a href="#wavegram">The wavegram</a></li>
-      <li><a href="#parameters">Parameters</a></li>
-      <li><a href="#scales">One window</a></li>
-      <li><a href="#network">The network</a></li>
-      <li><a href="#record">What a trigger stores</a></li>
-      <li><a href="#software">Software</a></li>
-      <li><a href="#install">Install</a></li>
-      <li><a href="#tutorials">Tutorials</a></li>
-      <li><a href="#cite">Cite</a></li>
-    </ol>
-  </div>
-</nav>
 
 <main>
   <section class="wrap" id="why">
@@ -757,7 +678,7 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
       <p class="label">Publications</p>
       <h2>How to cite WDFlow</h2>
       <p><b>Use of this code in published work requires citation of the references below</b>: the paper describing the pipeline in the form implemented here, the original method paper for the Wavelet Detection Filter, and the papers describing the autoregressive time-domain whitening the conditioning stage implements.</p>
-      <p class="label" style="margin-top:2rem;">This pipeline</p>
+      <p class="label" style="margin-top:2rem;">The Wavelet Detection Filter</p>
       <ul class="refs">
         <li>
           E. Cuoco,
@@ -766,7 +687,7 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
           <span class="who">VIR-0605A-26</span>
         </li>
       </ul>
-      <p class="label" style="margin-top:2rem;">Wavelet Detection Filter</p>
+      <p class="label" style="margin-top:2rem;">WDFX</p>
       <ul class="refs">
         <li>
           E. Cuoco, M. Razzano, A. Utina,
@@ -940,23 +861,6 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
     clearTimeout(pending);
     pending = setTimeout(function () { resize(); render(); }, 120);
   });
-})();
-
-(function () {
-  var links = Array.prototype.slice.call(document.querySelectorAll('.toc ol a'));
-  var targets = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
-  if (!('IntersectionObserver' in window)) return;
-  var seen = new Map();
-  var io = new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) { seen.set(e.target, e.intersectionRatio); });
-    var best = null, bestRatio = 0;
-    seen.forEach(function (ratio, el) { if (ratio > bestRatio) { bestRatio = ratio; best = el; } });
-    links.forEach(function (a, i) {
-      if (targets[i] === best && bestRatio > 0) { a.setAttribute('aria-current', 'true'); }
-      else { a.removeAttribute('aria-current'); }
-    });
-  }, { rootMargin: '-20% 0px -60% 0px', threshold: [0, 0.25, 0.5, 1] });
-  targets.forEach(function (t) { if (t) io.observe(t); });
 })();
 
 /* Tap or click a figure to read it at full width; the stage scrolls, so an
