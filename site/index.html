@@ -375,7 +375,7 @@
     <p class="label">Un-modelled transient search</p>
     <h1>WDFlow <span class="expansion">— Real-Time Wavelet Detection Filter</span></h1>
     <p class="summary">A search for transient signals in gravitational-wave detector data. The data are whitened in the time domain, transformed in competing orthonormal wavelet bases, and each analysis window is scored by the norm of its surviving coefficients on the noise scale.</p>
-    <p class="summary"><b>It runs in real time</b>, at a latency that is fixed and known before the filter runs, and its per-window arithmetic is simple enough to put on an <a href="https://en.wikipedia.org/wiki/Field-programmable_gate_array">FPGA</a>. No template and no signal model: every trigger carries the coefficients that produced it, so what a transient is can be decided afterwards, by whatever comes next.</p>
+    <p class="summary"><b>It runs in real time</b>, at a latency that is fixed and known before the filter runs, and its per-window arithmetic is simple enough to put on an FPGA. No template and no signal model: every trigger carries the coefficients that produced it, so what a transient is can be decided afterwards, by whatever comes next.</p>
   </div>
 </header>
 
@@ -541,7 +541,7 @@
       </div>
       <div class="prose">
         <p>It is not a compression applied afterwards. Hard thresholding sets a coefficient to zero or leaves it exactly as it was, so the zeros are the algorithm's statement that nothing was there &mdash; and writing them down at eight bytes each records that statement a thousand times per window.</p>
-        <p><b>It is also what hardware can carry.</b> The per-window arithmetic is a fixed sequence of multiply-accumulate steps, with no iteration to convergence and no data-dependent branching, so it can be placed on an FPGA. What such an implementation cannot comfortably do is buffer and ship a dense vector per window, per length, per detector. A few index-value pairs is a small record whose size is known before the data arrives, which is the kind of object a hardware pipeline is built around.</p>
+        <p><b>It is also what hardware can carry.</b> The per-window arithmetic is a fixed sequence of multiply-accumulate steps, with no iteration to convergence and no data-dependent branching, so it can be placed on an <a href="https://en.wikipedia.org/wiki/Field-programmable_gate_array">FPGA</a>. What such an implementation cannot comfortably do is buffer and ship a dense vector per window, per length, per detector. A few index-value pairs is a small record whose size is known before the data arrives, which is the kind of object a hardware pipeline is built around.</p>
       </div>
     </div>
     
