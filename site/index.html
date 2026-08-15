@@ -196,20 +196,6 @@
     margin-bottom: 0.85rem;
   }
   .hero-copy p.summary + p.summary { margin-top: 0.85rem; }
-  .hero-cta { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1.5rem; }
-  .hero-cta a {
-    display: inline-block;
-    padding: 0.55rem 1rem;
-    border: 1px solid #2c4a5c;
-    border-radius: 0.4rem;
-    color: #dfe9ee;
-    text-decoration: none;
-    font-size: 0.95rem;
-    background: rgba(255,255,255,0.03);
-  }
-  .hero-cta a:hover { border-color: var(--accent-lit); color: var(--accent-lit); }
-  .hero-cta a.primary { background: var(--accent-lit); border-color: var(--accent-lit); color: #10202b; font-weight: 600; }
-  .hero-cta a.primary:hover { background: #ffc25e; border-color: #ffc25e; color: #10202b; }
   .hero-note { display: none; }
   @media (min-width: 52rem) {
     .hero-note {
@@ -396,11 +382,6 @@
     <h1>WDFlow <span class="expansion">— Real-Time Wavelet Detection Filter</span></h1>
     <p class="summary hook">A gravitational-wave burst has no template to match it. WDFlow finds it anyway — in real time, at a latency fixed before the filter runs, and simple enough to put on an <a href="https://en.wikipedia.org/wiki/Field-programmable_gate_array">FPGA</a>.</p>
     <p class="summary">The data are whitened in the time domain, transformed in ten competing orthonormal wavelet bases, and each analysis window is scored by the norm of the coefficients that survive a threshold set by the noise alone. No template and no signal model: every trigger carries the coefficients that produced it, so what a transient <i>is</i> can be decided afterwards.</p>
-    <div class="hero-cta">
-      <a class="primary" href="#pipeline">How it works</a>
-      <a href="https://github.com/elenacuoco/wdflow">Code on GitHub</a>
-      <a href="https://wdflow.readthedocs.io">Documentation</a>
-    </div>
   </div>
 </header>
 
