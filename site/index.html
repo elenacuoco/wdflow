@@ -189,12 +189,6 @@
     font-size: clamp(1.02rem, 0.96rem + 0.3vw, 1.15rem);
     line-height: 1.55;
   }
-  .hero-copy p.summary.hook {
-    color: #f2f7fa;
-    font-size: clamp(1.12rem, 1.02rem + 0.55vw, 1.5rem);
-    line-height: 1.4;
-    margin-bottom: 0.85rem;
-  }
   .hero-copy p.summary + p.summary { margin-top: 0.85rem; }
   .hero-note { display: none; }
   @media (min-width: 52rem) {
@@ -380,8 +374,8 @@
     </svg>
     <p class="label">Un-modelled transient search</p>
     <h1>WDFlow <span class="expansion">— Real-Time Wavelet Detection Filter</span></h1>
-    <p class="summary hook">A gravitational-wave burst has no template to match it. WDFlow finds it anyway — in real time, at a latency fixed before the filter runs, and simple enough to put on an <a href="https://en.wikipedia.org/wiki/Field-programmable_gate_array">FPGA</a>.</p>
-    <p class="summary">The data are whitened in the time domain, transformed in ten competing orthonormal wavelet bases, and each analysis window is scored by the norm of the coefficients that survive a threshold set by the noise alone. No template and no signal model: every trigger carries the coefficients that produced it, so what a transient <i>is</i> can be decided afterwards.</p>
+    <p class="summary">A search for transient signals in gravitational-wave detector data. The data are whitened in the time domain, transformed in competing orthonormal wavelet bases, and each analysis window is scored by the norm of its surviving coefficients on the noise scale.</p>
+    <p class="summary"><b>It runs in real time</b>, at a latency that is fixed and known before the filter runs, and its per-window arithmetic is simple enough to put on an <a href="https://en.wikipedia.org/wiki/Field-programmable_gate_array">FPGA</a>. No template and no signal model: every trigger carries the coefficients that produced it, so what a transient is can be decided afterwards, by whatever comes next.</p>
   </div>
 </header>
 
