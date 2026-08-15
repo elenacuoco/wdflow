@@ -236,6 +236,18 @@ only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdf
 `CITATION.cff` in this repository carries the same list in machine-readable
 form; GitHub's *Cite this repository* button reads it.
 
+## Use of generative AI
+
+The Wavelet Detection Filter, the `p4TSA` core it runs on and the design of this
+pipeline are the author's own work. Claude (Opus 5, Anthropic), used through
+Claude Code, wrote parts of the implementation, its tests and its documentation,
+and produced the logo and stylesheet of the project page. Every such
+contribution was reviewed and is covered by the test suite that runs in CI: the
+golden-output fixture pins trigger generation end to end, so a generated change
+that moves the numerics fails the build rather than passing silently.
+Responsibility for the method and for everything published here rests with the
+author.
+
 ## Status
 
 `tests/` includes a golden-output regression fixture pinning trigger generation end to end on a
