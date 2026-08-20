@@ -1,7 +1,7 @@
 # wdflow
 
 [![Documentation](https://readthedocs.org/projects/wdflow/badge/?version=latest)](https://wdflow.readthedocs.io/en/latest/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22025594.svg)](https://doi.org/10.5281/zenodo.22025594)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22025594-blue.svg)](https://doi.org/10.5281/zenodo.22025594)
 
 A maintained, standalone package for the WDF (Wavelet Detection Filter) trigger-generation
 pipeline for transient time-series signals, built on the C++ core
