@@ -9,6 +9,7 @@ type: software
 authors:
   - family-names: Cuoco
     given-names: Elena
+    orcid: "https://orcid.org/0000-0002-6528-3449"
     email: elena.cuoco@unibo.it
     affiliation: "Alma Mater Studiorum -- Università di Bologna"
 license: GPL-3.0-or-later
