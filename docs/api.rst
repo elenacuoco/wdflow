@@ -253,6 +253,12 @@ wdf.analysis.reconstruction
 .. automodule:: wdf.analysis.reconstruction
    :members:
 
+wdf.analysis.timing
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.timing
+   :members:
+
 wdf.analysis.robust_events
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
