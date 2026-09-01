@@ -111,6 +111,14 @@ def mode_roc(mode: DetectionMode, n_points: int = 60) -> pd.DataFrame:
     if not len(background) or not len(foreground):
         return pd.DataFrame(columns=["far_per_day", "threshold", "efficiency"])
 
+    # A non-finite score is not a candidate: it sorts before every real value
+    # in a descending order, so leaving it in would give the lowest rates a
+    # threshold of nan, an efficiency of zero, and a rate axis counting
+    # candidates that do not exist.
+    background = np.asarray(background, dtype=float)
+    background = background[np.isfinite(background)]
+    if not len(background):
+        return pd.DataFrame(columns=["far_per_day", "threshold", "efficiency"])
     ranked = np.sort(background)[::-1]
     counts = np.unique(np.geomspace(1, len(ranked), n_points).astype(int))
     rows = []

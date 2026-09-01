@@ -1225,15 +1225,27 @@ def _tile_pair_energy(flat, left, right, tolerance):
 
 
 def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
-    """Each event's statistic over its whole extent, without double counting.
+    """A fast estimate of each event's statistic over its whole extent.
 
-    Consecutive windows of one length step by less than their span, so a sample
-    can appear in several of them and summing their coefficient energy counts it
-    more than once. Within one window length the step regions tile time exactly
-    once, so the energy of an event is accumulated over the step region of each
-    of its windows and no further. Window lengths are not combined: each is a
-    complete description of the same strain, so the largest is taken rather than
-    their sum.
+    The statistic of an event is the norm of its stitched reconstruction on the
+    noise scale, which counts each sample once however many windows cover it;
+    :meth:`wdf.analysis.cluster_coefficients.ClusterCoefficients.enwdf`
+    computes it, at the cost of inverting every window of every event. What is
+    computed here instead is an estimate of that norm which needs no inverse
+    transform: each window's coefficient energy is scaled by the fraction of
+    the window its own step region occupies --- a geometric fraction, applied
+    to the whole window and not to the tiles that fall inside the step --- and
+    the scaled energies are summed in quadrature.
+
+    The two agree when a window's energy is spread evenly over its samples, and
+    they differ when it is not. This is an approximation, and an event that is
+    ranked, thresholded or reported should carry the reconstruction's own norm
+    rather than this.
+
+    Window lengths are not combined: each is a complete description of the same
+    strain, so the largest is taken rather than their sum. The result is never
+    below the loudest single window, so grouping cannot make an event quieter
+    than the search already found it.
 
     :type graph: DetectorGraph
     :param graph: the detector's level-one graph.
