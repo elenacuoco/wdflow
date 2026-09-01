@@ -1019,6 +1019,7 @@ def generate_dataset(
     psd_name=DEFAULT_PSD,
     channel_suffix="MOCK-STRAIN",
     write_background=True,
+    n_background_glitch=None,
     frame_length=1024.0,
     minimum_injection_gap=1.0,
     strict=True,
@@ -1032,6 +1033,19 @@ def generate_dataset(
     ``edge_pad`` is a span in seconds kept free at each end, or a
     ``(start, end)`` pair of them; see :func:`draw_injections`. ``n_ccsn`` draws
     that many core-collapse supernova waveforms from ``ccsn_catalogue``.
+
+    ``n_background_glitch`` writes that many instrumental transients into the
+    background frames as well, drawn from the same population as the
+    foreground's and placed independently of them, and records them in
+    ``background_injections.parquet``. A background without them measures the
+    rate at which stationary noise alone produces a candidate, which is not the
+    rate a detector produces one at; with them, a threshold read off the
+    background is defended against what the instrument does. The astrophysical
+    classes are never written into the background, so a candidate found there
+    is by construction not a signal.
+
+    :return: pandas.DataFrame -- the foreground truth table. The background's,
+        when one is written, is on disk beside it.
     """
     from gwpy.timeseries import TimeSeries as GwpyTimeSeries
 
@@ -1090,24 +1104,72 @@ def generate_dataset(
             f"Generated {len(injections)} of {requested} requested injections"
         )
 
-    noise = {}
-    for index, ifo in enumerate(detectors):
-        series = coloured_noise(
-            start_gps,
-            start_gps + duration,
-            seed=seed + 1000 * (index + 1),
-            sample_rate=sample_rate,
-            low_frequency_cutoff=f_low,
-            psd_name=psd_name,
-        )
-        values = np.asarray(series, dtype=float)
-        if values.size < nsamples:
-            raise RuntimeError(
-                f"Noise for {ifo} has {values.size} samples; expected {nsamples}"
+    def draw_noise():
+        """The noise realisation, which the seeds make a function and not a
+        draw: calling this twice yields the same samples."""
+        series_by_ifo = {}
+        for index, ifo in enumerate(detectors):
+            series = coloured_noise(
+                start_gps,
+                start_gps + duration,
+                seed=seed + 1000 * (index + 1),
+                sample_rate=sample_rate,
+                low_frequency_cutoff=f_low,
+                psd_name=psd_name,
             )
-        noise[ifo] = values[:nsamples].copy()
+            values = np.asarray(series, dtype=float)
+            if values.size < nsamples:
+                raise RuntimeError(
+                    f"Noise for {ifo} has {values.size} samples; "
+                    f"expected {nsamples}"
+                )
+            series_by_ifo[ifo] = values[:nsamples].copy()
+        return series_by_ifo
 
+    noise = draw_noise()
+
+    background_table = None
     if write_background:
+        if n_background_glitch:
+            # The instrumental transients the background carries are drawn from
+            # the same population as the foreground's and placed independently
+            # of them: a background whose glitches sat at the foreground's times
+            # would make every zero-lag coincidence a comparison of one
+            # realisation with itself.
+            background_specs = draw_injections(
+                n_cbc=0,
+                n_glitch=int(n_background_glitch),
+                n_ccsn=0,
+                ccsn_catalogue=None,
+                duration=duration,
+                start_gps=start_gps,
+                edge_pad=edge_pad,
+                snr_range=snr_range,
+                seed=seed + 7,
+                sample_rate=sample_rate,
+                detectors=detectors,
+                minimum_gap=minimum_injection_gap,
+                strict=strict,
+                cbc_mix=cbc_mix,
+                min_detector_snr=min_detector_snr,
+            )
+            background_table = pd.DataFrame([
+                _inject_one(
+                    spec,
+                    noise,
+                    start_gps,
+                    sample_rate,
+                    detectors,
+                    f_low,
+                    f_high,
+                    psd_name,
+                )
+                for spec in background_specs
+            ]).reindex(columns=GROUND_TRUTH_COLUMNS)
+            background_table.to_parquet(
+                os.path.join(outdir, "background_injections.parquet"),
+                index=False,
+            )
         for ifo in detectors:
             _write_frames(
                 GwpyTimeSeries,
@@ -1120,6 +1182,14 @@ def generate_dataset(
                 "MOCK-BACKGROUND",
                 frame_length,
             )
+        if n_background_glitch:
+            # The arrays now hold the background's transients, which the
+            # foreground must not inherit. The seeds make the noise
+            # reproducible, so it is drawn again rather than held twice: a
+            # second full-length series per detector is what does not fit in
+            # memory at a few days of livetime.
+            del noise
+            noise = draw_noise()
 
     # The background frames are already written, and nothing reads `noise`
     # again, so the foreground takes the arrays over rather than copying them.
