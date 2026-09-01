@@ -124,7 +124,8 @@ def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
     residual is bounded by the ratio of the overlap to the window.
 
     Two rows are the same tile when they agree exactly in window length and in
-    both edges. The edges are a window's start plus a dyadic offset, so on a
+    both edges, in the same detector and, where the caller has labelled them,
+    in the same cluster. The edges are a window's start plus a dyadic offset, so on a
     power of two sampling rate and a whole-second start the sum is exact and
     the comparison is safe; it is not, on a rate that is not.
 
@@ -144,7 +145,14 @@ def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
                         pixels["t_lo"].to_numpy(dtype=float),
                         pixels["scale"].to_numpy(dtype=float)))
     ordered = pixels.iloc[order]
-    keep = ~ordered.duplicated(subset=["scale", "t_lo", "f_lo"], keep="first")
+    # Within one detector, and within one owner where the caller declares it:
+    # two windows can report the same tile and still belong to different events
+    # --- the grouping refuses to join a loud window to a quiet one --- and the
+    # tile is then a member of both. Deduplicating across owners would take it
+    # from the quieter of the two.
+    key = [column for column in ("ifo", "cluster_id") if column in ordered]
+    key += ["scale", "t_lo", "f_lo"]
+    keep = ~ordered.duplicated(subset=key, keep="first")
     # Back to the order the caller passed, whatever its index was.
     return ordered[keep].iloc[np.argsort(order[keep.to_numpy()])]
 

@@ -158,3 +158,37 @@ def test_the_map_is_drawn_from_the_cluster_tiles_on_their_own_scale():
     # 3 and 4 on sigma 1, then 2 on sigma 2: the map carries |c| / sigma.
     assert maps[0].grid.sum() == pytest.approx(3.0 + 4.0 + 1.0)
     assert maps[1].grid.sum() == pytest.approx(1.0)
+
+
+def test_two_detectors_do_not_share_a_tile():
+    both = pd.DataFrame(dict(
+        ifo=["H1", "L1"], scale=[512.0] * 2, t_lo=[0.0, 0.0], t_hi=[0.03, 0.03],
+        f_lo=[64.0] * 2, f_hi=[128.0] * 2, energy=[9.0, 4.0], sigma=[1.0] * 2))
+    assert len(unique_tiles(both)) == 2
+
+
+def test_two_events_do_not_share_a_tile():
+    labelled = pd.DataFrame(dict(
+        ifo=["H1"] * 2, cluster_id=[0, 1], scale=[512.0] * 2,
+        t_lo=[0.0, 0.0], t_hi=[0.03, 0.03], f_lo=[64.0] * 2, f_hi=[128.0] * 2,
+        energy=[9.0, 4.0], sigma=[1.0] * 2))
+    assert len(unique_tiles(labelled)) == 2
+
+
+def test_a_curve_does_not_read_a_threshold_off_a_missing_value():
+    from wdf.analysis.modes import DetectionMode, mode_roc
+
+    mode = DetectionMode(
+        name="x", statistic="s",
+        foreground=pd.DataFrame(dict(s=[9.0, 8.0])),
+        background=pd.DataFrame(dict(s=[1.0, np.nan, 3.0, np.nan, 2.0, 5.0])),
+        n_injections=2, livetime_days=1.0)
+    curve = mode_roc(mode)
+    assert np.isfinite(curve.threshold).all()
+    assert curve.threshold.iloc[0] == pytest.approx(5.0)
+
+
+def test_an_empty_background_is_not_a_quiet_one():
+    from wdf.analysis.evaluation import threshold_at_far
+
+    assert np.isnan(threshold_at_far([], livetime_days=1.0, far_per_day=1.0))

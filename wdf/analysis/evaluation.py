@@ -62,12 +62,15 @@ def threshold_at_far(background_scores, livetime_days: float,
     :param far_per_day: the tolerated rate.
     :return: float -- the threshold; `-inf` when the background is quieter than
         the requested rate even with no cut, and `nan` when the background
-        livetime is too short to resolve the rate at all.
+        livetime is too short to resolve the rate at all or when there is no
+        background to read it from.
     """
     scores = np.asarray(background_scores, dtype=float)
     scores = scores[np.isfinite(scores)]
     if scores.size == 0 or livetime_days <= 0:
-        return float("-inf")
+        # No background is not a quiet background: with -inf every candidate
+        # would pass and the efficiency would read one, as a measurement.
+        return float("nan")
 
     allowed = far_per_day * livetime_days
     if allowed >= scores.size:
