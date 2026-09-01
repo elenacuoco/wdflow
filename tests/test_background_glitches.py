@@ -1,10 +1,10 @@
 """The background frames may carry the instrumental transients too.
 
 A background written from stationary noise alone measures the rate at which
-noise produces a candidate. A detector's background is not that: it is what the
-instrument does. These check that the second kind can be written, that it is
-independent of the foreground's, and that asking for it does not change the
-foreground.
+noise produces a candidate. A detector's background is not that: it is its
+noise and the transients the instrument makes, and its foreground is the same
+noise, the same transients and the signals. These check that the background is
+written that way and that asking for it does not change the foreground.
 """
 import os
 
@@ -47,19 +47,22 @@ def test_background_carries_its_own_transients(tmp_path):
     plain = tmp_path / "plain"
     glitchy = tmp_path / "glitchy"
     generate_dataset(plain, **COMMON)
-    foreground = generate_dataset(glitchy, n_background_glitch=3, **COMMON)
+    foreground = generate_dataset(glitchy, background_transients=True, **COMMON)
 
     written = glitchy / "background_injections.parquet"
     assert written.is_file()
     background = pd.read_parquet(written)
-    assert len(background) == 3
+    glitches = foreground[foreground.category.astype(str) == "glitch"]
+    assert len(background) == len(glitches)
     # Only the instrument's transients: a signal in the background would make a
     # candidate found there a signal, which is what the background denies.
     assert set(background.category.astype(str)) == {"glitch"}
-    # Placed independently of the foreground's, or the zero-lag comparison
-    # would be one realisation against itself.
-    assert not set(np.round(background.gps, 3)) & set(
-        np.round(foreground[foreground.category.astype(str) == "glitch"].gps, 3))
+    # The same transients the foreground carries, in the same detectors at the
+    # same times, so the two frame kinds differ by the signals alone.
+    assert (sorted(np.round(background.gps, 6))
+            == sorted(np.round(glitches.gps, 6)))
+    assert (background.detector.astype(str).value_counts().to_dict()
+            == glitches.detector.astype(str).value_counts().to_dict())
 
     # The foreground is the same set of injections either way: the background's
     # transients are written into the background and nowhere else.
@@ -69,11 +72,11 @@ def test_background_carries_its_own_transients(tmp_path):
 
 def test_the_foreground_does_not_inherit_them(tmp_path):
     """The noise is redrawn rather than held twice, so the foreground frames
-    must be bit-for-bit what they are without a glitchy background."""
+    must be bit-for-bit what they are without transients in the background."""
     plain = tmp_path / "plain"
     glitchy = tmp_path / "glitchy"
     generate_dataset(plain, **COMMON)
-    generate_dataset(glitchy, n_background_glitch=3, **COMMON)
+    generate_dataset(glitchy, background_transients=True, **COMMON)
 
     from gwpy.timeseries import TimeSeries
 
