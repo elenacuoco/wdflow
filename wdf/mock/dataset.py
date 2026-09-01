@@ -1104,11 +1104,17 @@ def generate_dataset(
             f"Generated {len(injections)} of {requested} requested injections"
         )
 
-    def draw_noise():
+    def draw_noise(only=None):
         """The noise realisation, which the seeds make a function and not a
-        draw: calling this twice yields the same samples."""
+        draw: calling this twice yields the same samples.
+
+        ``only`` restricts it to one detector, so that a stage needing one at a
+        time holds one at a time.
+        """
         series_by_ifo = {}
         for index, ifo in enumerate(detectors):
+            if only is not None and ifo not in only:
+                continue
             series = coloured_noise(
                 start_gps,
                 start_gps + duration,
@@ -1126,10 +1132,13 @@ def generate_dataset(
             series_by_ifo[ifo] = values[:nsamples].copy()
         return series_by_ifo
 
-    noise = draw_noise()
-
-    background_table = None
+    # The background is written one detector at a time. A full-length series is
+    # a few days at the sample rate, and generating one while another is held
+    # is what does not fit: the seeds make the noise a function, so a detector
+    # is drawn, written and freed before the next is drawn.
+    background_rows = []
     if write_background:
+        background_specs = ()
         if n_background_glitch:
             # The instrumental transients the background carries are drawn from
             # the same population as the foreground's and placed independently
@@ -1153,27 +1162,26 @@ def generate_dataset(
                 cbc_mix=cbc_mix,
                 min_detector_snr=min_detector_snr,
             )
-            background_table = pd.DataFrame([
+
+        for ifo in detectors:
+            one = draw_noise(only=(ifo,))
+            background_rows.extend(
                 _inject_one(
                     spec,
-                    noise,
+                    one,
                     start_gps,
                     sample_rate,
-                    detectors,
+                    (ifo,),
                     f_low,
                     f_high,
                     psd_name,
                 )
                 for spec in background_specs
-            ]).reindex(columns=GROUND_TRUTH_COLUMNS)
-            background_table.to_parquet(
-                os.path.join(outdir, "background_injections.parquet"),
-                index=False,
+                if spec["detector"] == ifo
             )
-        for ifo in detectors:
             _write_frames(
                 GwpyTimeSeries,
-                noise[ifo],
+                one[ifo],
                 start_gps,
                 sample_rate,
                 ifo,
@@ -1182,22 +1190,22 @@ def generate_dataset(
                 "MOCK-BACKGROUND",
                 frame_length,
             )
-        if n_background_glitch:
-            # The arrays now hold the background's transients, which the
-            # foreground must not inherit. The seeds make the noise
-            # reproducible, so it is drawn again rather than held twice: a
-            # second full-length series per detector is what does not fit in
-            # memory at a few days of livetime.
-            del noise
-            noise = draw_noise()
+            del one
 
-    # The background frames are already written, and nothing reads `noise`
-    # again, so the foreground takes the arrays over rather than copying them.
-    # The copy was a second full-length series per detector held for no reader:
-    # at a few days of livetime that is the difference between fitting in
-    # memory and swapping. What is produced is unchanged --- the same samples
-    # from the same seeds --- since injection adds into these arrays in place
-    # either way.
+        if background_specs:
+            pd.DataFrame(background_rows).reindex(
+                columns=GROUND_TRUTH_COLUMNS
+            ).to_parquet(
+                os.path.join(outdir, "background_injections.parquet"),
+                index=False,
+            )
+
+    noise = draw_noise()
+
+    # The injection adds into these arrays in place, so the foreground takes
+    # them over rather than copying them: a second full-length series per
+    # detector held for no reader is, at a few days of livetime, the difference
+    # between fitting in memory and swapping.
     foreground = {ifo: noise.pop(ifo) for ifo in detectors}
     rows = [
         _inject_one(
