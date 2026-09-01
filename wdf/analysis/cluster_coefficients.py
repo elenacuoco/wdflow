@@ -350,7 +350,11 @@ def score_events_by_reconstruction(events: pd.DataFrame, coefficients,
         return events.copy()
 
     out = events.reset_index(drop=True).copy()
-    out["EnWDF_window"] = out["EnWDF"] if "EnWDF" in out else np.nan
+    # The per-window value is what the grouping is judged against, so it is
+    # kept as the catalogue reported it. Overwriting it with `EnWDF` would
+    # replace it with the grouped estimate this function is about to improve.
+    if "EnWDF_window" not in out:
+        out["EnWDF_window"] = out["EnWDF"] if "EnWDF" in out else np.nan
 
     reconstructed = np.full(len(out), np.nan)
     n_windows = np.zeros(len(out), dtype=int)

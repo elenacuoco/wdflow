@@ -107,6 +107,38 @@ def normalised_energy(pixels: pd.DataFrame) -> np.ndarray:
                      where=valid)
 
 
+def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
+    """One row per physical tile, where overlapping windows reported it twice.
+
+    Consecutive windows share samples, so the same time-frequency region can be
+    thresholded in both and appear twice in the cloud. Summing the cloud would
+    then count that region's energy twice. Two rows describe one region when
+    they agree in window length and in both edges, and what is kept is the
+    larger estimate: the window that saw more of the transient is the one that
+    kept more of its amplitude.
+
+    Where the two windows' tile grids do not coincide --- which happens at the
+    octaves whose tiles are wider than the stride, since only there does the
+    step fail to be a whole number of tiles --- the two tiles overlap without
+    matching, and the shared part of their support is still counted twice. That
+    residual is bounded by the ratio of the overlap to the window.
+
+    :type pixels: pandas.DataFrame
+    :param pixels: a pixel cloud, as `pixel_cloud` returns.
+    :return: pandas.DataFrame -- the cloud with the duplicates removed, in the
+        order it came in.
+    """
+    if pixels.empty:
+        return pixels
+    order = np.lexsort((-pixels["energy"].to_numpy(dtype=float),
+                        pixels["f_lo"].to_numpy(dtype=float),
+                        pixels["t_lo"].to_numpy(dtype=float),
+                        pixels["scale"].to_numpy(dtype=float)))
+    ordered = pixels.iloc[order]
+    keep = ~ordered.duplicated(subset=["scale", "t_lo", "f_lo"], keep="first")
+    return ordered[keep].sort_index()
+
+
 @dataclass
 class ScaleCalibration:
     """The background energy distribution of every (window length, band).
