@@ -323,20 +323,42 @@ class WaveletPixelClusterer:
         f_lo = pixels["f_lo"].to_numpy()
         f_hi = pixels["f_hi"].to_numpy()
 
-        # vectorized pairwise adjacency (O(n^2) memory/time -- fine for the
-        # few-thousand-pixel scale of a near-target investigative window;
-        # revisit with a spatial index if this needs to scale to a full
-        # segment's worth of pixels at once).
-        time_adj = (t_lo[:, None] <= t_hi[None, :] + self.time_tol_s) & \
-                   (t_lo[None, :] <= t_hi[:, None] + self.time_tol_s)
-        freq_adj = (f_lo[:, None] <= f_hi[None, :]) & (f_lo[None, :] <= f_hi[:, None])
-        adjacency = time_adj & freq_adj
-        np.fill_diagonal(adjacency, False)
-
-        from scipy.sparse import csr_matrix
+        # Only the pairs inside the tolerance are formed, by searching the
+        # sorted time axis: a dense adjacency asks the same question in n^2
+        # memory, and a segment's pixel cloud is millions of tiles.
+        from scipy.sparse import coo_matrix
         from scipy.sparse.csgraph import connected_components
-        _, labels = connected_components(csr_matrix(adjacency), directed=False)
-        return labels
+
+        from wdf.analysis.pairs import neighbour_pairs
+
+        n = len(t_lo)
+        if n == 0:
+            return np.zeros(0, dtype=int)
+        order = np.argsort(t_lo, kind="mergesort")
+        t_lo, t_hi = t_lo[order], t_hi[order]
+        f_lo, f_hi = f_lo[order], f_hi[order]
+        reach = float((t_hi - t_lo).max() + self.time_tol_s) if n else 0.0
+
+        rows, cols = [], []
+        for left, right in neighbour_pairs(t_lo, reach):
+            join = ((t_lo[left] <= t_hi[right] + self.time_tol_s)
+                    & (t_lo[right] <= t_hi[left] + self.time_tol_s)
+                    & (f_lo[left] <= f_hi[right]) & (f_lo[right] <= f_hi[left]))
+            if join.any():
+                rows.append(left[join])
+                cols.append(right[join])
+
+        if not rows:
+            labels = np.arange(n, dtype=int)
+        else:
+            adjacency = coo_matrix(
+                (np.ones(sum(len(r) for r in rows), dtype=np.int8),
+                 (np.concatenate(rows), np.concatenate(cols))), shape=(n, n))
+            _, labels = connected_components(adjacency, directed=False)
+        # Back to the order the pixels came in.
+        out = np.empty(n, dtype=int)
+        out[order] = labels
+        return out
 
     def trigger_labels(self, pixels: pd.DataFrame) -> pd.Series:
         """Cluster label per trigger, for grouping triggers before stitching.

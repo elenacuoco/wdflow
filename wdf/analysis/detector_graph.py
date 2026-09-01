@@ -34,6 +34,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -94,6 +96,31 @@ class DetectorGraphConfig:
     wavegram_time_bins: int = WAVEGRAM_TIME_BINS
 
 
+def _one_rate(rate) -> float:
+    """The single analysis rate a band ladder is built on.
+
+    The ladder maps a coefficient index to a band through the rate, so two
+    rates in one table would place the same index in two different bands and
+    every lookup below would return the wrong row for one of them.
+
+    :param rate: the sampling rate of every trigger, Hz.
+    :return: float -- the rate they share.
+    :raises ValueError: if they do not share one.
+    """
+    rate = np.asarray(rate, dtype=float)
+    usable = rate[np.isfinite(rate) & (rate > 0.0)]
+    if not len(usable):
+        raise ValueError("no trigger declares an analysis rate")
+    # Two rates that differ in the last bit are one rate: the ladder is built
+    # from a power of two and a rounding of the same number is not a second
+    # instrument.
+    if not np.allclose(usable, usable[0], rtol=1e-9, atol=0.0):
+        raise ValueError(
+            "the band ladder needs one analysis rate, and these triggers "
+            f"carry {np.unique(usable).tolist()}")
+    return float(usable[0])
+
+
 def band_grid(scales, fs: float) -> np.ndarray:
     """The frequency bands reached by any of these window lengths.
 
@@ -133,11 +160,26 @@ def window_strides(triggers: pd.DataFrame) -> dict:
     fs = np.maximum(triggers["fs"].to_numpy(dtype=float), EPS)
     declared = (triggers["stride"].to_numpy(dtype=float) if "stride" in triggers
                 else np.full(len(triggers), np.nan))
-    declared = np.where(np.isfinite(declared) & (declared > 0.0),
-                        declared, scale / fs)
+    missing = ~(np.isfinite(declared) & (declared > 0.0))
+    if missing.any():
+        # Without the run's stride the fallback is the window's own duration,
+        # the stride of a search with no overlap, and every overlapped sample
+        # is then counted twice in `stitched_statistic`.
+        warnings.warn(
+            f"{int(missing.sum())} of {len(missing)} triggers carry no stride; "
+            "the window duration is used, which assumes no overlap",
+            RuntimeWarning, stacklevel=2)
+    declared = np.where(missing, scale / fs, declared)
 
-    lengths, first = np.unique(scale, return_index=True)
-    return {float(length): float(declared[row]) for length, row in zip(lengths, first)}
+    strides = {}
+    for length in np.unique(scale):
+        here = declared[scale == length]
+        if not np.allclose(here, here[0], rtol=1e-9, atol=0.0):
+            raise ValueError(
+                f"windows of {int(length)} samples declare more than one "
+                f"stride: {np.unique(here).tolist()}")
+        strides[float(length)] = float(here[0])
+    return strides
 
 
 def wavegram_bin_seconds(triggers: pd.DataFrame) -> float:
@@ -181,16 +223,20 @@ def _flat_coefficients(triggers: pd.DataFrame, where: np.ndarray):
 
 
 def _positive_sigma(triggers: pd.DataFrame) -> np.ndarray:
-    """Each trigger's noise scale, with anything unusable read as one.
+    """Each trigger's noise scale, with anything unusable left as nan.
 
     :type triggers: pandas.DataFrame
     :param triggers: triggers that may carry `sigma`.
-    :return: numpy.ndarray -- one scale per trigger, all finite and positive.
+    :return: numpy.ndarray -- one scale per trigger, nan where the
+        trigger declared none that could be a noise scale.
     """
     if "sigma" not in triggers:
-        return np.ones(len(triggers))
+        return np.full(len(triggers), np.nan)
     sigma = pd.to_numeric(triggers["sigma"], errors="coerce").to_numpy(float)
-    return np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, 1.0)
+    # A scale of one on strain of order 1e-22 would put that trigger's energy
+    # 44 decades below every other and drop it out of any weighted moment with
+    # nothing to say it happened. It is not a scale, so it is not a number.
+    return np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, np.nan)
 
 
 def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
@@ -233,7 +279,12 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
         index, value, owner = _flat_coefficients(group, where)
         if not index.size:
             continue
-        keep = row_of[index] >= 0
+        # A trigger whose noise scale is missing cannot be placed on the noise
+        # scale, and a NaN cell would spread through the norm of the whole
+        # grid and through every edge feature that compares it. Its
+        # coefficients are left out; the row stays, empty, which is what the
+        # search knows about it.
+        keep = (row_of[index] >= 0) & np.isfinite(sigma[owner]) & (sigma[owner] > 0.0)
         index, value, owner = index[keep], value[keep], owner[keep]
         # On the noise scale, as the statistic is: the raw coefficients are
         # strain, of order 1e-22, and a grid of those is numerically zero once
@@ -381,11 +432,19 @@ def build_detector_graph(triggers: pd.DataFrame,
     if significance is None:
         significance = np.log1p(nodes["EnWDF"].to_numpy(dtype=float))
     significance = np.asarray(significance, dtype=float)
-    significance = np.where(np.isfinite(significance), significance, 0.0)
-
-    keep = significance >= config.minimum_significance
+    # A node the background never calibrated arrives as NaN. It stays a
+    # node --- it is still energy the search kept --- but it is ranked
+    # last and never reported as a significance of zero, which would be
+    # a measurement.
+    unmeasured = ~np.isfinite(significance)
+    # A node the background never calibrated cannot be judged against a cut, so
+    # it survives only where no cut is asked for. What it reports stays NaN;
+    # what the feature matrices carry is zero, since a NaN cell spreads through
+    # every norm and every comparison built on it.
+    keep = np.where(unmeasured, config.minimum_significance <= 0.0,
+                    significance >= config.minimum_significance)
     nodes = nodes[keep].reset_index(drop=True)
-    significance = significance[keep]
+    significance, unmeasured = significance[keep], unmeasured[keep]
     if nodes.empty:
         return DetectorGraph(nodes, np.zeros((0, 1)), np.zeros((0, 2), dtype=int),
                              np.zeros((0, len(TRIGGER_EDGE_FEATURES))))
@@ -393,7 +452,8 @@ def build_detector_graph(triggers: pd.DataFrame,
     start = nodes["gps"].to_numpy(dtype=float)
     order = np.argsort(start, kind="mergesort")
     nodes = nodes.iloc[order].reset_index(drop=True)
-    significance = significance[order]
+    significance, unmeasured = significance[order], unmeasured[order]
+    featured = np.where(unmeasured, 0.0, significance)
 
     scale = nodes["n_coeff"].to_numpy(dtype=float)
     fs = nodes["fs"].to_numpy(dtype=float)
@@ -414,7 +474,7 @@ def build_detector_graph(triggers: pd.DataFrame,
     energy = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
     log_energy = np.log(energy)
 
-    bands = band_grid(scale, float(fs[0]))
+    bands = band_grid(scale, _one_rate(fs))
     occupied = occupied_bands(nodes, bands)
     basis = (nodes["wave"].to_numpy().astype(str) if "wave" in nodes
              else np.zeros(len(nodes), dtype=int))
@@ -427,7 +487,7 @@ def build_detector_graph(triggers: pd.DataFrame,
     node_features = np.hstack([
         np.log1p(wavegrams),
         (scale[:, None] == scale_columns[None, :]).astype(float),
-        np.column_stack([significance, np.log1p(energy), span, f_hi - f_lo]),
+        np.column_stack([featured, np.log1p(energy), span, f_hi - f_lo]),
     ]).astype(np.float32)
 
     # The pairs are searched on the window start, which the nodes are sorted by,
@@ -473,8 +533,8 @@ def build_detector_graph(triggers: pd.DataFrame,
             np.log(scale[i] / scale[j]),
             np.log(energy[i] / energy[j]),
             np.einsum("ij,ij->i", shapes[i], shapes[j]),
-            np.minimum(significance[i], significance[j]),
-            np.maximum(significance[i], significance[j]),
+            np.minimum(featured[i], featured[j]),
+            np.maximum(featured[i], featured[j]),
             (scale[i] != scale[j]).astype(float),
         ]))
 
@@ -544,7 +604,12 @@ def event_tiles(nodes, members, context=None):
         if not index.size:
             continue
         scaled = np.abs(np.asarray(value_of[row], dtype=float))
-        noise = sigma[row] if np.isfinite(sigma[row]) and sigma[row] > 0 else 1.0
+        noise = sigma[row]
+        if not (np.isfinite(noise) and noise > 0.0):
+            # No scale, no measurement: this window's coefficients are left
+            # out rather than divided by one, which on strain would place
+            # them forty decades below every other tile.
+            continue
         t_lo.append(gps[row] + lo[index])
         t_hi.append(gps[row] + hi[index])
         f_lo.append(flo[index])
@@ -585,7 +650,12 @@ def detector_events(graph: DetectorGraph, significance=None,
     if significance is None:
         significance = np.log1p(nodes["EnWDF"].to_numpy(dtype=float))
     significance = np.asarray(significance, dtype=float)
-    significance = np.where(np.isfinite(significance), significance, 0.0)
+    # A node the background never calibrated arrives as NaN. It stays a
+    # node --- it is still energy the search kept --- but it is ranked
+    # last and never reported as a significance of zero, which would be
+    # a measurement.
+    unmeasured = ~np.isfinite(significance)
+    ranked = np.where(unmeasured, -np.inf, significance)
 
     def column(name, default=np.nan):
         if name not in nodes:
@@ -632,7 +702,7 @@ def detector_events(graph: DetectorGraph, significance=None,
 
     # The loudest member of each cluster: ordering by cluster and then by
     # decreasing significance puts it first in every group.
-    peak = np.lexsort((-significance, labels))[starts]
+    peak = np.lexsort((-ranked, labels))[starts]
 
     centroid_of = column("gpsCentroid", np.nan)
     centroid_of = np.where(np.isfinite(centroid_of), centroid_of, gps)
@@ -644,12 +714,14 @@ def detector_events(graph: DetectorGraph, significance=None,
                     minlength=n_events),
         total, out=np.zeros(n_events), where=total > 0), 0.0))
 
+    # One noise scale per event, the median over the windows it spans. The
+    # mean would be pulled by a single loud window's scale, and the statistic
+    # this column explains --- the norm of the reconstruction, which
+    # `ClusterCoefficients.noise_scale` divides by --- uses the median.
     noise = column("sigma", np.nan)
     usable = np.isfinite(noise) & (noise > 0.0)
-    counted = np.bincount(grouped, weights=usable[order].astype(float), minlength=n_events)
-    sigma = np.divide(
-        np.bincount(grouped, weights=np.where(usable, noise, 0.0)[order], minlength=n_events),
-        counted, out=np.full(n_events, np.nan), where=counted > 0)
+    sigma = (pd.Series(np.where(usable, noise, np.nan)).groupby(labels).median()
+             .reindex(range(n_events)).to_numpy())
 
     start = lowest(gps)
     first_tile = lowest(onset)
@@ -705,9 +777,14 @@ def detector_events(graph: DetectorGraph, significance=None,
         events[name] = np.nan
 
     if {"wt_index", "wt_value"} <= set(nodes.columns):
+        # The context holds the whole table's tile geometry, so it is built
+        # once here: rebuilding it inside the loop costs events times triggers
+        # rather than the coefficients there are.
+        context = tile_context(nodes)
         for event in np.flatnonzero(sizes > 1):
             members = order[starts[event]:starts[event] + sizes[event]]
-            lo, hi, band_lo, band_hi, tile_energy = event_tiles(nodes, members)
+            lo, hi, band_lo, band_hi, tile_energy = event_tiles(
+                nodes, members, context=context)
             if not tile_energy.size:
                 continue
             for name, value in event_ridge_features(
@@ -715,14 +792,21 @@ def detector_events(graph: DetectorGraph, significance=None,
                 events.at[event, name] = value
             events.at[event, "duration90"] = float(np.diff(energy_quantile(
                 lo, hi, tile_energy, (0.05, 0.95)))[0])
-            band = energy_quantile(np.log(np.maximum(band_lo, EPS)),
+            # The coarsest tile starts at zero frequency, which has no
+            # logarithm and no geometric centre: it is represented by half its
+            # upper edge, as `tile_frequency` represents it everywhere else.
+            # Substituting a tiny positive number instead would put that tile
+            # at 1e-154 Hz and drag the whole moment with it.
+            floor = np.where(band_lo > 0.0, band_lo, 0.5 * band_hi)
+            band = energy_quantile(np.log(np.maximum(floor, EPS)),
                                    np.log(np.maximum(band_hi, EPS)),
                                    tile_energy, (0.05, 0.95))
             events.at[event, "freqQ05"] = float(np.exp(band[0]))
             events.at[event, "freqQ95"] = float(np.exp(band[1]))
             # The geometric moment over the same tiles, which is the frequency
             # the event's energy sits at rather than the mean of the windows'.
-            centre = np.sqrt(np.maximum(band_lo, EPS) * np.maximum(band_hi, EPS))
+            centre = np.where(band_lo > 0.0, np.sqrt(band_lo * band_hi),
+                              0.5 * band_hi)
             events.at[event, "freqMean"] = float(np.exp(
                 (tile_energy @ np.log(centre)) / max(tile_energy.sum(), EPS)))
 
@@ -823,13 +907,14 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     fs = np.maximum(nodes["fs"].to_numpy(dtype=float), EPS)
     scale = nodes["n_coeff"].to_numpy(dtype=int)
     gps = nodes["gps"].to_numpy(dtype=float)
-    bands = band_grid(scale, float(fs[0]))
+    bands = band_grid(scale, _one_rate(fs))
     row_of = {(round(lo, 9), round(hi, 9)): row for row, (lo, hi) in enumerate(bands)}
 
     geometry = {}
     for length in np.unique(scale):
-        t_lo, t_hi = coeff_time_bounds(int(length), float(fs[0]))
-        f_lo, f_hi = coeff_freq_bands(int(length), float(fs[0]))
+        rate = _one_rate(fs)
+        t_lo, t_hi = coeff_time_bounds(int(length), rate)
+        f_lo, f_hi = coeff_freq_bands(int(length), rate)
         rows = np.array([row_of.get((round(a, 9), round(b, 9)), -1)
                          for a, b in zip(f_lo, f_hi)])
         geometry[int(length)] = (0.5 * (t_lo + t_hi), rows)
@@ -953,12 +1038,19 @@ def event_waveform(graph, labels=None, cluster_id=None):
     scale = nodes["n_coeff"].to_numpy(dtype=float)
     rate = nodes["fs"].to_numpy(dtype=float)
 
+    # The members of every event, found once by sorting the labels rather than
+    # by scanning them once per event, which is quadratic in the event count.
+    order = np.argsort(labels, kind="stable")
+    sizes = np.bincount(labels, minlength=int(labels.max()) + 1 if len(labels) else 1)
+    starts = np.concatenate(([0], np.cumsum(sizes)[:-1]))
+
     out = {}
     for label in ([cluster_id] if cluster_id is not None
-                  else np.unique(labels)):
-        members = np.flatnonzero(labels == int(label))
-        if not members.size:
+                  else np.flatnonzero(sizes > 0)):
+        label = int(label)
+        if label >= len(sizes) or not sizes[label]:
             continue
+        members = order[starts[label]:starts[label] + sizes[label]]
         # The length that carries most of this event's energy.
         lengths, inverse = np.unique(scale[members], return_inverse=True)
         carried = np.bincount(inverse, weights=energy[members],
@@ -1133,15 +1225,27 @@ def _tile_pair_energy(flat, left, right, tolerance):
 
 
 def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
-    """Each event's statistic over its whole extent, without double counting.
+    """A fast estimate of each event's statistic over its whole extent.
 
-    Consecutive windows of one length step by less than their span, so a sample
-    can appear in several of them and summing their coefficient energy counts it
-    more than once. Within one window length the step regions tile time exactly
-    once, so the energy of an event is accumulated over the step region of each
-    of its windows and no further. Window lengths are not combined: each is a
-    complete description of the same strain, so the largest is taken rather than
-    their sum.
+    The statistic of an event is the norm of its stitched reconstruction on the
+    noise scale, which counts each sample once however many windows cover it;
+    :meth:`wdf.analysis.cluster_coefficients.ClusterCoefficients.enwdf`
+    computes it, at the cost of inverting every window of every event. What is
+    computed here instead is an estimate of that norm which needs no inverse
+    transform: each window's coefficient energy is scaled by the fraction of
+    the window its own step region occupies --- a geometric fraction, applied
+    to the whole window and not to the tiles that fall inside the step --- and
+    the scaled energies are summed in quadrature.
+
+    The two agree when a window's energy is spread evenly over its samples, and
+    they differ when it is not. This is an approximation, and an event that is
+    ranked, thresholded or reported should carry the reconstruction's own norm
+    rather than this.
+
+    Window lengths are not combined: each is a complete description of the same
+    strain, so the largest is taken rather than their sum. The result is never
+    below the loudest single window, so grouping cannot make an event quieter
+    than the search already found it.
 
     :type graph: DetectorGraph
     :param graph: the detector's level-one graph.
@@ -1160,7 +1264,8 @@ def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
     # The fraction of a window that is its own step region, which is what it
     # contributes without repeating what a neighbour already carried.
     strides = window_strides(nodes)
-    stride = np.array([strides[length] for length in scale])
+    lengths, inverse = np.unique(scale, return_inverse=True)
+    stride = np.array([strides[length] for length in lengths])[inverse]
     share = np.clip(stride / (scale / fs), 0.0, 1.0)
 
     # A window's step region is what it contributes without repeating what a

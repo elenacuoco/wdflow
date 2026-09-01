@@ -95,7 +95,14 @@ def match_injections(candidates, injections, window_s=0.5, candidate_time="gpsPe
         local = local[end[local] >= t_inj - window_s]
         if not len(local):
             continue
-        best = local[np.argmax(snrs[local])]
+        # A candidate whose statistic is not finite is not the loudest one:
+        # `argmax` returns the first NaN it meets, which would credit the
+        # injection to the one candidate that could not be measured and drop
+        # the ones that could.
+        measurable = local[np.isfinite(snrs[local])]
+        if not len(measurable):
+            continue
+        best = measurable[np.argmax(snrs[measurable])]
         out.at[i, "found"] = True
         out.at[i, "candidate_index"] = int(candidates.index.to_numpy()[best])
         out.at[i, "dt_s"] = float(times[best] - t_inj)

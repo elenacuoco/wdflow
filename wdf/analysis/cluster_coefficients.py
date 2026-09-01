@@ -192,7 +192,11 @@ class ClusterCoefficients:
 
         span = max(self.duration, 1.0 / self.fs)
         sigma = self.noise_scale
-        scale = sigma if np.isfinite(sigma) and sigma > 0.0 else 1.0
+        if not (np.isfinite(sigma) and sigma > 0.0):
+            # Without a scale the grid would be strain, of order 1e-22, which
+            # every comparison downstream reads as zero. An empty grid says so.
+            return grid
+        scale = sigma
 
         row_of_level = np.where(level < 0, 0, level + 1)
         for row, start in enumerate(self.times):
@@ -350,7 +354,11 @@ def score_events_by_reconstruction(events: pd.DataFrame, coefficients,
         return events.copy()
 
     out = events.reset_index(drop=True).copy()
-    out["EnWDF_window"] = out["EnWDF"] if "EnWDF" in out else np.nan
+    # The per-window value is what the grouping is judged against, so it is
+    # kept as the catalogue reported it. Overwriting it with `EnWDF` would
+    # replace it with the grouped estimate this function is about to improve.
+    if "EnWDF_window" not in out:
+        out["EnWDF_window"] = out["EnWDF"] if "EnWDF" in out else np.nan
 
     reconstructed = np.full(len(out), np.nan)
     n_windows = np.zeros(len(out), dtype=int)

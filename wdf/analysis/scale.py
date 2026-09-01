@@ -107,6 +107,56 @@ def normalised_energy(pixels: pd.DataFrame) -> np.ndarray:
                      where=valid)
 
 
+def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
+    """One row per physical tile, where overlapping windows reported it twice.
+
+    Consecutive windows share samples, so the same time-frequency region can be
+    thresholded in both and appear twice in the cloud. Summing the cloud would
+    then count that region's energy twice. Two rows describe one region when
+    they agree in window length and in both edges, and what is kept is the
+    larger estimate: the window that saw more of the transient is the one that
+    kept more of its amplitude.
+
+    Where the two windows' tile grids do not coincide --- which happens at the
+    octaves whose tiles are wider than the stride, since only there does the
+    step fail to be a whole number of tiles --- the two tiles overlap without
+    matching, and the shared part of their support is still counted twice. That
+    residual is bounded by the ratio of the overlap to the window.
+
+    Two rows are the same tile when they agree exactly in window length and in
+    both edges, in the same detector and, where the caller has labelled them,
+    in the same cluster. The edges are a window's start plus a dyadic offset, so on a
+    power of two sampling rate and a whole-second start the sum is exact and
+    the comparison is safe; it is not, on a rate that is not.
+
+    :type pixels: pandas.DataFrame
+    :param pixels: a pixel cloud, as `pixel_cloud` returns, carrying `energy`
+        and the `sigma` of the window each tile came from.
+    :return: pandas.DataFrame -- the cloud with the duplicates removed, in the
+        order it came in.
+    """
+    if pixels.empty:
+        return pixels
+    # The larger estimate is the larger one *on its own noise scale*: the two
+    # windows that reported this tile need not have measured the same noise,
+    # which is the reason every sum downstream normalises tile by tile.
+    order = np.lexsort((-normalised_energy(pixels),
+                        pixels["f_lo"].to_numpy(dtype=float),
+                        pixels["t_lo"].to_numpy(dtype=float),
+                        pixels["scale"].to_numpy(dtype=float)))
+    ordered = pixels.iloc[order]
+    # Within one detector, and within one owner where the caller declares it:
+    # two windows can report the same tile and still belong to different events
+    # --- the grouping refuses to join a loud window to a quiet one --- and the
+    # tile is then a member of both. Deduplicating across owners would take it
+    # from the quieter of the two.
+    key = [column for column in ("ifo", "cluster_id") if column in ordered]
+    key += ["scale", "t_lo", "f_lo"]
+    keep = ~ordered.duplicated(subset=key, keep="first")
+    # Back to the order the caller passed, whatever its index was.
+    return ordered[keep].iloc[np.argsort(order[keep.to_numpy()])]
+
+
 @dataclass
 class ScaleCalibration:
     """The background energy distribution of every (window length, band).
