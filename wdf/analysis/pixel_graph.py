@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.pairs import neighbour_pairs
+from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
 from wdf.analysis.robust_events import EPS, _UnionFind
 
 PIXEL_EDGE_FEATURES = [
@@ -42,8 +43,8 @@ CLUSTER_COLUMNS = [
     "duration", "duration90", "freqMin", "freqMean", "freqMax", "freqQ05",
     "freqQ95", "EnWDF", "EnWDF_window", "sigma", "snrPeak", "significance",
     "energy", "n_pixels", "n_triggers", "n_scales", "scale_best", "n_coeff",
-    "fs",
-]
+    "fs", "member_indices",
+] + RIDGE_FEATURES
 
 
 @dataclass
@@ -124,8 +125,14 @@ def build_pixel_graph(pixels: pd.DataFrame,
     :param config: when two tiles may belong to the same transient.
     :return: PixelGraph
     """
+    from wdf.analysis.scale import unique_tiles
+
     config = PixelGraphConfig() if config is None else config
-    nodes = pixels.reset_index(drop=True)
+    # Two windows share samples, so the same region of the plane can be
+    # thresholded in both and arrive twice. It is one region and it becomes one
+    # node: otherwise the event's energy counts it as many times as there were
+    # windows over it.
+    nodes = unique_tiles(pixels).reset_index(drop=True)
 
     if significance is None:
         significance = np.log1p(nodes["energy"].to_numpy(dtype=float)) if len(nodes) \
@@ -136,11 +143,14 @@ def build_pixel_graph(pixels: pd.DataFrame,
     # last and never reported as a significance of zero, which would be
     # a measurement.
     unmeasured = ~np.isfinite(significance)
-    ranked = np.where(unmeasured, -np.inf, significance)
-
-    keep = unmeasured | (significance >= config.minimum_significance)
+    # A node the background never calibrated cannot be judged against a cut, so
+    # it survives only where no cut is asked for. What it reports stays NaN;
+    # what the feature matrices carry is zero, since a NaN cell spreads through
+    # every norm and every comparison built on it.
+    keep = np.where(unmeasured, config.minimum_significance <= 0.0,
+                    significance >= config.minimum_significance)
     nodes = nodes[keep].reset_index(drop=True)
-    significance, ranked = significance[keep], ranked[keep]
+    significance, unmeasured = significance[keep], unmeasured[keep]
     if nodes.empty:
         return PixelGraph(nodes, np.zeros((0, 2), dtype=int),
                           np.zeros((0, len(PIXEL_EDGE_FEATURES))))
@@ -148,7 +158,8 @@ def build_pixel_graph(pixels: pd.DataFrame,
     t_lo = nodes["t_lo"].to_numpy(dtype=float)
     order = np.argsort(t_lo, kind="mergesort")
     nodes = nodes.iloc[order].reset_index(drop=True)
-    significance, ranked = significance[order], ranked[order]
+    significance, unmeasured = significance[order], unmeasured[order]
+    featured = np.where(unmeasured, 0.0, significance)
 
     t_lo = nodes["t_lo"].to_numpy(dtype=float)
     t_hi = nodes["t_hi"].to_numpy(dtype=float)
@@ -177,8 +188,8 @@ def build_pixel_graph(pixels: pd.DataFrame,
             gap[join],
             np.clip(shared / narrower, 0.0, 1.0),
             np.log(scale[i] / scale[j]),
-            np.minimum(significance[i], significance[j]),
-            np.maximum(significance[i], significance[j]),
+            np.minimum(featured[i], featured[j]),
+            np.maximum(featured[i], featured[j]),
             (scale[i] != scale[j]).astype(float),
         ]))
 
@@ -196,6 +207,13 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
     set of the inter-detector network graph. An event is the wavegram itself,
     the connected set of tiles, and every quantity below is a moment over those
     tiles and over nothing else.
+
+    Two groups of them, deliberately. The energy, the statistic, the centroid,
+    the spread and the mean frequency are taken over the tiles of one window
+    length, the one carrying the loudest tile, because the lengths all describe
+    the same strain. The support --- first and last time, lowest and highest
+    band --- and the counts are taken over every tile the event holds, since
+    that is what the event covers.
 
     Each tile is normalised by the noise scale of the window that produced it,
     so the event's statistic is
@@ -322,9 +340,13 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
 
     # The quantiles invert a mixture over the tiles' own extents, so they are
     # computed only where there is a mixture; a single tile is its own support.
-    duration90 = highest_time - lowest_time
-    band_q05 = lowest_band.copy()
-    band_q95 = highest_band.copy()
+    # The quantiles are a property of the tiles that carry the energy, so an
+    # event with fewer than two of them has none. `detector_events` leaves the
+    # same columns unset for a single-member event; reporting the full extent
+    # instead would be a different quantity under the same name.
+    duration90 = np.full(n_events, np.nan)
+    band_q05 = np.full(n_events, np.nan)
+    band_q95 = np.full(n_events, np.nan)
     multiple = np.flatnonzero(sizes > 1)
     if len(multiple):
         for event in multiple:
@@ -339,6 +361,27 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
                                         np.log(np.maximum(f_hi[rows], EPS)),
                                         here, (0.05, 0.95))
             band_q05[event], band_q95[event] = np.exp(low), np.exp(high)
+
+    # Which triggers the event was assembled from. The reconstruction reads the
+    # coefficients back from the trigger frame, and a trigger's tiles can fall
+    # in more than one event, so the mapping is event to triggers and not the
+    # other way round.
+    members = np.split(trigger[order], np.cumsum(sizes)[:-1])
+    member_indices = [np.unique(group) for group in members]
+
+    # The ridge descriptors, from the event's own tiles. `detector_events`
+    # computes the same five from the same function, so the two paths report
+    # one definition.
+    ridge = {name: np.full(n_events, np.nan) for name in RIDGE_FEATURES}
+    for event in np.flatnonzero(sizes > 1):
+        rows = order[starts[event]:starts[event] + sizes[event]]
+        rows = rows[counted[rows] > 0.0]
+        if len(rows) < 2:
+            continue
+        for name, value in event_ridge_features(
+                t_lo[rows], t_hi[rows], f_lo[rows], f_hi[rows],
+                counted[rows]).items():
+            ridge[name][event] = value
 
     measured = total > 0.0
     events = pd.DataFrame({
@@ -361,7 +404,7 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
         "sigma": noise,
         "snrPeak": np.where(measured, np.sqrt(loudest), np.nan),
         "significance": best_significance,
-        "energy": total,
+        "energy": np.where(measured, total, np.nan),
         "n_pixels": n_pixels,
         "n_triggers": n_triggers,
         "n_scales": pd.Series(scale).groupby(labels).nunique()
@@ -369,5 +412,95 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
         "scale_best": scale_best.astype(int),
         "n_coeff": scale_best.astype(int),
         "fs": nodes["fs"].to_numpy(dtype=float)[peak],
+        **ridge,
     })
+    events["member_indices"] = member_indices
     return events[CLUSTER_COLUMNS]
+
+
+def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
+                      bin_seconds: float | None = None) -> dict:
+    """Each event's wavegram, rendered from the tiles the event owns.
+
+    The map is the event itself on a band by time grid: one row per band of the
+    shared ladder, one column per `bin_seconds`, and a cell carrying the
+    coefficient magnitude on its own window's noise scale. Nothing outside the
+    cluster is drawn --- a tile the neighbouring window kept but that the
+    grouping did not join is not part of this event and does not appear.
+
+    The columns are anchored on the centre of the event's loudest tile, an
+    instant both detectors measure on the same transient, rather than on a
+    centroid, which follows how much of the transient each of them recovered.
+    A column stands for the same time wherever it is drawn, so two maps
+    compared across the network are not stretched onto each other.
+
+    :type graph: PixelGraph
+    :param graph: the detector's pixel graph.
+    :param labels: component label per node, or None to take every edge.
+    :type time_bins: int
+    :param time_bins: columns of the map.
+    :type bin_seconds: float | None
+    :param bin_seconds: seconds a column stands for; the narrowest tile of the
+        cloud when None, which is the finest the search resolved.
+    :return: dict -- ``{cluster_id: EventWavegram}``.
+    """
+    from wdf.analysis.detector_graph import EventWavegram, band_grid
+    from wdf.analysis.scale import normalised_energy
+
+    nodes = graph.nodes
+    if nodes.empty:
+        return {}
+    labels = np.asarray(graph.components() if labels is None else labels,
+                        dtype=np.int64)
+    n_events = int(labels.max()) + 1
+
+    t_lo = nodes["t_lo"].to_numpy(dtype=float)
+    t_hi = nodes["t_hi"].to_numpy(dtype=float)
+    f_lo = nodes["f_lo"].to_numpy(dtype=float)
+    f_hi = nodes["f_hi"].to_numpy(dtype=float)
+    scale = nodes["scale"].to_numpy(dtype=float)
+    rate = nodes["fs"].to_numpy(dtype=float)
+    centre = 0.5 * (t_lo + t_hi)
+    amplitude = np.sqrt(np.maximum(normalised_energy(nodes), 0.0))
+    amplitude = np.where(np.isfinite(amplitude), amplitude, 0.0)
+
+    bands = band_grid(scale, float(np.median(rate[np.isfinite(rate)])))
+    row_of = {(round(lo, 9), round(hi, 9)): row
+              for row, (lo, hi) in enumerate(bands)}
+    rows = np.array([row_of.get((round(a, 9), round(b, 9)), -1)
+                     for a, b in zip(f_lo, f_hi)])
+
+    width = np.maximum(t_hi - t_lo, 0.0)
+    if bin_seconds is None:
+        positive = width[width > 0.0]
+        bin_seconds = float(positive.min()) if positive.size else 1.0
+    bin_seconds = float(bin_seconds)
+
+    # The loudest tile of each event, and the window it opens on it.
+    order = np.lexsort((np.arange(len(labels)), -amplitude, labels))
+    heads = np.flatnonzero(np.r_[True, labels[order][1:] != labels[order][:-1]])
+    loudest = np.zeros(n_events, dtype=int)
+    loudest[labels[order][heads]] = order[heads]
+    first_of = centre[loudest] - 0.5 * time_bins * bin_seconds
+
+    column = np.floor((centre - first_of[labels]) / bin_seconds).astype(int)
+    keep = (rows >= 0) & (column >= 0) & (column < time_bins) & (amplitude > 0.0)
+    n_bands = len(bands)
+    grids = np.bincount(
+        ((labels[keep] * n_bands + rows[keep]) * time_bins + column[keep]),
+        weights=amplitude[keep],
+        minlength=n_events * n_bands * time_bins
+    ).reshape(n_events, n_bands, time_bins)
+
+    out = {}
+    sizes = np.bincount(labels, minlength=n_events)
+    starts = np.concatenate(([0], np.cumsum(sizes)[:-1]))
+    by_label = np.argsort(labels, kind="stable")
+    for event in range(n_events):
+        members = by_label[starts[event]:starts[event] + sizes[event]]
+        out[event] = EventWavegram(
+            grids[event], bin_seconds=bin_seconds, bands=bands,
+            gps_first=float(first_of[event]),
+            tiles=(t_lo[members], t_hi[members], f_lo[members], f_hi[members],
+                   amplitude[members] ** 2))
+    return out

@@ -123,20 +123,30 @@ def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
     matching, and the shared part of their support is still counted twice. That
     residual is bounded by the ratio of the overlap to the window.
 
+    Two rows are the same tile when they agree exactly in window length and in
+    both edges. The edges are a window's start plus a dyadic offset, so on a
+    power of two sampling rate and a whole-second start the sum is exact and
+    the comparison is safe; it is not, on a rate that is not.
+
     :type pixels: pandas.DataFrame
-    :param pixels: a pixel cloud, as `pixel_cloud` returns.
+    :param pixels: a pixel cloud, as `pixel_cloud` returns, carrying `energy`
+        and the `sigma` of the window each tile came from.
     :return: pandas.DataFrame -- the cloud with the duplicates removed, in the
         order it came in.
     """
     if pixels.empty:
         return pixels
-    order = np.lexsort((-pixels["energy"].to_numpy(dtype=float),
+    # The larger estimate is the larger one *on its own noise scale*: the two
+    # windows that reported this tile need not have measured the same noise,
+    # which is the reason every sum downstream normalises tile by tile.
+    order = np.lexsort((-normalised_energy(pixels),
                         pixels["f_lo"].to_numpy(dtype=float),
                         pixels["t_lo"].to_numpy(dtype=float),
                         pixels["scale"].to_numpy(dtype=float)))
     ordered = pixels.iloc[order]
     keep = ~ordered.duplicated(subset=["scale", "t_lo", "f_lo"], keep="first")
-    return ordered[keep].sort_index()
+    # Back to the order the caller passed, whatever its index was.
+    return ordered[keep].iloc[np.argsort(order[keep.to_numpy()])]
 
 
 @dataclass
