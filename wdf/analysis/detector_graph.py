@@ -108,12 +108,17 @@ def _one_rate(rate) -> float:
     :raises ValueError: if they do not share one.
     """
     rate = np.asarray(rate, dtype=float)
-    unique = np.unique(rate[np.isfinite(rate)])
-    if len(unique) > 1:
+    usable = rate[np.isfinite(rate) & (rate > 0.0)]
+    if not len(usable):
+        raise ValueError("no trigger declares an analysis rate")
+    # Two rates that differ in the last bit are one rate: the ladder is built
+    # from a power of two and a rounding of the same number is not a second
+    # instrument.
+    if not np.allclose(usable, usable[0], rtol=1e-9, atol=0.0):
         raise ValueError(
             "the band ladder needs one analysis rate, and these triggers "
-            f"carry {len(unique)}: {unique.tolist()}")
-    return float(unique[0]) if len(unique) else float("nan")
+            f"carry {np.unique(usable).tolist()}")
+    return float(usable[0])
 
 
 def band_grid(scales, fs: float) -> np.ndarray:
@@ -166,8 +171,15 @@ def window_strides(triggers: pd.DataFrame) -> dict:
             RuntimeWarning, stacklevel=2)
     declared = np.where(missing, scale / fs, declared)
 
-    lengths, first = np.unique(scale, return_index=True)
-    return {float(length): float(declared[row]) for length, row in zip(lengths, first)}
+    strides = {}
+    for length in np.unique(scale):
+        here = declared[scale == length]
+        if not np.allclose(here, here[0], rtol=1e-9, atol=0.0):
+            raise ValueError(
+                f"windows of {int(length)} samples declare more than one "
+                f"stride: {np.unique(here).tolist()}")
+        strides[float(length)] = float(here[0])
+    return strides
 
 
 def wavegram_bin_seconds(triggers: pd.DataFrame) -> float:
@@ -211,11 +223,12 @@ def _flat_coefficients(triggers: pd.DataFrame, where: np.ndarray):
 
 
 def _positive_sigma(triggers: pd.DataFrame) -> np.ndarray:
-    """Each trigger's noise scale, with anything unusable read as one.
+    """Each trigger's noise scale, with anything unusable left as nan.
 
     :type triggers: pandas.DataFrame
     :param triggers: triggers that may carry `sigma`.
-    :return: numpy.ndarray -- one scale per trigger, all finite and positive.
+    :return: numpy.ndarray -- one scale per trigger, nan where the
+        trigger declared none that could be a noise scale.
     """
     if "sigma" not in triggers:
         return np.full(len(triggers), np.nan)
@@ -266,7 +279,12 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
         index, value, owner = _flat_coefficients(group, where)
         if not index.size:
             continue
-        keep = row_of[index] >= 0
+        # A trigger whose noise scale is missing cannot be placed on the noise
+        # scale, and a NaN cell would spread through the norm of the whole
+        # grid and through every edge feature that compares it. Its
+        # coefficients are left out; the row stays, empty, which is what the
+        # search knows about it.
+        keep = (row_of[index] >= 0) & np.isfinite(sigma[owner]) & (sigma[owner] > 0.0)
         index, value, owner = index[keep], value[keep], owner[keep]
         # On the noise scale, as the statistic is: the raw coefficients are
         # strain, of order 1e-22, and a grid of those is numerically zero once
@@ -419,11 +437,14 @@ def build_detector_graph(triggers: pd.DataFrame,
     # last and never reported as a significance of zero, which would be
     # a measurement.
     unmeasured = ~np.isfinite(significance)
-    ranked = np.where(unmeasured, -np.inf, significance)
-
-    keep = unmeasured | (significance >= config.minimum_significance)
+    # A node the background never calibrated cannot be judged against a cut, so
+    # it survives only where no cut is asked for. What it reports stays NaN;
+    # what the feature matrices carry is zero, since a NaN cell spreads through
+    # every norm and every comparison built on it.
+    keep = np.where(unmeasured, config.minimum_significance <= 0.0,
+                    significance >= config.minimum_significance)
     nodes = nodes[keep].reset_index(drop=True)
-    significance, ranked = significance[keep], ranked[keep]
+    significance, unmeasured = significance[keep], unmeasured[keep]
     if nodes.empty:
         return DetectorGraph(nodes, np.zeros((0, 1)), np.zeros((0, 2), dtype=int),
                              np.zeros((0, len(TRIGGER_EDGE_FEATURES))))
@@ -431,7 +452,8 @@ def build_detector_graph(triggers: pd.DataFrame,
     start = nodes["gps"].to_numpy(dtype=float)
     order = np.argsort(start, kind="mergesort")
     nodes = nodes.iloc[order].reset_index(drop=True)
-    significance, ranked = significance[order], ranked[order]
+    significance, unmeasured = significance[order], unmeasured[order]
+    featured = np.where(unmeasured, 0.0, significance)
 
     scale = nodes["n_coeff"].to_numpy(dtype=float)
     fs = nodes["fs"].to_numpy(dtype=float)
@@ -465,7 +487,7 @@ def build_detector_graph(triggers: pd.DataFrame,
     node_features = np.hstack([
         np.log1p(wavegrams),
         (scale[:, None] == scale_columns[None, :]).astype(float),
-        np.column_stack([significance, np.log1p(energy), span, f_hi - f_lo]),
+        np.column_stack([featured, np.log1p(energy), span, f_hi - f_lo]),
     ]).astype(np.float32)
 
     # The pairs are searched on the window start, which the nodes are sorted by,
@@ -511,8 +533,8 @@ def build_detector_graph(triggers: pd.DataFrame,
             np.log(scale[i] / scale[j]),
             np.log(energy[i] / energy[j]),
             np.einsum("ij,ij->i", shapes[i], shapes[j]),
-            np.minimum(significance[i], significance[j]),
-            np.maximum(significance[i], significance[j]),
+            np.minimum(featured[i], featured[j]),
+            np.maximum(featured[i], featured[j]),
             (scale[i] != scale[j]).astype(float),
         ]))
 
@@ -582,7 +604,12 @@ def event_tiles(nodes, members, context=None):
         if not index.size:
             continue
         scaled = np.abs(np.asarray(value_of[row], dtype=float))
-        noise = sigma[row] if np.isfinite(sigma[row]) and sigma[row] > 0 else 1.0
+        noise = sigma[row]
+        if not (np.isfinite(noise) and noise > 0.0):
+            # No scale, no measurement: this window's coefficients are left
+            # out rather than divided by one, which on strain would place
+            # them forty decades below every other tile.
+            continue
         t_lo.append(gps[row] + lo[index])
         t_hi.append(gps[row] + hi[index])
         f_lo.append(flo[index])

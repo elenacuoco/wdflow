@@ -119,3 +119,42 @@ def test_rescoring_keeps_the_per_window_value_it_is_judged_against():
     events = pd.DataFrame(dict(cluster_id=[0], EnWDF=[10.0], EnWDF_window=[4.0]))
     out = score_events_by_reconstruction(events, {})
     assert out.EnWDF_window[0] == pytest.approx(4.0)
+
+
+def test_the_event_knows_which_triggers_it_was_assembled_from():
+    events = events_of(tiles())
+    assert [sorted(m) for m in events.member_indices] == [[0, 1], [2]]
+
+
+def test_the_ridge_is_measured_on_the_event_own_tiles():
+    from wdf.analysis.ridge import RIDGE_FEATURES
+
+    events = events_of(tiles())
+    assert set(RIDGE_FEATURES) <= set(events.columns)
+    # One tile is no track, so the single-tile event has none.
+    assert np.isnan(events.ridge_occupancy[1])
+    assert np.isfinite(events.ridge_occupancy[0])
+
+
+def test_a_tile_two_windows_reported_is_not_counted_twice_by_the_graph():
+    from wdf.analysis.pixel_graph import build_pixel_graph, cluster_events
+
+    twice = pd.DataFrame(dict(
+        trigger_index=[0, 1, 1], ifo=["H1"] * 3, scale=[512.0] * 3,
+        fs=[2048.0] * 3, t_lo=[0.0, 0.0, 0.03], t_hi=[0.03, 0.03, 0.06],
+        f_lo=[64.0] * 3, f_hi=[128.0] * 3, energy=[9.0, 9.0, 16.0],
+        sigma=[1.0] * 3))
+    graph = build_pixel_graph(twice, config=PixelGraphConfig(time_tolerance=0.0))
+    events = cluster_events(graph)
+    assert events.n_pixels[0] == 2
+    assert events.EnWDF[0] == pytest.approx(5.0)
+
+
+def test_the_map_is_drawn_from_the_cluster_tiles_on_their_own_scale():
+    from wdf.analysis.pixel_graph import build_pixel_graph, cluster_wavegrams
+
+    graph = build_pixel_graph(tiles(), config=PixelGraphConfig(time_tolerance=0.0))
+    maps = cluster_wavegrams(graph, time_bins=16)
+    # 3 and 4 on sigma 1, then 2 on sigma 2: the map carries |c| / sigma.
+    assert maps[0].grid.sum() == pytest.approx(3.0 + 4.0 + 1.0)
+    assert maps[1].grid.sum() == pytest.approx(1.0)

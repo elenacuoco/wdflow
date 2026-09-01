@@ -66,7 +66,14 @@ def event_ridge(t_lo, t_hi, f_lo, f_hi, energy, n_bins: int = 32):
 
     centre = 0.5 * (t_lo + t_hi)
     # The geometric centre of a band, which is its middle in log frequency.
-    log_f = 0.5 * (np.log(np.maximum(f_lo, EPS)) + np.log(np.maximum(f_hi, EPS)))
+    # The coarsest tile starts at zero frequency, which has no logarithm and no
+    # geometric centre: it is represented by half its upper edge, the
+    # convention `wavelets.tile_frequency` owns. A floor of EPS instead would
+    # place it 500 octaves below the band and drag every moment with it.
+    log_f = np.where(f_lo > 0.0,
+                     0.5 * (np.log(np.maximum(f_lo, EPS))
+                            + np.log(np.maximum(f_hi, EPS))),
+                     np.log(np.maximum(0.5 * f_hi, EPS)))
 
     edges = np.linspace(start, stop, int(n_bins) + 1)
     index = np.clip(np.digitize(centre, edges) - 1, 0, int(n_bins) - 1)

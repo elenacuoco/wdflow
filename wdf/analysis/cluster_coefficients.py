@@ -192,7 +192,11 @@ class ClusterCoefficients:
 
         span = max(self.duration, 1.0 / self.fs)
         sigma = self.noise_scale
-        scale = sigma if np.isfinite(sigma) and sigma > 0.0 else 1.0
+        if not (np.isfinite(sigma) and sigma > 0.0):
+            # Without a scale the grid would be strain, of order 1e-22, which
+            # every comparison downstream reads as zero. An empty grid says so.
+            return grid
+        scale = sigma
 
         row_of_level = np.where(level < 0, 0, level + 1)
         for row, start in enumerate(self.times):
