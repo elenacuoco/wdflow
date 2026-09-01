@@ -1019,7 +1019,7 @@ def generate_dataset(
     psd_name=DEFAULT_PSD,
     channel_suffix="MOCK-STRAIN",
     write_background=True,
-    n_background_glitch=None,
+    background_transients=False,
     frame_length=1024.0,
     minimum_injection_gap=1.0,
     strict=True,
@@ -1034,15 +1034,16 @@ def generate_dataset(
     ``(start, end)`` pair of them; see :func:`draw_injections`. ``n_ccsn`` draws
     that many core-collapse supernova waveforms from ``ccsn_catalogue``.
 
-    ``n_background_glitch`` writes that many instrumental transients into the
-    background frames as well, drawn from the same population as the
-    foreground's and placed independently of them, and records them in
-    ``background_injections.parquet``. A background without them measures the
-    rate at which stationary noise alone produces a candidate, which is not the
-    rate a detector produces one at; with them, a threshold read off the
-    background is defended against what the instrument does. The astrophysical
-    classes are never written into the background, so a candidate found there
-    is by construction not a signal.
+    ``background_transients`` writes the foreground's instrumental transients
+    into the background frames as well, at the same times and in the same
+    detectors, and records them in ``background_injections.parquet``. The two
+    frame kinds then differ by the astrophysical signals alone: one detector's
+    background is its noise and its transients, and its foreground is the same
+    noise, the same transients, and the signals. This is what a background
+    estimated by sliding the analysed data is made of, and a threshold read off
+    it is defended against what the instrument does rather than against
+    stationary noise. The astrophysical classes are never written into the
+    background, so a candidate found there is by construction not a signal.
 
     :return: pandas.DataFrame -- the foreground truth table. The background's,
         when one is written, is on disk beside it.
@@ -1138,30 +1139,15 @@ def generate_dataset(
     # is drawn, written and freed before the next is drawn.
     background_rows = []
     if write_background:
+        # The background carries the instrumental transients the foreground
+        # carries, at the same times and in the same detectors. A background
+        # estimated by sliding the analysed data holds the transients that data
+        # holds; a second, independently drawn population would describe a
+        # different instrument from the one the candidates came from.
         background_specs = ()
-        if n_background_glitch:
-            # The instrumental transients the background carries are drawn from
-            # the same population as the foreground's and placed independently
-            # of them: a background whose glitches sat at the foreground's times
-            # would make every zero-lag coincidence a comparison of one
-            # realisation with itself.
-            background_specs = draw_injections(
-                n_cbc=0,
-                n_glitch=int(n_background_glitch),
-                n_ccsn=0,
-                ccsn_catalogue=None,
-                duration=duration,
-                start_gps=start_gps,
-                edge_pad=edge_pad,
-                snr_range=snr_range,
-                seed=seed + 7,
-                sample_rate=sample_rate,
-                detectors=detectors,
-                minimum_gap=minimum_injection_gap,
-                strict=strict,
-                cbc_mix=cbc_mix,
-                min_detector_snr=min_detector_snr,
-            )
+        if background_transients:
+            background_specs = [spec for spec in injections
+                                if spec["category"] == "glitch"]
 
         for ifo in detectors:
             one = draw_noise(only=(ifo,))
