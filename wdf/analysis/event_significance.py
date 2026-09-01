@@ -26,6 +26,7 @@ least a stated number of events, rather than from a ladder written here.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -121,6 +122,14 @@ class EventCalibration:
         values = pd.to_numeric(background[statistic],
                                errors="coerce").to_numpy(dtype=float)
         keep = np.isfinite(values)
+        if not keep.all():
+            # The trials factor is the size of the sample the tail is read
+            # from, so a background event whose statistic is missing has to be
+            # visible rather than quietly absent from the denominator.
+            warnings.warn(
+                f"{int((~keep).sum())} of {len(keep)} background events carry "
+                f"no finite {statistic!r} and are not calibrated on",
+                RuntimeWarning, stacklevel=2)
         sizes, values = sizes[keep], values[keep]
 
         edges = size_bins(sizes, min_count=min_count)
@@ -155,14 +164,22 @@ class EventCalibration:
     def bin_of(self, sizes) -> np.ndarray:
         """Which calibration bin each extent falls in.
 
+        The last bin is open above: the edges pool sizes upward, so it holds
+        every extent at or beyond its own edge and an event longer than any the
+        background produced belongs to it by construction. Below the first
+        edge there is no such reading --- the background produced nothing that
+        small --- and the bin is reported as -1 rather than as the first one.
+
         :param sizes: event extents, in blocks.
-        :return: numpy.ndarray -- one bin index per event.
+        :return: numpy.ndarray -- one bin index per event, -1 where the extent
+            is below everything the background measured.
         """
         sizes = np.asarray(sizes, dtype=np.int64).reshape(-1)
         if not len(self.edges):
             return np.zeros(sizes.shape, dtype=np.int64)
-        return np.clip(np.searchsorted(self.edges, sizes, side="right") - 1,
-                       0, len(self.edges) - 1)
+        index = np.searchsorted(self.edges, sizes, side="right") - 1
+        return np.where(sizes < self.edges[0], -1,
+                        np.clip(index, 0, len(self.edges) - 1))
 
     def significance(self, events: pd.DataFrame) -> np.ndarray:
         """`-log P(L' >= L | H0, size)` for every event, in nats.
@@ -194,6 +211,9 @@ class EventCalibration:
         values = pd.to_numeric(events[self.statistic],
                                errors="coerce").to_numpy(dtype=float)
         index = self.bin_of(events[self.size_column].to_numpy(dtype=np.int64))
+        # An extent the background never produced leaves NaN: there is no
+        # distribution to read the tail probability from, and the first bin's
+        # is not it.
         out = np.full(len(events), np.nan)
         for b, table in enumerate(self.tables):
             rows = np.flatnonzero((index == b) & np.isfinite(values))
