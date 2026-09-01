@@ -223,7 +223,7 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
     that is what the event covers.
 
     Each tile is normalised by the noise scale of the window that produced it,
-    so the event's statistic is
+    so the event's statistic is::
 
         rho = sqrt( sum_k |c_k|^2 / sigma_k^2 ),
 
