@@ -132,12 +132,19 @@ def build_pixel_graph(pixels: pd.DataFrame,
     # thresholded in both and arrive twice. It is one region and it becomes one
     # node: otherwise the event's energy counts it as many times as there were
     # windows over it.
-    nodes = unique_tiles(pixels).reset_index(drop=True)
+    kept_rows = unique_tiles(pixels)
+    # A significance the caller measured on the cloud has one entry per row of
+    # the cloud, so it is indexed by the rows that survived rather than taken
+    # whole: after the first duplicate the two would be a row apart.
+    survivors = pixels.index.get_indexer(kept_rows.index)
+    nodes = kept_rows.reset_index(drop=True)
 
     if significance is None:
         significance = np.log1p(nodes["energy"].to_numpy(dtype=float)) if len(nodes) \
             else np.zeros(0)
     significance = np.asarray(significance, dtype=float)
+    if len(significance) == len(pixels) and len(pixels) != len(nodes):
+        significance = significance[survivors]
     # A node the background never calibrated arrives as NaN. It stays a
     # node --- it is still energy the search kept --- but it is ranked
     # last and never reported as a significance of zero, which would be

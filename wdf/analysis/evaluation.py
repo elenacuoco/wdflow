@@ -105,20 +105,37 @@ def efficiency_at_far(foreground_scores, background_scores, n_injections: int,
     :param livetime_days: background livetime.
     :type far_per_day: float
     :param far_per_day: the tolerated rate.
-    :return: dict -- `far_per_day`, `threshold`, `n_found`, `efficiency` and
-        `measurable`, the last being False when the background livetime cannot
-        resolve the requested rate, in which case the efficiency is `nan`
-        rather than a number that would be read as a measurement.
+    :return: dict -- `far_per_day` as asked, `far_per_day_realised` and
+        `n_accidentals` as the threshold actually delivers them, `threshold`,
+        `n_found`, `efficiency`, and `measurable`, the last being False when
+        the background livetime cannot resolve the requested rate, in which
+        case the efficiency is `nan` rather than a number that would be read
+        as a measurement.
     """
     threshold = threshold_at_far(background_scores, livetime_days, far_per_day)
     if not np.isfinite(threshold) and np.isnan(threshold):
-        return dict(far_per_day=float(far_per_day), threshold=float("nan"),
+        return dict(far_per_day=float(far_per_day),
+                    far_per_day_realised=float("nan"),
+                    n_accidentals=0, threshold=float("nan"),
                     n_found=0, efficiency=float("nan"), measurable=False)
+
+    # A threshold is the k-th largest background score, so the rate it realises
+    # is k over the livetime and not the rate that was asked for. At one per
+    # day over three days k is two, and a number quoted as one per day was read
+    # at two thirds of it. The realised rate is carried so that it is read
+    # rather than assumed, and k with it, since the uncertainty of the
+    # threshold is the uncertainty of a k-count.
+    background = np.asarray(background_scores, dtype=float)
+    background = background[np.isfinite(background)]
+    n_accidentals = int(np.count_nonzero(background >= threshold))
 
     scores = np.asarray(foreground_scores, dtype=float)
     n_found = int(np.sum(np.isfinite(scores) & (scores >= threshold)))
     return dict(
         far_per_day=float(far_per_day),
+        far_per_day_realised=(float(n_accidentals) / livetime_days
+                              if livetime_days > 0 else float("nan")),
+        n_accidentals=n_accidentals,
         threshold=threshold,
         n_found=n_found,
         efficiency=float(n_found / n_injections) if n_injections else float("nan"),
