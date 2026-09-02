@@ -70,9 +70,15 @@ class array2SeqView(object):
         :return: Sequence View data
         """
         self.SV.SetStart(start)
-         
-        for i in range(self.N):
-            self.SV.FillPoint(0, i, np.float32(array[i]))
+
+        # The view stores single precision, so the array is narrowed once and
+        # handed over as plain floats. Narrowing each sample on its own built a
+        # NumPy scalar per point, which for a block of coefficients cost more
+        # than the transform it was feeding.
+        values = np.asarray(array, dtype=np.float32).tolist()
+        fill_point = self.SV.FillPoint
+        for i, value in enumerate(values):
+            fill_point(0, i, value)
         return self.SV
 
     def SetStart(self, N):
