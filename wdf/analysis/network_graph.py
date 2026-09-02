@@ -219,15 +219,18 @@ class TriggerGraphBuilder:
         # would otherwise measure the same correlation for every shift.
         self._reconstruction_offset = {}
         self._said_untimed = False
+        self._said_partly_untimed = False
 
     def _stack(self, clustered, coefficients, ifos, series_by_cluster=None):
         """Every event's map, in the detector order given.
 
-        :param series_by_cluster: ``{ifo: {cluster_id: (gps_start, samples)}}``
-            or None. A rendered event carries its tiles and not the
-            coefficients they were inverted from, so the waveform cannot be
-            recovered here and is supplied by whoever assembled it. An event
-            with no entry keeps no series, and its pair is timed on the tiles.
+        :param series_by_cluster: ``{ifo: {cluster_id: (offset_s, samples)}}``
+            or None, each waveform placed relative to its own event's instant
+            by :func:`wdf.analysis.timing.referred_to_instant`. A rendered
+            event carries its tiles and not the coefficients they were
+            inverted from, so the waveform cannot be recovered here and is
+            supplied by whoever assembled it. An event with no entry keeps no
+            series, and its pair is timed on the tiles.
         :return: tuple -- (frames, grids, grid_shape, bin_seconds, clouds,
             series, rates); `series` holds None throughout when not asked for.
         """
@@ -258,9 +261,11 @@ class TriggerGraphBuilder:
                 grids.append(grid.ravel())
                 clouds.append(getattr(rendered, "tiles", None))
                 # The event's own waveform, inverted from its own
-                # coefficients by whoever assembled it. It is what the
-                # arrival-time difference is read on, and a slide leaves it
-                # untouched, so it is held here once and reused by every slide.
+                # coefficients by whoever assembled it and already placed
+                # relative to that event's instant. It is what the
+                # arrival-time difference is read on, and a slide moves the
+                # instant but not the waveform inside it, so the offset is the
+                # same in every slide and is held here once.
                 series.append(None if series_by_cluster is None
                               else series_by_cluster.get(ifo, {}).get(int(label)))
                 # The rate the waveform is sampled at belongs to the
@@ -291,6 +296,11 @@ class TriggerGraphBuilder:
         :type comparison: dict[str, dict] | None
         :param comparison: the same events rendered for the cross-detector
             comparison; the assembly map when None.
+        :type series: dict | None
+        :param series: ``{ifo: {cluster_id: (offset_s, samples)}}``, each
+            event's reconstruction placed relative to its own instant by
+            :func:`wdf.analysis.timing.referred_to_instant`. Without it the
+            pairs are timed on their tile centres.
         :return: TriggerGraph
         :raises KeyError: if an event has no coefficients.
         """
@@ -320,6 +330,11 @@ class TriggerGraphBuilder:
         :type comparison: dict[str, dict] | None
         :param comparison: the same events rendered for the cross-detector
             comparison; the assembly map when None.
+        :type series: dict | None
+        :param series: ``{ifo: {cluster_id: (offset_s, samples)}}``, each
+            event's reconstruction placed relative to its own instant by
+            :func:`wdf.analysis.timing.referred_to_instant`. Without it the
+            pairs are timed on their tile centres.
         :return: dict -- the node-side arrays, to be given to
             `build_from_prepared` together with the events they describe.
         :raises KeyError: if an event has no coefficients.
@@ -367,11 +382,6 @@ class TriggerGraphBuilder:
             ifos=ifos, node_features=X, shapes=shapes, raw=raw, clouds=clouds,
             cloud_flat=flatten_clouds(clouds),
             series=waveforms, rates=rates,
-            # The times the reconstructions were prepared at, so that a slid
-            # event's correction can be referred back to them.
-            prepared_gps=np.concatenate(
-                [f["gpsPeak"].to_numpy(dtype=float) for f in frames])
-            if frames else np.zeros(0),
             reconstruction_offset={},
             energy=energy, band_lo=band_lo, band_hi=band_hi, spread=spread,
             fine_bin=fine_bin,
@@ -413,10 +423,13 @@ class TriggerGraphBuilder:
         What the correlation gives is a property of the two waveforms and not
         of the shift a slide applied, so it is measured once per pair of events
         and reused: the slid difference is the slid tile difference plus that
-        pair's own correction.
+        pair's own correction. That holds because each waveform arrives placed
+        relative to its own event's instant: a slide moves the instant and the
+        waveform with it, so the offset between them is the same in every
+        slide, and nothing on this path ever sees an absolute time.
 
-        :param prepared: the node-side arrays, carrying `series`, `rates`,
-            `prepared_gps` and the cache.
+        :param prepared: the node-side arrays, carrying `series`, `rates`
+            and the cache.
         :param i_sel: left event of each pair, as node indices.
         :param j_sel: right event of each pair.
         :type tile_dt: numpy.ndarray
@@ -439,7 +452,6 @@ class TriggerGraphBuilder:
                 self._said_untimed = True
             return tile_dt
         rates = prepared.get("rates")
-        at = prepared.get("prepared_gps")
         # Keyed on which events the pair is, not on where they sit in this
         # preparation: a slide loop rebuilds the node side and the correction
         # is the same waveforms' either way.
@@ -447,6 +459,7 @@ class TriggerGraphBuilder:
         cache = self._reconstruction_offset
 
         out = np.asarray(tile_dt, dtype=float).copy()
+        untimed = 0
         for position, (i, j) in enumerate(zip(np.asarray(i_sel, dtype=int),
                                               np.asarray(j_sel, dtype=int))):
             at_i, at_j = int(i), int(j)
@@ -454,24 +467,41 @@ class TriggerGraphBuilder:
                    else (at_i, at_j))
             if key not in cache:
                 first, second = series[at_i], series[at_j]
+                # Both series are on the same clock only if they are sampled
+                # alike; a pair of detectors run at different rates has no
+                # common grid to be correlated on.
                 fs = rates[at_i] if rates is not None else np.nan
-                if first is None or second is None or not np.isfinite(fs):
-                    cache[key] = 0.0
+                other = rates[at_j] if rates is not None else np.nan
+                if (first is None or second is None or not np.isfinite(fs)
+                        or fs != other):
+                    cache[key] = None
                 else:
-                    # Each series is placed relative to its own event's
-                    # instant, so what is correlated is the residual after the
-                    # pair is nominally aligned and the grid spans the two
-                    # events and not the time between them: under a slide two
-                    # events of one pair can be minutes apart, and correlating
-                    # them on absolute time would lay out that whole gap.
-                    here = (float(first[0]) - float(at[at_i]), first[1])
-                    there = (float(second[0]) - float(at[at_j]), second[1])
+                    # What is correlated is the residual after the pair is
+                    # nominally aligned, each waveform sitting where it does
+                    # inside its own event. The grid therefore spans the two
+                    # events and not the time between them, which under a
+                    # slide can be minutes.
                     try:
                         cache[key] = float(arrival_time_difference(
-                            here, there, fs, max_lag_s=max_lag_s)[0])
+                            first, second, fs, max_lag_s=max_lag_s)[0])
                     except (ValueError, IndexError):
-                        cache[key] = 0.0
-            out[position] += cache[key]
+                        cache[key] = None
+            correction = cache[key]
+            # None is not zero: a pair that could not be measured keeps the
+            # difference it came with, and saying so is the difference between
+            # a stage that timed its pairs and one that did not.
+            if correction is None:
+                untimed += 1
+            else:
+                out[position] += correction
+        if untimed and not self._said_partly_untimed:
+            warnings.warn(
+                f"{untimed} of {len(out)} pairs could not be timed on their "
+                "reconstructions and keep their tile difference; a background "
+                "timed on tiles is not the population a candidate timed on "
+                "reconstructions is read against.",
+                RuntimeWarning, stacklevel=2)
+            self._said_partly_untimed = True
         return out
 
     def build_from_prepared(self, clustered: dict[str, pd.DataFrame],
