@@ -117,7 +117,13 @@ class TriggerGraph:
         # difference lands in the arrival-time difference, which is the whole of
         # the coincidence and of the sky position.
         gps = self.nodes["gpsPeak"].to_numpy(dtype=float)
-        enwdf = self.nodes["EnWDF"].to_numpy(dtype=float)
+        # An event is ranked by the block that selects it and not by the
+        # energy that measures it: a sum over an event's tiles carries the
+        # threshold's floor once per tile, so it grows with the event's
+        # size in noise as well as in signal.
+        column = ("EnWDF_window" if "EnWDF_window" in self.nodes
+                  else "EnWDF")
+        enwdf = self.nodes[column].to_numpy(dtype=float)
         ifo = self.nodes["ifo"].to_numpy()
         table = pd.DataFrame(dict(
             candidate_id=np.arange(len(i)),
@@ -155,7 +161,10 @@ class TriggerGraph:
         # network_min_enwdf asks only that both detectors were loud, this asks
         # that they were loud in the same places on the plane --- which is what
         # the whole representation was built to be able to ask.
-        table["network_morphology"] = table["tile_coherence"]
+        # Both polarities are physical --- two detectors can respond to one
+        # source with opposite sign --- so what ranks a pair is how much
+        # coherent energy it carries, not which way it points.
+        table["network_morphology"] = table["tile_coherence"].abs()
         return table
 
 

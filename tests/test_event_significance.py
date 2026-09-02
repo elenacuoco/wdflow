@@ -14,7 +14,7 @@ def _background(rng, n=20000):
     """
     size = rng.integers(1, 25, size=n)
     value = np.sqrt(size) * rng.chisquare(df=8, size=n) / 8.0
-    return pd.DataFrame(dict(n_triggers=size, EnWDF=value))
+    return pd.DataFrame(dict(n_pixels=size, EnWDF=value))
 
 
 def test_bins_hold_enough_background_to_measure_a_tail():
@@ -33,9 +33,9 @@ def test_the_calibrated_statistic_no_longer_favours_long_events():
     other = _background(rng)
     calibration = EventCalibration.fit(background, min_count=500)
 
-    raw = other.groupby("n_triggers").EnWDF.median()
+    raw = other.groupby("n_pixels").EnWDF.median()
     scored = other.assign(S=calibration.significance(other))
-    calibrated = scored.groupby("n_triggers").S.median()
+    calibrated = scored.groupby("n_pixels").S.median()
 
     # Before, the median grows with the extent; after, it does not.
     assert raw.iloc[-1] > 2.0 * raw.iloc[0]
@@ -60,7 +60,7 @@ def test_a_signal_keeps_its_advantage_after_calibration():
     background = _background(rng)
     calibration = EventCalibration.fit(background, min_count=500)
 
-    loud = pd.DataFrame(dict(n_triggers=[1, 16],
+    loud = pd.DataFrame(dict(n_pixels=[1, 16],
                              EnWDF=[np.sqrt(1) * 6.0, np.sqrt(16) * 6.0]))
     scored = calibration.significance(loud)
     assert np.isfinite(scored).all()
@@ -70,11 +70,11 @@ def test_a_signal_keeps_its_advantage_after_calibration():
 
 def test_an_empty_background_is_refused():
     with pytest.raises(ValueError, match="nothing to measure"):
-        EventCalibration.fit(pd.DataFrame(dict(n_triggers=[], EnWDF=[])))
+        EventCalibration.fit(pd.DataFrame(dict(n_pixels=[], EnWDF=[])))
 
 
 def test_a_missing_column_names_itself():
-    with pytest.raises(KeyError, match="n_triggers"):
+    with pytest.raises(KeyError, match="n_pixels"):
         EventCalibration.fit(pd.DataFrame(dict(EnWDF=[1.0])))
 
 
@@ -91,13 +91,13 @@ def test_a_loud_event_is_not_pinned_at_the_bin_ceiling():
     background = pd.DataFrame({
         "EnWDF": np.concatenate([rng.exponential(1.0, 3000) + 5.0,
                                  rng.exponential(2.0, 300) + 7.0]),
-        "n_triggers": np.concatenate([np.ones(3000, dtype=int),
+        "n_pixels": np.concatenate([np.ones(3000, dtype=int),
                                       np.full(300, 4, dtype=int)]),
     })
     calibration = EventCalibration.fit(background, statistic="EnWDF")
 
     ceiling = np.log(301.0)
-    loud = pd.DataFrame({"EnWDF": [60.0], "n_triggers": [4]})
+    loud = pd.DataFrame({"EnWDF": [60.0], "n_pixels": [4]})
     significance = float(calibration.significance(loud)[0])
     assert significance > 2.0 * ceiling
 
@@ -107,7 +107,7 @@ def test_a_loud_event_is_not_pinned_at_the_bin_ceiling():
     table = calibration.tables[calibration.bin_of([4])[0]]
     edge = float(table[-1])
     near = pd.DataFrame({"EnWDF": [edge - 1e-9, edge + 1e-9],
-                         "n_triggers": [4, 4]})
+                         "n_pixels": [4, 4]})
     below, above = calibration.significance(near)
     assert abs(above - below) < 0.1
 
