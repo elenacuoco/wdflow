@@ -67,6 +67,51 @@ class BackgroundAnomalyScorer(nn.Module):
         self.register_buffer("edge_scale", torch.ones(cross_edge_dim))
         self.to(self.device)
 
+    def save(self, path: str) -> None:
+        """Write the fitted model, with the widths needed to rebuild it.
+
+        The feature scaling is written with the weights because it is part of
+        the fitted model: a scaling re-measured on whatever graph the model is
+        later shown would read the accidental population and the candidates on
+        two different scales, which is the comparison it exists to make.
+
+        :type path: str
+        :param path: file to write.
+        :return: None
+        """
+        hidden = int(self.encoder[0].out_features)
+        torch.save({
+            "state_dict": self.state_dict(),
+            "node_dim": int(self.encoder[0].in_features),
+            "hidden": hidden,
+            "cross_edge_dim": int(self.decoder[-1].out_features),
+        }, path)
+
+    @classmethod
+    def load(cls, path: str, device: str | None = None):
+        """Rebuild a model written by `save`, in evaluation mode.
+
+        A model fitted on one stretch of data and read on another is only
+        meaningful where the two are the same instrument in the same state: the
+        accidental population is a property of the noise, and noise that has
+        moved makes the reconstruction error mean something else.
+
+        :type path: str
+        :param path: file to read.
+        :type device: str or None
+        :param device: torch device; CUDA when available if None.
+        :return: BackgroundAnomalyScorer -- ready to `score`. Fitting it
+            further continues from these weights and is no longer a fresh
+            model.
+        :raises KeyError: if the file was not written by `save`.
+        """
+        blob = torch.load(path, map_location="cpu", weights_only=False)
+        model = cls(node_dim=blob["node_dim"], hidden=blob["hidden"],
+                    cross_edge_dim=blob["cross_edge_dim"], device=device)
+        model.load_state_dict(blob["state_dict"])
+        model.eval()
+        return model
+
     def _residuals(self, data) -> torch.Tensor:
         """Per-edge reconstruction error of the edge features."""
         x = (data.x.to(self.device) - self.feature_mean) / self.feature_scale
