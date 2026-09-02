@@ -364,8 +364,8 @@ def test_the_event_is_described_by_its_own_coefficients():
     labels = np.zeros(len(graph.nodes), dtype=int)
     events = detector_events(graph, labels=labels)
 
-    lo, hi, band_lo, band_hi, energy = event_tiles(graph.nodes,
-                                                   np.arange(len(graph.nodes)))
+    lo, hi, band_lo, band_hi, energy, _ = event_tiles(
+        graph.nodes, np.arange(len(graph.nodes)))
     assert energy.size == len(graph.nodes), "one surviving coefficient each"
     # The members claim a band of 100 to 110 Hz each; the coefficients say
     # otherwise, and it is the coefficients the event follows.
@@ -450,7 +450,7 @@ def test_the_event_carries_the_coefficients_its_map_is_a_view_of():
     rendered = event_coefficients(graph, labels)[0]
 
     assert rendered.tiles is not None
-    t_lo, t_hi, f_lo, f_hi, energy = rendered.tiles
+    t_lo, t_hi, f_lo, f_hi, energy, _ = rendered.tiles
     assert energy.size == 2 * len(graph.nodes), "every survivor of every member"
     # The grid holds the same energy the tiles do, up to what falls outside it.
     assert rendered.grid.sum() > 0
@@ -469,13 +469,17 @@ def test_batched_tile_coherence_matches_the_pairwise_function():
         n = int(rng.integers(0, 6))
         if n == 0:
             clouds.append(None if rng.integers(0, 2) else
-                          (np.zeros(0),) * 5)
+                          (np.zeros(0),) * 6)
             continue
         t_lo = np.sort(rng.uniform(0.0, 10.0, n))
         f_lo = rng.uniform(20.0, 400.0, n)
+        energy = rng.exponential(4.0, n)
+        # Both polarities occur, and the batched path has to reproduce the
+        # cancellations the looped one produces.
+        amplitude = np.sqrt(energy) * rng.choice([-1.0, 1.0], n)
         clouds.append((t_lo, t_lo + rng.uniform(0.05, 0.5, n),
                        f_lo, f_lo * rng.uniform(1.1, 2.0, n),
-                       rng.exponential(4.0, n)))
+                       energy, amplitude))
 
     i_sel = rng.integers(0, 40, 300)
     j_sel = rng.integers(0, 40, 300)

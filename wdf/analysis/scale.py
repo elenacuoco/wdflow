@@ -285,3 +285,99 @@ def scale_maximum(pixels: pd.DataFrame,
                                out=np.zeros(len(out)),
                                where=out["s_max"].to_numpy() > 0)
     return out
+
+
+def local_noise_scale(triggers: pd.DataFrame, neighbours: int = 41,
+                      minimum: int = 5) -> np.ndarray:
+    """The noise scale of each block read on the blocks around it.
+
+    A block's own scale is a median absolute deviation over its coefficients,
+    so it is measured on the data the block holds --- signal included. A
+    transient loud enough to matter raises the scale of the very block it
+    occupies, and the statistic, which divides by that scale, is then divided
+    by a number the transient itself inflated: the signal hides in its own
+    noise. The effect is one-sided, it grows with amplitude, and it is absent
+    from the background, where nothing but noise is present, so it moves the
+    foreground and the threshold in opposite directions.
+
+    The remedy is to read the scale where the transient is not. The noise of a
+    detector varies on timescales far longer than a block, so the blocks
+    around one block measure its noise better than it measures its own: the
+    scale used here is the median of the neighbours' scales, which a single
+    loud block cannot move.
+
+    This is a statement about the noise and not about the signal: no shape is
+    assumed, nothing is preferred, and a block whose neighbours are missing
+    keeps the scale it measured itself, so where the correction has nothing to
+    read it does nothing.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: one detector's triggers, carrying `gps` and `sigma`. The
+        rows need not be sorted; the window is taken in time order.
+    :type neighbours: int
+    :param neighbours: how many blocks the median is taken over, centred on
+        each block, so `neighbours // 2` on either side. It sets the timescale
+        the noise is assumed stationary over: too few and the estimate is
+        noisy, too many and it stops following a drifting detector. It must be
+        at least one; an even value is used as given, pandas centring the
+        window to the left.
+    :type minimum: int
+    :param minimum: fewest blocks that must carry a usable scale for a median
+        to be formed. Below it the block keeps its own.
+    :return: numpy.ndarray -- one scale per row, positionally aligned with
+        `triggers`. A block whose own estimate failed takes its neighbours',
+        since it sits in noise they measured; a block whose neighbours say
+        nothing keeps its own, and where both are missing the value is NaN.
+    :raises KeyError: if `gps` or `sigma` is missing.
+    :raises ValueError: if `neighbours` is below one.
+    """
+    for column in ("gps", "sigma"):
+        if column not in triggers:
+            raise KeyError(f"the triggers carry no {column!r}")
+    if int(neighbours) < 1:
+        raise ValueError("a window of fewer than one block reads nothing")
+
+    own = pd.to_numeric(triggers["sigma"], errors="coerce").to_numpy(dtype=float)
+    own = np.where(np.isfinite(own) & (own > 0.0), own, np.nan)
+    if not len(own):
+        return own
+
+    order = np.argsort(triggers["gps"].to_numpy(dtype=float), kind="stable")
+    local = np.empty_like(own)
+    local[order] = (pd.Series(own[order])
+                    .rolling(int(neighbours), center=True,
+                             min_periods=int(minimum))
+                    .median().to_numpy())
+    # Where the neighbours say nothing --- the ends of a stretch, a gap --- the
+    # block keeps what it measured, so the stage reduces to no stage at all.
+    return np.where(np.isfinite(local) & (local > 0.0), local, own)
+
+
+def on_local_scale(triggers: pd.DataFrame, statistic: str = "EnWDF",
+                   neighbours: int = 41, minimum: int = 5) -> np.ndarray:
+    """A block's statistic re-expressed on the noise of its neighbours.
+
+    The statistic divides by the block's own scale, so restoring it and
+    dividing by the local one is exact: no coefficient is recomputed and the
+    transform is not repeated.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: one detector's triggers, carrying `gps`, `sigma` and
+        `statistic`.
+    :type statistic: str
+    :param statistic: the column measured on the block's own scale.
+    :type neighbours: int
+    :param neighbours: blocks the median is taken over, as `local_noise_scale`.
+    :type minimum: int
+    :param minimum: fewest usable neighbours, as `local_noise_scale`.
+    :return: numpy.ndarray -- the statistic on the local scale, NaN where the
+        block carries no usable scale of its own.
+    :raises KeyError: if a column is missing.
+    """
+    if statistic not in triggers:
+        raise KeyError(f"the triggers carry no {statistic!r}")
+    own = pd.to_numeric(triggers["sigma"], errors="coerce").to_numpy(dtype=float)
+    own = np.where(np.isfinite(own) & (own > 0.0), own, np.nan)
+    value = pd.to_numeric(triggers[statistic], errors="coerce").to_numpy(dtype=float)
+    return value * own / local_noise_scale(triggers, neighbours=neighbours,
+                                           minimum=minimum)

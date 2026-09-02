@@ -19,10 +19,11 @@ LABEL org.opencontainers.image.title="wdflow"
 LABEL org.opencontainers.image.description="WDF: un-modelled transient search in the wavelet domain"
 LABEL org.opencontainers.image.source="https://github.com/elenacuoco/wdflow"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
+LABEL org.opencontainers.image.version="1.1.0"
 
 # Which p4TSA to build. A tag or a commit, not a branch: an image that builds a
 # different core depending on the day is not reproducible.
-ARG P4TSA_REF=main
+ARG P4TSA_REF=v2.2.0
 ARG WITH_TORCH=0
 
 USER root
