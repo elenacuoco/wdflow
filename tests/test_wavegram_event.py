@@ -8,7 +8,8 @@ import pandas as pd
 import pytest
 
 from wdf.analysis.cluster_coefficients import score_events_by_reconstruction
-from wdf.analysis.event_significance import EventCalibration
+from wdf.analysis.event_significance import (EventCalibration,
+                                             out_of_sample_significance)
 from wdf.analysis.pixel_graph import (PixelGraph, PixelGraphConfig,
                                       build_pixel_graph, cluster_events)
 from wdf.analysis.scale import unique_tiles
@@ -94,25 +95,46 @@ def test_the_components_of_a_pixel_graph_are_its_connected_sets():
     assert graph.components().tolist() == [0, 0, 1, 1]
 
 
-def test_an_extent_below_everything_the_background_measured_scores_nothing():
+def test_a_size_below_everything_the_background_measured_scores_nothing():
     background = pd.DataFrame(dict(
         EnWDF=np.random.default_rng(0).normal(5.0, 1.0, 3000),
-        n_triggers=np.repeat([2, 3, 4], 1000)))
+        n_pixels=np.repeat([2, 3, 4], 1000)))
     calibration = EventCalibration.fit(background, statistic="EnWDF")
-    asked = pd.DataFrame(dict(EnWDF=[8.0, 8.0], n_triggers=[1, 3]))
+    asked = pd.DataFrame(dict(EnWDF=[8.0, 8.0], n_pixels=[1, 3]))
     scored = calibration.significance(asked)
     assert np.isnan(scored[0])
     assert np.isfinite(scored[1])
 
 
-def test_an_extent_beyond_the_background_uses_the_pooled_last_bin():
+def test_a_size_beyond_the_background_is_pooled_and_says_so():
     background = pd.DataFrame(dict(
         EnWDF=np.random.default_rng(1).normal(5.0, 1.0, 3000),
-        n_triggers=np.repeat([1, 2, 3], 1000)))
+        n_pixels=np.repeat([1, 2, 3], 1000)))
     calibration = EventCalibration.fit(background, statistic="EnWDF")
-    asked = pd.DataFrame(dict(EnWDF=[8.0, 8.0], n_triggers=[3, 50]))
-    scored = calibration.significance(asked)
+    asked = pd.DataFrame(dict(EnWDF=[8.0, 8.0], n_pixels=[3, 50]))
+    with pytest.warns(RuntimeWarning, match="larger than any"):
+        scored = calibration.significance(asked)
     assert scored[0] == pytest.approx(scored[1])
+
+
+def test_a_size_that_is_not_a_whole_number_is_refused():
+    background = pd.DataFrame(dict(EnWDF=[1.0, 2.0], n_pixels=[1.0, np.nan]))
+    with pytest.raises(ValueError, match="no finite"):
+        EventCalibration.fit(background, statistic="EnWDF")
+
+
+def test_the_background_is_scored_by_a_calibration_without_it():
+    """Self-scoring caps a background event at the count its own bin can
+    express; scored out of fold it reaches the tail candidates are read on."""
+    rng = np.random.default_rng(3)
+    background = pd.DataFrame(dict(
+        EnWDF=rng.chisquare(8, 20000) ** 0.5,
+        n_pixels=rng.integers(1, 8, 20000)))
+    own = EventCalibration.fit(background, statistic="EnWDF").significance(background)
+    out = out_of_sample_significance(background, folds=10, statistic="EnWDF")
+    assert np.nanmax(out) > np.nanmax(own)
+    # Both remain unit-rate on average, which is what the mapping promises.
+    assert np.nanmean(out) == pytest.approx(1.0, abs=0.05)
 
 
 def test_rescoring_keeps_the_per_window_value_it_is_judged_against():
