@@ -3,6 +3,17 @@
 Versions follow [semantic versioning](https://semver.org). A release records
 what the software does differently, not how it came to.
 
+## 1.1.1 --- 2026-09-02
+
+Documentation only; the code is unchanged from 1.1.0.
+
+The README, the design note and the published page state what the pipeline
+does: an event's energy is the norm of its stitched reconstruction and what
+ranks it for detection is its loudest block, the significance conditions on the
+number of tiles and is read out of sample, and the scale a block is ranked on
+is the median of its neighbours' while the thresholding stays with the block
+itself.
+
 ## 1.1.0 --- 2026-09-02
 
 ### The statistic that selects is not the statistic that measures
