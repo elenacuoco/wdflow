@@ -127,6 +127,18 @@ the correlation measures is a property of the two waveforms and not of a
 slide's shift, so it is measured once per pair of events and reused by every
 slide.
 
+That reuse is what fixes the clock the waveforms are placed on. A slide
+displaces a catalogue and carries its waveforms with it, so a waveform's
+absolute start and its event's instant both move, while the offset between
+them does not. The network stage is therefore given each reconstruction
+already referred to its own event's instant
+(`wdf.analysis.timing.referred_to_instant`), and the correlation grid spans the
+two events rather than the time between them — which under a slide is minutes.
+Handing it one waveform on absolute time and the other's instant displaced puts
+the whole displacement into the pair: the two are then further apart than the
+bounded lag search can close, which the estimator refuses rather than answers,
+and the pair keeps the difference its tiles claim.
+
 The test is on the events' extents and not on any instant of them. An extended
 transient has no arrival time: which moment a detector calls its centroid or its
 peak depends on its own noise, its antenna response and which coefficients

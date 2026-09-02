@@ -39,18 +39,21 @@ def arrival_time_difference(first, second, fs, max_lag_s=MAX_LAG_S):
     injections is what judges it.
 
     :type first: tuple
-    :param first: ``(gps_start, samples)`` of the first series, as
-        :func:`wdf.analysis.reconstruction.stitch` returns it.
+    :param first: ``(start, samples)`` of the first series. The start is on
+        whatever clock the caller chose, and both series must be on the same
+        one; `referred_to_instant` puts them on the one a time slide cannot
+        move.
     :type second: tuple
-    :param second: ``(gps_start, samples)`` of the second series.
+    :param second: ``(start, samples)`` of the second series.
     :type fs: float
     :param fs: sampling frequency of both series, Hz.
     :type max_lag_s: float
     :param max_lag_s: half-width of the lag search, seconds; see `MAX_LAG_S`.
     :return: tuple -- ``(dt, sigma)`` in seconds. ``dt`` is positive when the
         first series arrives after the second.
-    :raises ValueError: if either series is empty or the sampling frequency
-        is not positive.
+    :raises ValueError: if either series is empty, if the sampling frequency
+        is not positive, or if the two are placed further apart than the lag
+        search covers, which no lag can close.
     """
     (first_start, a), (second_start, b) = first, second
     a = np.asarray(a, dtype=float)
@@ -59,6 +62,20 @@ def arrival_time_difference(first, second, fs, max_lag_s=MAX_LAG_S):
         raise ValueError("both series must carry samples")
     if not fs > 0:
         raise ValueError(f"sampling frequency must be positive, got {fs}")
+
+    # Two supports placed further apart than the search may shift them can
+    # never be brought into contact, so there is nothing to measure and the
+    # grid below would lay out the whole gap once per pair. This is also where
+    # a caller that placed the two series on different clocks --- one
+    # displaced by a time slide, one not --- is caught, instead of being
+    # answered with whatever lag sits at the edge of the search.
+    gap = max(float(first_start) - (float(second_start) + len(b) / fs),
+              float(second_start) - (float(first_start) + len(a) / fs), 0.0)
+    if gap > max_lag_s:
+        raise ValueError(
+            f"the two series are placed {gap:.3f} s apart, beyond the "
+            f"{max_lag_s:.3f} s the lag search covers, so no lag inside it "
+            "brings them into contact; they are not on one clock")
 
     start = min(float(first_start), float(second_start))
     span = max(float(first_start) + len(a) / fs,
@@ -87,3 +104,42 @@ def arrival_time_difference(first, second, fs, max_lag_s=MAX_LAG_S):
     dt = float(lags[best]) / fs
     sigma = max((high - low) / 2.0, 1.0) / fs
     return dt, sigma
+
+
+def referred_to_instant(series, events, instant="gpsPeak"):
+    """Each event's waveform, placed relative to its own instant.
+
+    A reconstruction is inverted on absolute time, while the instant an event
+    reports is a column of a catalogue that a time slide displaces. The
+    difference of the two is where the waveform sits inside its own event,
+    which no displacement changes, and it is what `arrival_time_difference`
+    has to be given: a pair correlated with one series on absolute time and
+    the other's instant displaced differs by the whole displacement, and the
+    lag search cannot reach across it.
+
+    Referring the series once, before any slide, is what makes the correction
+    a property of the pair of events rather than of the slide that happened to
+    form it, so it can be measured once and reused.
+
+    :type series: dict
+    :param series: ``{cluster_id: (gps_start, samples)}``, as
+        :func:`wdf.analysis.reconstruction.stitch` returns them.
+    :type events: pandas.DataFrame
+    :param events: the events those reconstructions belong to, carrying
+        ``cluster_id`` and the instant column, at their undisplaced times.
+    :type instant: str
+    :param instant: the column each waveform is referred to.
+    :return: dict -- ``{cluster_id: (offset_s, samples)}``, the offset being
+        the start of the waveform measured from the event's instant.
+    :raises KeyError: if the events do not carry `instant` or ``cluster_id``.
+    :raises ValueError: if a reconstruction belongs to no event given.
+    """
+    at = dict(zip(events["cluster_id"].astype(int),
+                  events[instant].astype(float)))
+    missing = set(int(label) for label in series) - set(at)
+    if missing:
+        raise ValueError(
+            f"reconstruction for cluster {min(missing)} belongs to no event "
+            "given; the offset is measured from the event's own instant")
+    return {int(label): (float(start) - at[int(label)], samples)
+            for label, (start, samples) in series.items()}

@@ -14,12 +14,12 @@ def test_the_edge_time_is_read_on_the_reconstructions():
     n = 256
     t = np.arange(n) / fs
     wave = np.sin(2 * np.pi * 80.0 * t) * np.exp(-((t - 0.125) / 0.02) ** 2)
-    # The same waveform in both, the second starting 4 ms later. That is the
-    # arrival-time difference; the tile centres, below, disagree with it.
+    # The same waveform in both, each placed where it sits inside its own
+    # event. The second starts 4 ms after its instant and the first 20 ms
+    # before its own, so the pair is 24 ms from the alignment the tiles claim.
     prepared = {
-        "series": [(0.0, wave), (0.004, wave)],
+        "series": [(-0.020, wave), (0.004, wave)],
         "rates": [fs, fs],
-        "prepared_gps": np.array([0.020, 0.000]),
         "reconstruction_offset": {},
     }
     tile_dt = np.array([0.020])
@@ -38,7 +38,7 @@ def test_the_edge_time_is_read_on_the_reconstructions():
 
 def test_a_pair_without_a_reconstruction_keeps_the_time_it_came_with():
     prepared = {"series": [None, None], "rates": [1024.0, 1024.0],
-                "prepared_gps": np.zeros(2), "reconstruction_offset": {}}
+                "reconstruction_offset": {}}
     tile_dt = np.array([0.007])
     out = TriggerGraphBuilder()._timed_on_reconstruction(
         prepared, [0], [1], tile_dt, max_lag_s=0.05)
@@ -67,7 +67,7 @@ def test_pairs_timed_on_tiles_say_so_once():
     pair timed on tile centres can carry a difference no signal can produce,
     and nothing downstream would show where it came from."""
     prepared = {"series": [None, None], "rates": [1024.0, 1024.0],
-                "prepared_gps": np.zeros(2), "reconstruction_offset": {}}
+                "reconstruction_offset": {}}
     tile_dt = np.array([0.007])
     builder = TriggerGraphBuilder()
     with pytest.warns(RuntimeWarning, match="timed on their tile centres"):
@@ -89,9 +89,8 @@ def test_a_correction_that_cannot_be_measured_is_not_silently_zero():
     fs = 1024.0
     wave = np.sin(2 * np.pi * 60.0 * np.arange(256) / fs)
     prepared = {
-        "series": [(0.0, wave), (0.004, wave)],
+        "series": [(-0.020, wave), (0.004, wave)],
         "rates": [np.nan, np.nan],
-        "prepared_gps": np.array([0.020, 0.000]),
         "reconstruction_offset": {},
     }
     out = TriggerGraphBuilder()._timed_on_reconstruction(
@@ -112,11 +111,11 @@ def test_the_correlation_spans_the_events_and_not_the_gap_between_them():
     so the cost follows the events' own length."""
     fs = 1024.0
     wave = np.sin(2 * np.pi * 70.0 * np.arange(512) / fs)
+    # The events are ten minutes apart, and each waveform is placed inside
+    # its own event rather than on absolute time, so the gap never appears.
     far_apart = {
-        "series": [(0.0, wave), (600.0, wave)],
+        "series": [(-0.25, wave), (-0.254, wave)],
         "rates": [fs, fs],
-        # The events are ten minutes apart and their instants say so.
-        "prepared_gps": np.array([0.25, 600.254]),
         "reconstruction_offset": {},
     }
     import time as _time
@@ -128,3 +127,43 @@ def test_the_correlation_spans_the_events_and_not_the_gap_between_them():
     # four milliseconds later than the second relative to its own instant, so
     # it arrives that much after it.
     assert out[0] - (-600.004) == pytest.approx(+0.004, abs=1.5 / fs)
+
+
+def test_a_pair_on_two_clocks_is_refused_and_not_answered():
+    """The waveform is placed inside its own event; the event's instant is
+    what a slide moves. Hand the estimator one series on absolute time and the
+    other's instant displaced and the two sit a slide apart, which no lag
+    inside the search can close. It has to keep the difference it came with
+    and say so, rather than return the lag at the edge of the search --- and it
+    must not lay the gap out to discover that."""
+    import time as _time
+
+    fs = 512.0
+    wave = np.sin(2 * np.pi * 70.0 * np.arange(512) / fs)
+    shift = 600.0
+    mismatched = {
+        "series": [(0.0, wave), (-shift, wave)],
+        "rates": [fs, fs],
+        "reconstruction_offset": {},
+    }
+    tile_dt = np.array([-shift])
+    began = _time.time()
+    with pytest.warns(RuntimeWarning, match="could not be timed"):
+        out = TriggerGraphBuilder()._timed_on_reconstruction(
+            mismatched, [0], [1], tile_dt, max_lag_s=0.05)
+    assert _time.time() - began < 1.0, "the gap was laid out"
+    assert out[0] == pytest.approx(-shift), "a junk correction was applied"
+
+
+def test_detectors_at_different_rates_have_no_common_grid():
+    """A lag is a number of samples of one grid. Two waveforms sampled
+    differently do not share one, and correlating them as though they did
+    would read the ratio of the rates as a delay."""
+    fs = 1024.0
+    wave = np.sin(2 * np.pi * 70.0 * np.arange(256) / fs)
+    prepared = {"series": [(0.0, wave), (0.0, wave)],
+                "rates": [fs, fs / 2.0], "reconstruction_offset": {}}
+    with pytest.warns(RuntimeWarning, match="could not be timed"):
+        out = TriggerGraphBuilder()._timed_on_reconstruction(
+            prepared, [0], [1], np.array([0.003]), max_lag_s=0.05)
+    assert out[0] == pytest.approx(0.003)

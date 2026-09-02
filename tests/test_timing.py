@@ -2,9 +2,10 @@
 answer: the lag is exact where the shift is exact, the sign follows the
 convention stated, absolute placement cancels, and the bound is respected."""
 import numpy as np
+import pandas as pd
 import pytest
 
-from wdf.analysis.timing import arrival_time_difference
+from wdf.analysis.timing import arrival_time_difference, referred_to_instant
 
 
 FS = 2048.0
@@ -50,3 +51,45 @@ def test_lag_search_is_bounded():
 def test_empty_series_is_refused():
     with pytest.raises(ValueError):
         arrival_time_difference((0.0, np.array([])), (0.0, _pulse()), FS)
+
+
+def test_a_placement_the_search_cannot_reach_is_refused():
+    """The lag search is bounded, so two supports further apart than it may
+    shift them can never be brought into contact. Answering with the lag at
+    the edge of the search would be a number where there is no measurement,
+    and laying the gap out to find it is the cost of every such pair."""
+    fs = 512.0
+    wave = np.sin(2 * np.pi * 70.0 * np.arange(512) / fs)
+    with pytest.raises(ValueError, match="not on one clock"):
+        arrival_time_difference((0.0, wave), (600.0, wave), fs, max_lag_s=0.05)
+
+
+def test_the_offset_is_what_a_slide_leaves_alone():
+    """A slide displaces the catalogue and carries the waveforms with it, so
+    the waveform's place inside its own event is the same before and after.
+    That is the quantity the estimator has to be given: referring the series
+    to a displaced instant while it still carries an absolute start puts the
+    whole displacement into the pair."""
+    events = pd.DataFrame({"cluster_id": [3, 7],
+                           "gpsPeak": [1000.25, 1000.40]})
+    series = {3: (1000.0, np.zeros(4)), 7: (1000.3, np.zeros(4))}
+
+    offsets = referred_to_instant(series, events)
+    assert offsets[3][0] == pytest.approx(-0.25)
+    assert offsets[7][0] == pytest.approx(-0.10)
+
+    # The same events and waveforms, both displaced by one slide.
+    shift = 600.0
+    slid_events = events.assign(gpsPeak=events.gpsPeak + shift)
+    slid_series = {label: (start + shift, samples)
+                   for label, (start, samples) in series.items()}
+    slid = referred_to_instant(slid_series, slid_events)
+    assert slid[3][0] == pytest.approx(offsets[3][0])
+    assert slid[7][0] == pytest.approx(offsets[7][0])
+
+
+def test_a_reconstruction_of_no_event_is_refused():
+    events = pd.DataFrame({"cluster_id": [3], "gpsPeak": [1000.25]})
+    with pytest.raises(ValueError, match="belongs to no event"):
+        referred_to_instant({9: (1000.0, np.zeros(4))}, events)
+
