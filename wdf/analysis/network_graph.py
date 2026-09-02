@@ -18,6 +18,7 @@ import pandas as pd
 from wdf.analysis.detector_graph import (WAVEGRAM_TIME_BINS, flatten_clouds,
                                          tile_coherence_many)
 from wdf.analysis.pairs import neighbour_pairs, paired_dot
+from wdf.analysis.timing import arrival_time_difference
 from wdf.analysis.robust_events import (
     EPS,
     _numeric,
@@ -216,7 +217,7 @@ class TriggerGraphBuilder:
 
         :return: tuple -- (frames, grids, grid_shape, bin_seconds).
         """
-        frames, grids, clouds = [], [], []
+        frames, grids, clouds, series, rates = [], [], [], [], []
         grid_shape = (0, self.wavegram_time_bins)
         # Like the width, the duration of a column comes from the grids that
         # arrived: the detector stage measures it from the data the search was run on.
@@ -238,7 +239,16 @@ class TriggerGraphBuilder:
                 bin_seconds = getattr(rendered, "bin_seconds", bin_seconds)
                 grids.append(grid.ravel())
                 clouds.append(getattr(rendered, "tiles", None))
-        return frames, grids, grid_shape, bin_seconds, clouds
+                # The event's own waveform, inverted from its own tiles. It is
+                # what the arrival-time difference is read on, and a slide
+                # leaves it untouched, so it is built here once and reused by
+                # every slide that follows.
+                try:
+                    series.append(rendered.reconstruct())
+                except Exception:
+                    series.append(None)
+                rates.append(float(getattr(rendered, "fs", 0.0)) or np.nan)
+        return frames, grids, grid_shape, bin_seconds, clouds, series, rates
 
     def build(self, clustered: dict[str, pd.DataFrame],
               coefficients: dict[str, dict],
@@ -293,7 +303,7 @@ class TriggerGraphBuilder:
         :raises KeyError: if an event has no coefficients.
         """
         ifos = self.ifos or list(clustered.keys())
-        frames, grids, grid_shape, bin_seconds, clouds = self._stack(
+        frames, grids, grid_shape, bin_seconds, clouds, series, rates = self._stack(
             clustered, coefficients, ifos)
         if comparison is None:
             fine, fine_shape, fine_bin = grids, grid_shape, bin_seconds
@@ -334,6 +344,13 @@ class TriggerGraphBuilder:
         return dict(
             ifos=ifos, node_features=X, shapes=shapes, raw=raw, clouds=clouds,
             cloud_flat=flatten_clouds(clouds),
+            series=series, rates=rates,
+            # The times the reconstructions were prepared at, so that a slid
+            # event's correction can be referred back to them.
+            prepared_gps=np.concatenate(
+                [f["gpsPeak"].to_numpy(dtype=float) for f in frames])
+            if frames else np.zeros(0),
+            reconstruction_offset={},
             energy=energy, band_lo=band_lo, band_hi=band_hi, spread=spread,
             fine_bin=fine_bin,
             # The order the arrays are in, so that a later call cannot silently
@@ -341,6 +358,63 @@ class TriggerGraphBuilder:
             order=[(ifo, int(label))
                    for ifo in ifos
                    for label in clustered[ifo]["cluster_id"].astype(int)])
+
+    @staticmethod
+    def _timed_on_reconstruction(prepared, i_sel, j_sel, tile_dt, max_lag_s):
+        """The pair's arrival-time difference, read on the two reconstructions.
+
+        The instant an event reports is the centre of the tile carrying its
+        largest coefficient, and in a dyadic transform a tile's length is tied
+        to its band: two detectors whose loudest tile falls on different rungs
+        of the ladder report instants displaced by the difference of two tile
+        lengths, which can exceed the light travel time and does. The
+        reconstruction carries the waveform at the sample, so the lag that
+        aligns the two waveforms measures the difference on the morphology the
+        two detectors share.
+
+        What the correlation gives is a property of the two waveforms and not
+        of the shift a slide applied, so it is measured once per pair of events
+        and reused: the slid difference is the slid tile difference plus that
+        pair's own correction.
+
+        :param prepared: the node-side arrays, carrying `series`, `rates`,
+            `prepared_gps` and the cache.
+        :param i_sel: left event of each pair, as node indices.
+        :param j_sel: right event of each pair.
+        :type tile_dt: numpy.ndarray
+        :param tile_dt: the difference of the tile centres, already slid.
+        :type max_lag_s: float
+        :param max_lag_s: how far the correlation may look, seconds. A lag
+            beyond what the geometry allows is not a candidate alignment.
+        :return: numpy.ndarray -- one difference per pair. A pair whose
+            reconstruction is missing keeps the difference it came with.
+        """
+        series = prepared.get("series")
+        if not series:
+            return tile_dt
+        rates = prepared.get("rates")
+        at = prepared.get("prepared_gps")
+        cache = prepared.setdefault("reconstruction_offset", {})
+
+        out = np.asarray(tile_dt, dtype=float).copy()
+        for position, (i, j) in enumerate(zip(np.asarray(i_sel, dtype=int),
+                                              np.asarray(j_sel, dtype=int))):
+            key = (int(i), int(j))
+            if key not in cache:
+                first, second = series[key[0]], series[key[1]]
+                fs = rates[key[0]] if rates is not None else np.nan
+                if first is None or second is None or not np.isfinite(fs):
+                    cache[key] = 0.0
+                else:
+                    try:
+                        measured, _ = arrival_time_difference(
+                            first, second, fs, max_lag_s=max_lag_s)
+                        cache[key] = float(measured
+                                           - (at[key[0]] - at[key[1]]))
+                    except (ValueError, IndexError):
+                        cache[key] = 0.0
+            out[position] += cache[key]
+        return out
 
     def build_from_prepared(self, clustered: dict[str, pd.DataFrame],
                             prepared: dict) -> TriggerGraph:
@@ -430,6 +504,16 @@ class TriggerGraphBuilder:
             # in between: the two events' own coefficients, paired where their
             # tiles cover the same place.
             travel = self.coincidence.travel_time((ifo_a, ifo_b))
+            # The difference of arrival times, measured below the tile. The
+            # correlation may look no further than the geometry allows: the
+            # light travel time, widened by the tolerance the pair's own extents
+            # claim.
+            local[:, 2] = self._timed_on_reconstruction(
+                prepared, i_sel, j_sel, local[:, 2],
+                max_lag_s=float(travel + np.max(
+                    self.coincidence.timing_tolerance(spread[i_sel],
+                                                      spread[j_sel],
+                                                      (ifo_a, ifo_b)))))
             coherence = tile_coherence_many(cloud_flat, i_sel, j_sel, travel)
 
             # Gathered a block at a time, and on a GPU when there is one. The
