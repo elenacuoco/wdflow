@@ -35,8 +35,13 @@ def _paths(directory, ifo, kind):
     return f"{stem}-events.parquet", f"{stem}-triggers.parquet"
 
 
+def _series_path(directory, ifo, kind):
+    return os.path.join(directory, f"{ifo}-{kind}-series.parquet")
+
+
 def save_events(directory: str, ifo: str, kind: str, events: pd.DataFrame,
-                triggers: pd.DataFrame, labels, provenance: dict | None = None):
+                triggers: pd.DataFrame, labels, provenance: dict | None = None,
+                series: dict | None = None):
     """Write one detector's events and the triggers they were built from.
 
     :type directory: str
@@ -59,6 +64,12 @@ def save_events(directory: str, ifo: str, kind: str, events: pd.DataFrame,
     :param provenance: what produced the store --- the data it read, the
         configuration, the livetime. Written to the manifest and never used by
         the reader, which is what keeps a run's identity out of the code.
+    :type series: dict or None
+    :param series: ``{cluster_id: (gps_start, samples)}``, each event's
+        reconstruction. The network stage reads the arrival-time difference on
+        it, and inverting an event's coefficients is the expensive half of the
+        detector stage, so a store that carries the waveform is what lets a
+        second stage run without repeating the first.
     :return: tuple -- the two paths written.
     :raises ValueError: if `labels` does not have one entry per trigger.
     """
@@ -73,6 +84,13 @@ def save_events(directory: str, ifo: str, kind: str, events: pd.DataFrame,
     events.reset_index(drop=True).to_parquet(events_path)
     triggers.reset_index(drop=True).assign(
         cluster_id=labels.astype(np.int64)).to_parquet(triggers_path)
+
+    if series:
+        pd.DataFrame([
+            dict(cluster_id=int(label), gps_start=float(start),
+                 samples=np.asarray(samples, dtype=float))
+            for label, (start, samples) in series.items()
+        ]).to_parquet(_series_path(directory, ifo, kind))
 
     manifest_path = os.path.join(directory, MANIFEST)
     manifest = {}
@@ -95,9 +113,11 @@ def load_events(directory: str, ifo: str, kind: str):
     :param ifo: the detector.
     :type kind: str
     :param kind: the frame kind.
-    :return: tuple -- ``(events, triggers, labels)``, in the order they were
-        written, with `labels` a numpy array of the event each trigger belongs
-        to and the `cluster_id` column removed from the triggers.
+    :return: tuple -- ``(events, triggers, labels, series)``, in the order they
+        were written, with `labels` a numpy array of the event each trigger
+        belongs to, the `cluster_id` column removed from the triggers, and
+        `series` the reconstructions keyed by event, empty where none were
+        written.
     :raises FileNotFoundError: if either table is missing.
     """
     events_path, triggers_path = _paths(directory, ifo, kind)
@@ -107,7 +127,15 @@ def load_events(directory: str, ifo: str, kind: str):
     events = pd.read_parquet(events_path)
     triggers = pd.read_parquet(triggers_path)
     labels = triggers["cluster_id"].to_numpy(dtype=np.int64)
-    return events, triggers.drop(columns=["cluster_id"]), labels
+
+    series = {}
+    series_path = _series_path(directory, ifo, kind)
+    if os.path.exists(series_path):
+        stored = pd.read_parquet(series_path)
+        series = {int(row.cluster_id): (float(row.gps_start),
+                                        np.asarray(row.samples, dtype=float))
+                  for row in stored.itertuples()}
+    return events, triggers.drop(columns=["cluster_id"]), labels, series
 
 
 def stored_manifest(directory: str) -> dict:
@@ -122,3 +150,32 @@ def stored_manifest(directory: str) -> dict:
         return {}
     with open(path) as handle:
         return json.load(handle)
+
+def is_current(directory: str, ifo: str, kind: str, sources) -> bool:
+    """Whether a store may be read instead of the stage being run again.
+
+    A store describes the triggers it was built from. If those triggers have
+    been written since, it describes a different search and reading it would
+    report one run's events against another's data. The rule is the one a
+    trigger cache is held to: every file the store consists of must exist and
+    be newer than every file it was derived from.
+
+    :type directory: str
+    :param directory: the store.
+    :type ifo: str
+    :param ifo: the detector.
+    :type kind: str
+    :param kind: the frame kind.
+    :param sources: paths the store was derived from, such as the trigger
+        files. An empty collection makes any existing store current, which is
+        what a caller means when nothing on disk precedes it.
+    :return: bool -- True when the store may be read.
+    """
+    written = []
+    for path in _paths(directory, ifo, kind):
+        if not os.path.exists(path):
+            return False
+        written.append(os.path.getmtime(path))
+    newest_source = max((os.path.getmtime(path) for path in sources
+                         if os.path.exists(path)), default=0.0)
+    return min(written) >= newest_source
