@@ -77,3 +77,27 @@ def test_pairs_timed_on_tiles_say_so_once():
         _warnings.simplefilter("error")
         TriggerGraphBuilder._timed_on_reconstruction(
             prepared, [0], [1], tile_dt, max_lag_s=0.05)
+
+
+def test_a_correction_that_cannot_be_measured_is_not_silently_zero():
+    """The rate belongs to the event and not to its rendering. Taken from the
+    wrong object it is NaN, every correction falls back to zero, and the stage
+    reads as though it had timed the pairs when it had not."""
+    fs = 1024.0
+    wave = np.sin(2 * np.pi * 60.0 * np.arange(256) / fs)
+    prepared = {
+        "series": [(0.0, wave), (0.004, wave)],
+        "rates": [np.nan, np.nan],
+        "prepared_gps": np.array([0.020, 0.000]),
+        "reconstruction_offset": {},
+    }
+    out = TriggerGraphBuilder._timed_on_reconstruction(
+        prepared, [0], [1], np.array([0.020]), max_lag_s=0.05)
+    # Without a rate nothing can be measured, so the tile difference stands.
+    assert out[0] == pytest.approx(0.020)
+
+    prepared["rates"] = [fs, fs]
+    prepared["reconstruction_offset"] = {}
+    timed = TriggerGraphBuilder._timed_on_reconstruction(
+        prepared, [0], [1], np.array([0.020]), max_lag_s=0.05)
+    assert timed[0] == pytest.approx(-0.004, abs=1.5 / fs)

@@ -112,12 +112,13 @@ class GraphCoincidenceFinder:
     """
 
     def __init__(self, builder: TriggerGraphBuilder, scorer, coefficients,
-                 on_graph: bool = False, comparison=None):
+                 on_graph: bool = False, comparison=None, series=None):
         self.builder = builder
         self.scorer = scorer
         self.coefficients = coefficients
         self.on_graph = on_graph
         self.comparison = comparison
+        self.series = series
 
     def find(self, events_by_ifo: dict) -> pd.DataFrame:
         """Score every physically admissible candidate of these events.
@@ -133,6 +134,7 @@ class GraphCoincidenceFinder:
             {ifo: self.coefficients[ifo] for ifo in events_by_ifo},
             comparison=None if self.comparison is None else
             {ifo: self.comparison[ifo] for ifo in events_by_ifo},
+            series=self.series,
         )
         if not len(graph.cross_edges):
             # The empty table, with its columns. A DataFrame with no rows and no
