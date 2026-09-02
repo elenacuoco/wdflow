@@ -1,8 +1,8 @@
-"""Draw the level-one graph the site shows: one detector, one window length.
+"""Draw the detector-stage graph the site shows: one detector, one window length.
 
 Run from a checkout with the compiled core available:
 
-    python site/figures/level_one_graph.py site/figures/level_one_graph.png
+    python site/figures/detector_stage_graph.py site/figures/detector_stage_graph.png
 
 The triggers are produced by the pipeline's own transform and metaparameters,
 and the edges are the ones `build_detector_graph` admits, so the picture is the
@@ -150,9 +150,9 @@ def draw(path):
     panel(left, admissible, admissible.components(),
           "Every admissible edge: the noise percolates")
     panel(right, selected, selected.components(),
-          "Once the level-one selection is applied: two events")
+          "Once the detector-stage selection is applied: two events")
     left.set_ylabel("frequency [Hz]")
-    figure.suptitle("Level one: one detector, one window length. "
+    figure.suptitle("The detector stage: one detector, one window length. "
                     "The connected components are its events.",
                     x=0.008, ha="left", fontsize=12)
 
@@ -179,4 +179,4 @@ def draw(path):
 
 
 if __name__ == "__main__":
-    draw(sys.argv[1] if len(sys.argv) > 1 else "level_one_graph.png")
+    draw(sys.argv[1] if len(sys.argv) > 1 else "detector_stage_graph.png")
