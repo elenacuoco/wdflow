@@ -388,7 +388,7 @@
       <p>Each window of whitened strain is transformed in every candidate basis. Coefficients below the <a href="https://doi.org/10.1093/biomet/81.3.425">Donoho–Johnstone universal threshold</a> are set to zero; the threshold depends only on the noise scale and the number of coefficients, so it encodes no assumption about the signal's shape. The surviving coefficients are scored, and the basis giving the largest score is recorded for that window.</p>
       <p>The score is the norm of the surviving coefficients on the noise scale:</p>
       <p class="eq"><b>ρ_WDF</b> = ‖c‖₂ ⁄ σ</p>
-      <p>where <i>c</i> are the surviving coefficients and σ is the noise scale estimated in that window. For ranking, that scale is read on the blocks around the window rather than on the window itself: a block's own estimate is a median absolute deviation over the data it holds, signal included, so a transient loud enough to be a candidate would otherwise be divided by a scale it inflated itself. The thresholding is untouched &mdash; which coefficients survive is decided by the block on its own, as a front end that sees one block at a time requires. The candidate bases are orthonormal, so by <a href="https://en.wikipedia.org/wiki/Parseval%27s_theorem">Parseval</a> ‖<i>c</i>‖₂ = ‖<i>x̂</i>‖₂ and the score is the matched-filter signal-to-noise ratio of the reconstructed transient. The identity holds under two conditions: the noise the coefficients are measured against must be white, and the surviving coefficients must retain their amplitude — which is why the conditioning stage and the choice of hard thresholding both matter to the calibration.</p>
+      <p>where <i>c</i> are the surviving coefficients and σ is the noise scale estimated in that window. The candidate bases are orthonormal, so by <a href="https://en.wikipedia.org/wiki/Parseval%27s_theorem">Parseval</a> ‖<i>c</i>‖₂ = ‖<i>x̂</i>‖₂ and the score is the matched-filter signal-to-noise ratio of the reconstructed transient. The identity holds under two conditions: the noise the coefficients are measured against must be white, and the surviving coefficients must retain their amplitude — which is why the conditioning stage and the choice of hard thresholding both matter to the calibration. For ranking, that scale is read on the blocks around the window rather than on the window itself: a block's own estimate is a median absolute deviation over the data it holds, signal included, so a transient loud enough to be a candidate would otherwise be divided by a scale it inflated itself. The thresholding is untouched &mdash; which coefficients survive is decided by the block on its own, as a front end that sees one block at a time requires.</p>
     </div>
   </section>
 
@@ -414,7 +414,7 @@
       <li>
         <span class="n">Stage 4</span>
         <h3>Rank</h3>
-        <p>Connected components of the tile map group the windows a single transient spans, and the reconstruction stitched across them is scored as a whole. Events are paired between detectors wherever the stretches of time they cover can reach each other once one is allowed to shift by the light travel time, and their bands overlap; unphysical time shifts give the accidental background.</p>
+        <p>Connected components of the tile map group the windows a single transient spans. The reconstruction stitched across them measures the event's energy, counting each sample once; what ranks the event is the loudest of those windows. Events are paired between detectors wherever the stretches of time they cover can reach each other once one is allowed to shift by the light travel time, and their bands overlap; unphysical time shifts give the accidental background.</p>
       </li>
     </ol>
   </section>
@@ -426,7 +426,7 @@
         <h2>The wavegram: transients longer than the analysis window</h2>
         <p>Consecutive windows step by less than their length, so a transient lasting longer than one window is divided across several triggers, each containing only the part that fell inside its own window. The loudest single window then carries a small fraction of the signal-to-noise ratio the whole signal has.</p>
         <p>Mapping every surviving coefficient's tile to absolute time gives a time–frequency representation of the whole run, in which a transient is a connected component. The windows of that component are reassembled — each contributing only the region it alone covers, so no sample is counted twice — and ρ_WDF is evaluated over the full extent of the signal.</p>
-        <p>A signal spanning several windows is therefore scored once, over its whole extent, instead of by the best single window that happened to contain part of it.</p>
+        <p>A signal spanning several windows is therefore measured once, over its whole extent, rather than by the best single window that happened to contain part of it. Measuring it is not selecting it: a hard threshold admits every tile at a floor of 2&nbsp;ln&nbsp;<i>N</i> in normalised energy, so a sum over tiles accumulates that floor in the noise exactly as in the signal and grows with their number whether or not anything is there, and a tile earns its place in the ranking only when its excess exceeds half the event's mean excess per tile. Detection ranks a candidate on its loudest window, a maximum over quantities the search has already computed, and the whole-event norm is reported beside it as what the event is worth.</p>
       </div>
       <div class="prose">
         <p class="label">Parameter estimation</p>
@@ -436,7 +436,7 @@
         <table class="deps">
           <thead><tr><th>Parameter</th><th>How it is measured</th></tr></thead>
           <tbody>
-            <tr><td>ρ<sub>WDF</sub></td><td>‖c‖₂ ⁄ σ, over the whole event when it spans several windows</td></tr>
+            <tr><td>ρ<sub>WDF</sub></td><td>‖c‖₂ ⁄ σ over the whole event when it spans several windows, which is the energy that measures it; the same norm over its loudest window alone is what ranks it for detection, and both are reported</td></tr>
             <tr><td>gpsCentroid</td><td>the energy centroid of the tiles in time. It describes where an event's energy sits, and it is not what the coincidence times a pair on: a centroid depends on how much of the transient survived threshold in that detector, so two detectors at different projected amplitudes place it differently</td></tr>
             <tr><td>gpsPeak</td><td>the centre of the tile carrying the largest coefficient — the arrival time the cross-detector stage uses, and the one the difference between detectors is measured on</td></tr>
             <tr><td>tSpread</td><td>the spread of the energy about that centroid, including each tile's own width</td></tr>
@@ -506,7 +506,7 @@
 
     <div class="cols" style="margin-top:1.5rem;">
       <div class="prose">
-        <p>An edge carries the arrival-time difference, the shared fraction of band and of time support, the log ratio of the two energies, and the agreement between the two wavegrams both at zero lag and at the lag that best aligns them. The energy ratio is a feature and not a penalty: the antenna responses make unequal amplitudes between detectors physical.</p>
+        <p>An edge carries the arrival-time difference, the shared fraction of band and of time support, the log ratio of the two energies, and the agreement between the two wavegrams both at zero lag and at the lag that best aligns them. That agreement is a product of amplitudes and not of magnitudes: a product of magnitudes is positive whatever the data and grows with the number of tile pairs that meet, so two long events overlapping by accident would outscore two short ones describing one transient, while the signed product has mean zero under the null. Both polarities are physical, so a pair is ranked on its magnitude. The energy ratio is a feature and not a penalty: the antenna responses make unequal amplitudes between detectors physical.</p>
       </div>
       <div class="prose">
         <p>A model's output is not a probability of astrophysical origin. Significance comes from time slides, which leave each detector's noise intact while destroying any real coincidence — and the unshifted data is the same construction at zero shift, so foreground and background are one population differently ordered.</p>
