@@ -464,7 +464,13 @@ class TriggerGraphBuilder:
                     EPS),
                 correlation,
                 overlap * correlation,
-                np.sqrt(coherence),
+                # The coherent energy is signed, both polarities being
+                # physical, and what the pair is worth is how much of it
+                # there is: the feature is the coherent amplitude, the
+                # root of the magnitude. A root of the signed value is
+                # not a number wherever the two detectors' responses
+                # oppose, which is half the sky.
+                np.sqrt(np.abs(coherence)),
             ]))
 
         intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)
