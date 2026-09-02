@@ -213,6 +213,12 @@ class TriggerGraphBuilder:
         self.coincidence = CoincidenceConfig() if coincidence is None else coincidence
         self.ifos = ifos
         self.wavegram_time_bins = wavegram_time_bins
+        # What a pair's own waveforms say about its arrival-time difference is
+        # a property of the two events, so it is measured once and kept here
+        # rather than in a preparation: a slide loop rebuilds the node side and
+        # would otherwise measure the same correlation for every shift.
+        self._reconstruction_offset = {}
+        self._said_untimed = False
 
     def _stack(self, clustered, coefficients, ifos, series_by_cluster=None):
         """Every event's map, in the detector order given.
@@ -391,8 +397,8 @@ class TriggerGraphBuilder:
                 for ifo in ifos
                 for label in clustered[ifo]["cluster_id"].astype(int)]
 
-    @staticmethod
-    def _timed_on_reconstruction(prepared, i_sel, j_sel, tile_dt, max_lag_s):
+    def _timed_on_reconstruction(self, prepared, i_sel, j_sel, tile_dt,
+                                 max_lag_s):
         """The pair's arrival-time difference, read on the two reconstructions.
 
         The instant an event reports is the centre of the tile carrying its
@@ -423,26 +429,32 @@ class TriggerGraphBuilder:
         """
         series = prepared.get("series")
         if not series or all(one is None for one in series):
-            if not prepared.get("said_untimed"):
+            if not self._said_untimed:
                 warnings.warn(
                     "no reconstruction was given for these events, so pairs "
                     "are timed on their tile centres; a tile's length is tied "
                     "to its band, so that difference can exceed the light "
                     "travel time. Pass `series` to `prepare`.",
                     RuntimeWarning, stacklevel=2)
-                prepared["said_untimed"] = True
+                self._said_untimed = True
             return tile_dt
         rates = prepared.get("rates")
         at = prepared.get("prepared_gps")
-        cache = prepared.setdefault("reconstruction_offset", {})
+        # Keyed on which events the pair is, not on where they sit in this
+        # preparation: a slide loop rebuilds the node side and the correction
+        # is the same waveforms' either way.
+        order = prepared.get("order")
+        cache = self._reconstruction_offset
 
         out = np.asarray(tile_dt, dtype=float).copy()
         for position, (i, j) in enumerate(zip(np.asarray(i_sel, dtype=int),
                                               np.asarray(j_sel, dtype=int))):
-            key = (int(i), int(j))
+            at_i, at_j = int(i), int(j)
+            key = ((order[at_i], order[at_j]) if order is not None
+                   else (at_i, at_j))
             if key not in cache:
-                first, second = series[key[0]], series[key[1]]
-                fs = rates[key[0]] if rates is not None else np.nan
+                first, second = series[at_i], series[at_j]
+                fs = rates[at_i] if rates is not None else np.nan
                 if first is None or second is None or not np.isfinite(fs):
                     cache[key] = 0.0
                 else:
@@ -452,8 +464,8 @@ class TriggerGraphBuilder:
                     # events and not the time between them: under a slide two
                     # events of one pair can be minutes apart, and correlating
                     # them on absolute time would lay out that whole gap.
-                    here = (float(first[0]) - float(at[key[0]]), first[1])
-                    there = (float(second[0]) - float(at[key[1]]), second[1])
+                    here = (float(first[0]) - float(at[at_i]), first[1])
+                    there = (float(second[0]) - float(at[at_j]), second[1])
                     try:
                         cache[key] = float(arrival_time_difference(
                             here, there, fs, max_lag_s=max_lag_s)[0])

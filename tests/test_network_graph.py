@@ -23,13 +23,15 @@ def test_the_edge_time_is_read_on_the_reconstructions():
         "reconstruction_offset": {},
     }
     tile_dt = np.array([0.020])
-    corrected = TriggerGraphBuilder._timed_on_reconstruction(
+    builder = TriggerGraphBuilder()
+    corrected = builder._timed_on_reconstruction(
         prepared, [0], [1], tile_dt, max_lag_s=0.05)
 
     assert corrected[0] == pytest.approx(-0.004, abs=1.5 / fs)
-    # The correction is a property of the pair, so it is measured once.
-    assert (0, 1) in prepared["reconstruction_offset"]
-    again = TriggerGraphBuilder._timed_on_reconstruction(
+    # The correction is a property of the pair, so it is measured once and
+    # kept on the builder, which outlives any one preparation.
+    assert builder._reconstruction_offset
+    again = builder._timed_on_reconstruction(
         prepared, [0], [1], tile_dt + 3.0, max_lag_s=0.05)
     assert again[0] == pytest.approx(corrected[0] + 3.0, abs=1e-9)
 
@@ -38,7 +40,7 @@ def test_a_pair_without_a_reconstruction_keeps_the_time_it_came_with():
     prepared = {"series": [None, None], "rates": [1024.0, 1024.0],
                 "prepared_gps": np.zeros(2), "reconstruction_offset": {}}
     tile_dt = np.array([0.007])
-    out = TriggerGraphBuilder._timed_on_reconstruction(
+    out = TriggerGraphBuilder()._timed_on_reconstruction(
         prepared, [0], [1], tile_dt, max_lag_s=0.05)
     assert out[0] == pytest.approx(0.007)
 
@@ -67,15 +69,16 @@ def test_pairs_timed_on_tiles_say_so_once():
     prepared = {"series": [None, None], "rates": [1024.0, 1024.0],
                 "prepared_gps": np.zeros(2), "reconstruction_offset": {}}
     tile_dt = np.array([0.007])
+    builder = TriggerGraphBuilder()
     with pytest.warns(RuntimeWarning, match="timed on their tile centres"):
-        out = TriggerGraphBuilder._timed_on_reconstruction(
+        out = builder._timed_on_reconstruction(
             prepared, [0], [1], tile_dt, max_lag_s=0.05)
     assert out[0] == pytest.approx(0.007)
     # Said once for a run, not once per pair.
     import warnings as _warnings
     with _warnings.catch_warnings():
         _warnings.simplefilter("error")
-        TriggerGraphBuilder._timed_on_reconstruction(
+        builder._timed_on_reconstruction(
             prepared, [0], [1], tile_dt, max_lag_s=0.05)
 
 
@@ -91,14 +94,13 @@ def test_a_correction_that_cannot_be_measured_is_not_silently_zero():
         "prepared_gps": np.array([0.020, 0.000]),
         "reconstruction_offset": {},
     }
-    out = TriggerGraphBuilder._timed_on_reconstruction(
+    out = TriggerGraphBuilder()._timed_on_reconstruction(
         prepared, [0], [1], np.array([0.020]), max_lag_s=0.05)
     # Without a rate nothing can be measured, so the tile difference stands.
     assert out[0] == pytest.approx(0.020)
 
     prepared["rates"] = [fs, fs]
-    prepared["reconstruction_offset"] = {}
-    timed = TriggerGraphBuilder._timed_on_reconstruction(
+    timed = TriggerGraphBuilder()._timed_on_reconstruction(
         prepared, [0], [1], np.array([0.020]), max_lag_s=0.05)
     assert timed[0] == pytest.approx(-0.004, abs=1.5 / fs)
 
@@ -119,7 +121,7 @@ def test_the_correlation_spans_the_events_and_not_the_gap_between_them():
     }
     import time as _time
     began = _time.time()
-    out = TriggerGraphBuilder._timed_on_reconstruction(
+    out = TriggerGraphBuilder()._timed_on_reconstruction(
         far_apart, [0], [1], np.array([-600.004]), max_lag_s=0.05)
     assert _time.time() - began < 1.0, "the gap was laid out"
     # The residual is the pair's own misalignment: the first series begins
