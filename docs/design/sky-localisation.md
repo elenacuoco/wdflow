@@ -16,7 +16,7 @@ where the analysis grid happened to start. An arrival time read off a block
 would therefore carry the grid into the arrival-time difference, and from there
 straight into the sky position, where nothing downstream could separate the two.
 
-The time a map is built on is the assembled event's: level one
+The time a map is built on is the assembled event's: the detector stage
 (`wdf.analysis.detector_graph`) joins every block the transient touched on
 geometry alone, and the event is timed on `gpsPeak`, the centre of the tile
 carrying its largest coefficient. That tile is found on the event's own
@@ -28,7 +28,7 @@ different projected amplitudes keep different portions of it and place their
 centroids differently, and that difference is indistinguishable from geometry
 once it enters an arrival-time difference. The peak tile tracks the loudest
 instant, which both detectors share. The same reasoning fixes the anchor of the
-comparison map in [the level-two note](windows-and-graphs.md); the sky map
+comparison map in [the network-stage note](windows-and-graphs.md); the sky map
 inherits it rather than choosing again.
 
 ## The uncertainty is declared, not chosen
@@ -54,7 +54,7 @@ be run rather than asserted.
 
 ## Which coincidences get a map
 
-Level two (`wdf.analysis.network_graph`) decides which pairs of events could
+The network stage (`wdf.analysis.network_graph`) decides which pairs of events could
 have come from one source: the two must cover the same stretch of time once one
 is allowed to shift by the light travel time plus their spreads, and must
 overlap in band. Only what that admits reaches the sky stage, and the constraint

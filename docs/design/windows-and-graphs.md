@@ -5,9 +5,9 @@ read through two graphs: one inside a detector, one across the network.
 
 ```
 h_d(t) → WDF, one analysis window
-       → level one: the detector's triggers as a graph over (t, f, scale)
+       → detector stage: the detector's triggers as a graph over (t, f, scale)
        → single-detector events
-       → level two: those events as an inter-detector network graph
+       → network stage: those events as an inter-detector graph
        → a ranking statistic
        → a false-alarm rate from time slides
 ```
@@ -66,7 +66,7 @@ of the data, so it is measured on the background rather than assumed to be the
 number of lengths. Under a run at one length it is degenerate and the
 significance reduces to the single-scale case.
 
-## Level one: `wdf.analysis.detector_graph`
+## The detector stage: `wdf.analysis.detector_graph`
 
 A node is one trigger. An edge joins two triggers close in time relative to their
 window span and overlapping in band, which covers both neighbours at one length
@@ -82,7 +82,7 @@ count is paid a hundred times over.
 Connected components over every admissible edge is not the answer: triggers close
 in time and overlapping in band are common in noise, so what percolates is the
 noise. `components(keep)` takes a mask, and deciding that mask is what the
-level-one model does.
+detector-stage model does.
 
 A node carries its trigger's wavegram on a band-by-time grid, so what reaches the
 model is how the trigger looks in the plane. The rows are indexed by absolute
@@ -90,9 +90,9 @@ frequency band rather than by octave level: since a longer window extends the
 ladder downward instead of subdividing it, the same physical band is the same row
 at every length.
 
-## Level two: `wdf.analysis.network_graph`
+## The network stage: `wdf.analysis.network_graph`
 
-The level-one events become the nodes. An edge exists only where a signal could
+The detector stage's events become the nodes. An edge exists only where a signal could
 have produced the pair: the two events must cover the same stretch of time once
 one of them is allowed to shift by the light travel time plus their own timing
 spreads, and they must overlap in band. These are the candidates

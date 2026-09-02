@@ -318,7 +318,7 @@ class _EdgeMessagePassing(MessagePassing):
 
 
 class DetectorEdgeScorer(nn.Module):
-    """Level one: which of a detector's admissible edges join one transient.
+    """The detector stage: which of a detector's admissible edges join one transient.
 
     The graph's edges are what geometry allows; connected components over all
     of them chain noise triggers together, because triggers close in time and
@@ -469,7 +469,7 @@ def edge_labels_from_injections(graph, injection_times, tolerance_s: float = 0.5
 
     A trigger belongs to the injection whose time falls inside its window,
     widened by `tolerance_s`; an edge is a positive when both belong to the
-    same one. This is the ground truth level one can actually be trained on.
+    same one. This is the ground truth the detector stage can actually be trained on.
 
     :param graph: a `wdf.analysis.detector_graph.DetectorGraph`.
     :param injection_times: GPS times of the injected signals.
