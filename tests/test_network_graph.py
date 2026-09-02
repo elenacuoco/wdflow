@@ -41,3 +41,20 @@ def test_a_pair_without_a_reconstruction_keeps_the_time_it_came_with():
     out = TriggerGraphBuilder._timed_on_reconstruction(
         prepared, [0], [1], tile_dt, max_lag_s=0.05)
     assert out[0] == pytest.approx(0.007)
+
+
+def test_a_different_event_set_is_prepared_again():
+    """A slide moves events and leaves the set intact, so one preparation
+    serves every slide of it. A background slid stretch by stretch is several
+    sets, and each is its own preparation."""
+    import pandas as pd
+
+    whole = {"H1": pd.DataFrame(dict(cluster_id=[0, 1, 2])),
+             "L1": pd.DataFrame(dict(cluster_id=[0, 1]))}
+    stretch = {"H1": whole["H1"].iloc[:2], "L1": whole["L1"]}
+
+    order = TriggerGraphBuilder.event_order(whole, ["H1", "L1"])
+    assert order == [("H1", 0), ("H1", 1), ("H1", 2), ("L1", 0), ("L1", 1)]
+    assert TriggerGraphBuilder.event_order(stretch, ["H1", "L1"]) != order
+    # The detector order is part of it: the arrays are laid out that way.
+    assert TriggerGraphBuilder.event_order(whole, ["L1", "H1"]) != order

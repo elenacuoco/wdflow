@@ -355,9 +355,25 @@ class TriggerGraphBuilder:
             fine_bin=fine_bin,
             # The order the arrays are in, so that a later call cannot silently
             # index them with a different event set.
-            order=[(ifo, int(label))
-                   for ifo in ifos
-                   for label in clustered[ifo]["cluster_id"].astype(int)])
+            order=self.event_order(clustered, ifos))
+
+    @staticmethod
+    def event_order(clustered, ifos=None):
+        """Which events a prepared set describes, in the order it holds them.
+
+        The node-side arrays are indexed by position, so this is the identity
+        of the catalogue they were built from: two calls agreeing on it may
+        share prepared arrays, and two that do not may not.
+
+        :type clustered: dict
+        :param clustered: ``{ifo: event catalogue}``.
+        :param ifos: the detector order, or None to take the mapping's.
+        :return: list -- ``(ifo, cluster_id)`` per event.
+        """
+        ifos = list(clustered) if ifos is None else list(ifos)
+        return [(ifo, int(label))
+                for ifo in ifos
+                for label in clustered[ifo]["cluster_id"].astype(int)]
 
     @staticmethod
     def _timed_on_reconstruction(prepared, i_sel, j_sel, tile_dt, max_lag_s):
@@ -663,7 +679,12 @@ class WavegramCoincidenceFinder:
         ifos = list(events_by_ifo)
         if any(events_by_ifo[ifo].empty for ifo in ifos):
             return pd.DataFrame()
-        if self._prepared is None:
+        # A slide moves events in time and leaves the set intact, so the
+        # preparation is reused across every slide of one set. A different set
+        # --- one stretch of a background slid within itself, rather than the
+        # whole of it --- is prepared again, once, and then reused in turn.
+        order = self.builder.event_order(events_by_ifo, ifos)
+        if self._prepared is None or self._prepared.get("order") != order:
             self._prepared = self.builder.prepare(
                 events_by_ifo,
                 {ifo: self.coefficients[ifo] for ifo in ifos},
