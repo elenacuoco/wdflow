@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from itertools import combinations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -212,13 +214,14 @@ class TriggerGraphBuilder:
         self.ifos = ifos
         self.wavegram_time_bins = wavegram_time_bins
 
-    def _stack(self, clustered, coefficients, ifos, with_series=True):
+    def _stack(self, clustered, coefficients, ifos, series_by_cluster=None):
         """Every event's map, in the detector order given.
 
-        :type with_series: bool
-        :param with_series: whether to invert each event's coefficients. The
-            comparison rendering asks for the same events on a second grid and
-            does not read the waveform, so it is inverted once and not twice.
+        :param series_by_cluster: ``{ifo: {cluster_id: (gps_start, samples)}}``
+            or None. A rendered event carries its tiles and not the
+            coefficients they were inverted from, so the waveform cannot be
+            recovered here and is supplied by whoever assembled it. An event
+            with no entry keeps no series, and its pair is timed on the tiles.
         :return: tuple -- (frames, grids, grid_shape, bin_seconds, clouds,
             series, rates); `series` holds None throughout when not asked for.
         """
@@ -244,17 +247,12 @@ class TriggerGraphBuilder:
                 bin_seconds = getattr(rendered, "bin_seconds", bin_seconds)
                 grids.append(grid.ravel())
                 clouds.append(getattr(rendered, "tiles", None))
-                # The event's own waveform, inverted from its own tiles. It is
-                # what the arrival-time difference is read on, and a slide
-                # leaves it untouched, so it is built here once and reused by
-                # every slide that follows.
-                if not with_series:
-                    series.append(None)
-                else:
-                    try:
-                        series.append(rendered.reconstruct())
-                    except Exception:
-                        series.append(None)
+                # The event's own waveform, inverted from its own
+                # coefficients by whoever assembled it. It is what the
+                # arrival-time difference is read on, and a slide leaves it
+                # untouched, so it is held here once and reused by every slide.
+                series.append(None if series_by_cluster is None
+                              else series_by_cluster.get(ifo, {}).get(int(label)))
                 rates.append(float(getattr(rendered, "fs", 0.0)) or np.nan)
         return frames, grids, grid_shape, bin_seconds, clouds, series, rates
 
@@ -287,7 +285,8 @@ class TriggerGraphBuilder:
 
     def prepare(self, clustered: dict[str, pd.DataFrame],
                 coefficients: dict[str, dict],
-                comparison: dict[str, dict] | None = None) -> dict:
+                comparison: dict[str, dict] | None = None,
+                series: dict | None = None) -> dict:
         """Everything about the nodes that does not depend on when they happened.
 
         A time slide moves a detector's events, so it changes which pairs are
@@ -311,13 +310,13 @@ class TriggerGraphBuilder:
         :raises KeyError: if an event has no coefficients.
         """
         ifos = self.ifos or list(clustered.keys())
-        frames, grids, grid_shape, bin_seconds, clouds, series, rates = self._stack(
-            clustered, coefficients, ifos)
+        frames, grids, grid_shape, bin_seconds, clouds, waveforms, rates = self._stack(
+            clustered, coefficients, ifos, series_by_cluster=series)
         if comparison is None:
             fine, fine_shape, fine_bin = grids, grid_shape, bin_seconds
         else:
             _, fine, fine_shape, fine_bin, _, _, _ = self._stack(
-                clustered, comparison, ifos, with_series=False)
+                clustered, comparison, ifos)
         nodes_df = pd.concat(frames, ignore_index=True)
 
         # |coefficient|/sigma spans decades, so compress before standardising;
@@ -352,7 +351,7 @@ class TriggerGraphBuilder:
         return dict(
             ifos=ifos, node_features=X, shapes=shapes, raw=raw, clouds=clouds,
             cloud_flat=flatten_clouds(clouds),
-            series=series, rates=rates,
+            series=waveforms, rates=rates,
             # The times the reconstructions were prepared at, so that a slid
             # event's correction can be referred back to them.
             prepared_gps=np.concatenate(
@@ -414,7 +413,15 @@ class TriggerGraphBuilder:
             reconstruction is missing keeps the difference it came with.
         """
         series = prepared.get("series")
-        if not series:
+        if not series or all(one is None for one in series):
+            if not prepared.get("said_untimed"):
+                warnings.warn(
+                    "no reconstruction was given for these events, so pairs "
+                    "are timed on their tile centres; a tile's length is tied "
+                    "to its band, so that difference can exceed the light "
+                    "travel time. Pass `series` to `prepare`.",
+                    RuntimeWarning, stacklevel=2)
+                prepared["said_untimed"] = True
             return tile_dt
         rates = prepared.get("rates")
         at = prepared.get("prepared_gps")
@@ -668,13 +675,15 @@ class WavegramCoincidenceFinder:
     """
 
     def __init__(self, finder, builder, coefficients, comparison=None,
-                 events=None):
+                 events=None, series=None):
         self.finder = finder
         self.builder = builder
         self.coefficients = coefficients
         self.comparison = comparison
+        self.series = series
         self._prepared = (None if events is None
-                          else builder.prepare(events, coefficients, comparison))
+                          else builder.prepare(events, coefficients, comparison,
+                                               series=series))
 
     def find(self, events_by_ifo) -> pd.DataFrame:
         """The admitted pairs, described by the graph.
@@ -697,7 +706,8 @@ class WavegramCoincidenceFinder:
                 events_by_ifo,
                 {ifo: self.coefficients[ifo] for ifo in ifos},
                 comparison=None if self.comparison is None
-                else {ifo: self.comparison[ifo] for ifo in ifos})
+                else {ifo: self.comparison[ifo] for ifo in ifos},
+                series=self.series)
         graph = self.builder.build_from_prepared(events_by_ifo, self._prepared)
         if not len(graph.cross_edges):
             return pd.DataFrame()

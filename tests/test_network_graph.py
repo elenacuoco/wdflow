@@ -58,3 +58,22 @@ def test_a_different_event_set_is_prepared_again():
     assert TriggerGraphBuilder.event_order(stretch, ["H1", "L1"]) != order
     # The detector order is part of it: the arrays are laid out that way.
     assert TriggerGraphBuilder.event_order(whole, ["L1", "H1"]) != order
+
+
+def test_pairs_timed_on_tiles_say_so_once():
+    """Degrading silently is the failure this warning exists to prevent: a
+    pair timed on tile centres can carry a difference no signal can produce,
+    and nothing downstream would show where it came from."""
+    prepared = {"series": [None, None], "rates": [1024.0, 1024.0],
+                "prepared_gps": np.zeros(2), "reconstruction_offset": {}}
+    tile_dt = np.array([0.007])
+    with pytest.warns(RuntimeWarning, match="timed on their tile centres"):
+        out = TriggerGraphBuilder._timed_on_reconstruction(
+            prepared, [0], [1], tile_dt, max_lag_s=0.05)
+    assert out[0] == pytest.approx(0.007)
+    # Said once for a run, not once per pair.
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        TriggerGraphBuilder._timed_on_reconstruction(
+            prepared, [0], [1], tile_dt, max_lag_s=0.05)
