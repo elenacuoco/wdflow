@@ -90,6 +90,23 @@ frequency band rather than by octave level: since a longer window extends the
 ladder downward instead of subdividing it, the same physical band is the same row
 at every length.
 
+## The file between the two stages: `wdf.analysis.event_store`
+
+The detector stage and the network stage are separated by a file. The first
+reads frames and writes, per detector and frame kind, the events it assembled
+together with the triggers they were built from, each trigger carrying the
+label of the event it belongs to. The second reads that pair and needs nothing
+else: an event's wavegram and its reconstruction are functions of the
+coefficients it kept, which the triggers carry, so the store is what the graph
+builder is given.
+
+The order is part of the contract. The network stage prepares its node-side
+arrays once and indexes them by position, so a store that reordered the events
+would hand the second stage a different catalogue.
+
+What this buys is that a change to the coincidence, to the ranking or to the
+learned stage costs the network stage's time and not the search's.
+
 ## The network stage: `wdf.analysis.network_graph`
 
 The detector stage's events become the nodes. An edge exists only where a signal could

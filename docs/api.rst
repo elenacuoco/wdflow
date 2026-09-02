@@ -109,6 +109,12 @@ wdf.analysis.coefficients
 .. automodule:: wdf.analysis.coefficients
    :members:
 
+wdf.analysis.event_store
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.event_store
+   :members:
+
 wdf.analysis.metaparameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
