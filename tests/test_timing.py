@@ -93,3 +93,26 @@ def test_a_reconstruction_of_no_event_is_refused():
     with pytest.raises(ValueError, match="belongs to no event"):
         referred_to_instant({9: (1000.0, np.zeros(4))}, events)
 
+
+def test_the_cost_follows_the_length_and_not_its_square():
+    """An event assembled from many blocks is long, and only the few hundred
+    lags the geometry allows are ever read. Forming the whole correlation to
+    keep them costs the product of the two lengths; forming each kept lag
+    costs the length, once per lag."""
+    import time as _time
+
+    fs = 2048.0
+    n = 200_000
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal(n)
+    # The same noise, carried seven samples earlier in the second series, so
+    # the first arrives that much after it and the answer is known as well.
+    b = np.roll(a, -7)
+
+    began = _time.time()
+    dt, _ = arrival_time_difference((0.0, a), (0.0, b), fs, max_lag_s=0.05)
+    elapsed = _time.time() - began
+
+    assert dt == pytest.approx(+7.0 / fs, abs=0.5 / fs)
+    # Quadratic in the length would be 4e10 products here, minutes of work.
+    assert elapsed < 5.0, f"the whole correlation was formed ({elapsed:.1f} s)"

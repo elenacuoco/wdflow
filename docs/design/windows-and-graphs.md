@@ -139,6 +139,13 @@ the whole displacement into the pair: the two are then further apart than the
 bounded lag search can close, which the estimator refuses rather than answers,
 and the pair keeps the difference its tiles claim.
 
+Only the lags the geometry allows are formed. The whole correlation of two
+series costs the product of their lengths, and an event assembled from many
+blocks is long, so a pair of them would be billions of products to keep a few
+hundred; each kept lag is one inner product over the samples that overlap at
+it. The cost then follows the events' length and the width of the search
+window rather than the square of the length.
+
 The test is on the events' extents and not on any instant of them. An extended
 transient has no arrival time: which moment a detector calls its centroid or its
 peak depends on its own noise, its antenna response and which coefficients

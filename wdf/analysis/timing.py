@@ -87,10 +87,24 @@ def arrival_time_difference(first, second, fs, max_lag_s=MAX_LAG_S):
     on_grid_a[offset_a:offset_a + len(a)] = a
     on_grid_b[offset_b:offset_b + len(b)] = b
 
-    correlation = np.abs(np.correlate(on_grid_a, on_grid_b, mode="full"))
-    lags = np.arange(-(n - 1), n)
-    keep = np.abs(lags) <= int(round(max_lag_s * fs))
-    correlation, lags = correlation[keep], lags[keep]
+    # Only the lags the geometry allows are ever read, so only those are
+    # formed. The whole correlation costs the product of the two lengths, and
+    # an event assembled from many blocks is long: a pair of them would be
+    # billions of products to keep a few hundred. Each lag is one inner
+    # product over the samples that overlap at it, which is linear in the
+    # length, so the cost follows the events and the search window rather than
+    # the square of the events.
+    reach = min(int(round(max_lag_s * fs)), n - 1)
+    lags = np.arange(-reach, reach + 1)
+    correlation = np.empty(lags.size)
+    for position, lag in enumerate(lags):
+        # `np.correlate`'s convention: the value at lag L is the sum over the
+        # samples where the first series, advanced by L, meets the second.
+        if lag >= 0:
+            correlation[position] = np.dot(on_grid_a[lag:], on_grid_b[:n - lag])
+        else:
+            correlation[position] = np.dot(on_grid_a[:n + lag], on_grid_b[-lag:])
+    correlation = np.abs(correlation)
 
     best = int(np.argmax(correlation))
     above = correlation >= 0.5 * correlation[best]
