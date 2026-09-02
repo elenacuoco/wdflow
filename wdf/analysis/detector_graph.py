@@ -584,15 +584,17 @@ def event_tiles(nodes, members, context=None):
         every call: a caller asking for every event's tiles must build it once
         and pass it, or the cost grows with events times triggers rather than
         with the coefficients there are.
-    :return: tuple -- (t_lo, t_hi, f_lo, f_hi, energy), all numpy arrays over
-        the union of the members' surviving coefficients.
+    :return: tuple -- (t_lo, t_hi, f_lo, f_hi, energy, amplitude), all numpy
+        arrays over the union of the members' surviving coefficients. `energy`
+        is the squared amplitude on the noise scale; `amplitude` keeps the
+        coefficient's sign, which a coherent product across detectors needs.
     """
     context = tile_context(nodes) if context is None else context
     geometry = context["geometry"]
     gps, scale, rate = context["gps"], context["scale"], context["rate"]
     sigma = context["sigma"]
     index_of, value_of = context["index_of"], context["value_of"]
-    t_lo, t_hi, f_lo, f_hi, energy = [], [], [], [], []
+    t_lo, t_hi, f_lo, f_hi, energy, amplitude = [], [], [], [], [], []
 
     for row in members:
         n = int(scale[row])
@@ -603,7 +605,8 @@ def event_tiles(nodes, members, context=None):
         index = np.asarray(index_of[row], dtype=int)
         if not index.size:
             continue
-        scaled = np.abs(np.asarray(value_of[row], dtype=float))
+        signed = np.asarray(value_of[row], dtype=float)
+        scaled = np.abs(signed)
         noise = sigma[row]
         if not (np.isfinite(noise) and noise > 0.0):
             # No scale, no measurement: this window's coefficients are left
@@ -615,11 +618,18 @@ def event_tiles(nodes, members, context=None):
         f_lo.append(flo[index])
         f_hi.append(fhi[index])
         energy.append((scaled / noise) ** 2)
+        # The coefficient's sign, kept because a coherent statistic across two
+        # detectors is a product of amplitudes and not of magnitudes: the
+        # product of magnitudes is positive whatever the data and accumulates
+        # with the number of tile pairs, while the signed product has mean zero
+        # under the null.
+        amplitude.append(signed / noise)
 
     if not energy:
-        return (np.zeros(0),) * 5
+        return (np.zeros(0),) * 6
     return (np.concatenate(t_lo), np.concatenate(t_hi), np.concatenate(f_lo),
-            np.concatenate(f_hi), np.concatenate(energy))
+            np.concatenate(f_hi), np.concatenate(energy),
+            np.concatenate(amplitude))
 
 
 def detector_events(graph: DetectorGraph, significance=None,
@@ -796,7 +806,7 @@ def detector_events(graph: DetectorGraph, significance=None,
         context = tile_context(nodes)
         for event in np.flatnonzero(sizes > 1):
             members = order[starts[event]:starts[event] + sizes[event]]
-            lo, hi, band_lo, band_hi, tile_energy = event_tiles(
+            lo, hi, band_lo, band_hi, tile_energy, _ = event_tiles(
                 nodes, members, context=context)
             if not tile_energy.size:
                 continue
@@ -1086,9 +1096,21 @@ def tile_coherence(left, right, tolerance):
 
     Every surviving coefficient is a rectangle on the plane, and two events
     describe the same transient where their rectangles cover the same place.
-    The statistic is the geometric mean of the two energies over the tiles that
-    meet, summed --- an inner product taken at the resolution the transform
-    actually has, with no grid in between and so no resolution chosen by hand.
+    The statistic is the product of the two amplitudes on their noise scales,
+    summed over the tiles that meet --- an inner product taken at the resolution
+    the transform actually has, with no grid in between and so no resolution
+    chosen by hand.
+
+    The product carries the coefficients' signs. A product of magnitudes is
+    positive whatever the data, so it has a mean of about `2 ln N + 2` for every
+    pair of tiles that happen to meet and grows with how many pairs there are:
+    two long events overlapping by accident then score higher than two short
+    ones describing one transient. The signed product has mean zero under the
+    null, so what accumulates over many tiles is agreement and not extent.
+
+    It is signed, and both signs are physical: the two detectors' responses to
+    one source can have opposite polarity, so a coherent pair may sum to a large
+    negative number. What ranks a pair is the magnitude.
 
     A grid answers the same question after rounding both events onto cells whose
     size someone had to pick: too fine and two detectors share nothing, too
@@ -1099,10 +1121,11 @@ def tile_coherence(left, right, tolerance):
     :type tolerance: float
     :param tolerance: how far the two may be displaced in time and still be
         taken to cover the same place, seconds.
-    :return: float -- the coherent energy, in units of the noise scale squared.
+    :return: float -- the coherent energy, in units of the noise scale squared,
+        signed by the relative polarity of the two detectors' coefficients.
     """
-    t_lo, t_hi, f_lo, f_hi, energy = left
-    u_lo, u_hi, g_lo, g_hi, other = right
+    t_lo, t_hi, f_lo, f_hi, energy, amplitude = left
+    u_lo, u_hi, g_lo, g_hi, other, other_amplitude = right
     if not energy.size or not other.size:
         return 0.0
 
@@ -1116,7 +1139,7 @@ def tile_coherence(left, right, tolerance):
     together = meets_in_time & meets_in_band
     if not together.any():
         return 0.0
-    product = np.sqrt(energy[:, None] * other[None, :])
+    product = amplitude[:, None] * other_amplitude[None, :]
     return float(product[together].sum())
 
 
@@ -1125,7 +1148,7 @@ def flatten_clouds(clouds):
 
     :param clouds: one tile tuple per event, as `event_tiles` returns them,
         or None for an event with no tiles.
-    :return: dict -- the five tile arrays concatenated, with `starts` and
+    :return: dict -- the six tile arrays concatenated, with `starts` and
         `counts` placing each event's stretch inside them.
     """
     counts = np.array([0 if c is None else len(c[4]) for c in clouds],
@@ -1135,12 +1158,13 @@ def flatten_clouds(clouds):
     if not kept:
         empty = np.zeros(0)
         return dict(t_lo=empty, t_hi=empty, f_lo=empty, f_hi=empty,
-                    energy=empty, starts=starts, counts=counts)
+                    energy=empty, amplitude=empty, starts=starts, counts=counts)
     field = lambda k: np.concatenate(
         [np.asarray(c[k], dtype=float) for c in clouds
          if c is not None and len(c[4])])
     return dict(t_lo=field(0), t_hi=field(1), f_lo=field(2), f_hi=field(3),
-                energy=field(4), starts=starts, counts=counts)
+                energy=field(4), amplitude=field(5), starts=starts,
+                counts=counts)
 
 
 # Tile pairs laid out per run of event pairs: enough to keep the reduction
@@ -1229,15 +1253,15 @@ def _tile_pair_energy(flat, left, right, tolerance):
     :param right: flat index of each pair's right tile.
     :type tolerance: float
     :param tolerance: displacement in time still counted as the same place.
-    :return: numpy.ndarray -- one energy per tile pair.
+    :return: numpy.ndarray -- one signed coherent energy per tile pair.
     """
     meets = ((np.minimum(flat["t_hi"][left], flat["t_hi"][right] + tolerance)
               >= np.maximum(flat["t_lo"][left], flat["t_lo"][right] - tolerance))
              & (np.minimum(flat["f_hi"][left], flat["f_hi"][right])
                 >= np.maximum(flat["f_lo"][left], flat["f_lo"][right])))
     product = np.zeros(len(left))
-    product[meets] = np.sqrt(flat["energy"][left[meets]]
-                             * flat["energy"][right[meets]])
+    product[meets] = (flat["amplitude"][left[meets]]
+                      * flat["amplitude"][right[meets]])
     return product
 
 
