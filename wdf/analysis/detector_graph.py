@@ -55,7 +55,7 @@ DETECTOR_EVENT_COLUMNS = [
     "cluster_id", "ifo", "gps", "gpsStart", "gpsCentroid", "tSpread", "gpsPeak",
     "duration", "duration90", "freqMin", "freqMean", "freqMax",
     "freqQ05", "freqQ95", "EnWDF", "sigma", "snrPeak",
-    "significance", "n_triggers", "n_scales", "scale_best", "n_coeff", "fs",
+    "significance", "n_pixels", "n_triggers", "n_scales", "scale_best", "n_coeff", "fs",
     "EnWDF_window",
 ] + RIDGE_FEATURES
 
@@ -685,6 +685,13 @@ def detector_events(graph: DetectorGraph, significance=None,
     n_events = len(sizes)
     starts = np.concatenate(([0], np.cumsum(sizes)[:-1]))
 
+    if "wt_index" in nodes:
+        kept = nodes["wt_index"].map(len).to_numpy(dtype=float)
+        tiles_per_event = np.bincount(grouped, weights=kept[order],
+                                      minlength=n_events)
+    else:
+        tiles_per_event = np.full(n_events, np.nan)
+
     weight = np.maximum(column("EnWDF", 0.0) ** 2, EPS)
     total = np.bincount(grouped, weights=weight[order], minlength=n_events)
 
@@ -750,6 +757,12 @@ def detector_events(graph: DetectorGraph, significance=None,
         "sigma": sigma,
         "snrPeak": highest(column("snrPeak", -np.inf)),
         "significance": significance[peak],
+        # How many tiles the event owns. This is the size its statistic sums
+        # over, so it is the scale of that statistic under the null, and unlike
+        # the number of member windows it does not move when the analysis grid
+        # does. A tile a second window also kept is one tile: the count is of
+        # distinct positions in the plane, as the reconstruction is.
+        "n_pixels": tiles_per_event,
         "n_triggers": sizes,
         "n_scales": scales_seen,
         "scale_best": scale[peak].astype(int),
@@ -787,6 +800,10 @@ def detector_events(graph: DetectorGraph, significance=None,
                 nodes, members, context=context)
             if not tile_energy.size:
                 continue
+            # Consecutive windows overlap, so one position in the plane can be
+            # kept twice. The event owns it once.
+            events.at[event, "n_pixels"] = float(len(np.unique(
+                np.column_stack([lo, hi, band_lo, band_hi]), axis=0)))
             for name, value in event_ridge_features(
                     lo, hi, band_lo, band_hi, tile_energy).items():
                 events.at[event, name] = value
