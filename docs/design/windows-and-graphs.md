@@ -153,11 +153,21 @@ not merely every shift, clears the minimum: two detectors moved by nearly the
 same amount would stay in step and their own pair would keep its real
 coincidences.
 
-An event's own statistic is made comparable across extents by
+An event's own statistic is made comparable across sizes by
 `wdf.analysis.event_significance`, which maps it through the background
-distribution of events spanning the same number of blocks. Inside the measured
+distribution of events holding the same number of tiles. The tiles are what the
+statistic sums, so their count is what sets its scale under the null; the number
+of blocks is a property of the analysis grid, and conditioning on it would make
+an event's significance depend on where the grid started. Inside the measured
 range the mapping is the empirical survival, so a calibrated background is
-exponential with unit rate by construction. Beyond the largest value a bin
+exponential with unit rate by construction --- for an event the calibration was
+not fitted on. An event the calibration contains counts itself, and the j-th
+largest of a bin then scores `log((N + 1) / (j + 1))` whatever the data: a
+ladder fixed by the bin sizes, which no member can leave for the extrapolated
+branch a candidate reaches. `out_of_sample_significance` scores a background
+fold by fold from the others, and `significance_off_source` scores any event
+from the background of every time fold but its own, which is what a single
+recorded stretch allows. Beyond the largest value a bin
 measured it continues along an exponential fitted to that bin's own upper tail.
 The continuation is what keeps the statistic usable: an empirical survival cannot
 fall below one count in its bin, so on its own it caps the significance at the
