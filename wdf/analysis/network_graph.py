@@ -212,10 +212,15 @@ class TriggerGraphBuilder:
         self.ifos = ifos
         self.wavegram_time_bins = wavegram_time_bins
 
-    def _stack(self, clustered, coefficients, ifos):
+    def _stack(self, clustered, coefficients, ifos, with_series=True):
         """Every event's map, in the detector order given.
 
-        :return: tuple -- (frames, grids, grid_shape, bin_seconds).
+        :type with_series: bool
+        :param with_series: whether to invert each event's coefficients. The
+            comparison rendering asks for the same events on a second grid and
+            does not read the waveform, so it is inverted once and not twice.
+        :return: tuple -- (frames, grids, grid_shape, bin_seconds, clouds,
+            series, rates); `series` holds None throughout when not asked for.
         """
         frames, grids, clouds, series, rates = [], [], [], [], []
         grid_shape = (0, self.wavegram_time_bins)
@@ -243,10 +248,13 @@ class TriggerGraphBuilder:
                 # what the arrival-time difference is read on, and a slide
                 # leaves it untouched, so it is built here once and reused by
                 # every slide that follows.
-                try:
-                    series.append(rendered.reconstruct())
-                except Exception:
+                if not with_series:
                     series.append(None)
+                else:
+                    try:
+                        series.append(rendered.reconstruct())
+                    except Exception:
+                        series.append(None)
                 rates.append(float(getattr(rendered, "fs", 0.0)) or np.nan)
         return frames, grids, grid_shape, bin_seconds, clouds, series, rates
 
@@ -308,8 +316,8 @@ class TriggerGraphBuilder:
         if comparison is None:
             fine, fine_shape, fine_bin = grids, grid_shape, bin_seconds
         else:
-            _, fine, fine_shape, fine_bin, _ = self._stack(
-                clustered, comparison, ifos)
+            _, fine, fine_shape, fine_bin, _, _, _ = self._stack(
+                clustered, comparison, ifos, with_series=False)
         nodes_df = pd.concat(frames, ignore_index=True)
 
         # |coefficient|/sigma spans decades, so compress before standardising;
