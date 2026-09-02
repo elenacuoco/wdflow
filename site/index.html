@@ -483,7 +483,7 @@
     <h2 id="network" class="measure" style="font-weight:400;font-size:clamp(1.6rem,1.3rem + 1vw,2.2rem);margin-top:0.5rem;">Network coincidence: two levels of graph, constrained by physics</h2>
 
     <figure style="margin:2rem 0 0;">
-      <img src="figures/level_one_graph.png" alt="WDFlow level-one detector graph: triggers of one detector at a single window length, plotted in time and frequency. Left, every admissible edge, where noise triggers percolate into one component. Right, after the level-one selection, two events remain: a rising chirp and a short high-frequency burst." width="2032" height="805" loading="lazy" style="width:100%;height:auto;">
+      <img src="figures/detector_stage_graph.png" alt="WDFlow level-one detector graph: triggers of one detector at a single window length, plotted in time and frequency. Left, every admissible edge, where noise triggers percolate into one component. Right, after the level-one selection, two events remain: a rising chirp and a short high-frequency burst." width="2032" height="805" loading="lazy" style="width:100%;height:auto;">
       <figcaption style="font-size:0.86rem;color:var(--fg-dim);margin-top:0.5rem;">A node is one trigger, at the single window length the search runs at. An edge joins two whose surviving tiles continue one another: close in time, and occupying bands that touch. On the left every admissible edge is drawn, and the noise percolates into one component &mdash; which is why the level-one model decides which edges survive. On the right, past that selection, the connected components are the detector's events: the clustering <em>is</em> this graph. Both panels are produced by the pipeline itself; the script is in the repository.</figcaption>
     </figure>
 
