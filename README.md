@@ -81,12 +81,15 @@ Changes from the legacy `wdf` package:
   wide is what the transform can resolve, and naming one frequency inside it would state more than
   was measured.
 
-- **Events are clustered on the wavegram and scored on their reconstruction.**
-  `wdf.analysis.clustering.wavegram_events` percolates over the time-frequency tiles of the
-  surviving coefficients to decide which windows belong to the same transient, then scores the
-  event by stitching those windows' reconstructions and taking `||x_hat||/sigma` over the whole
-  extent. A signal longer than one analysis window is therefore one event carrying its full
-  statistic, rather than a chain of partial ones scored by the best single window. `TriggerClusterer`
+- **Events are clustered on the wavegram; the energy that measures is not the statistic that
+  selects.** `wdf.analysis.clustering.wavegram_events` percolates over the time-frequency tiles of
+  the surviving coefficients to decide which windows belong to the same transient. The event's
+  energy is then `||x_hat||/sigma` over the stitched reconstruction of those windows, which counts
+  each sample once and is what the event is worth. What ranks it for detection is its loudest
+  block: a hard threshold admits every tile at a floor of `2 ln N` in normalised energy, so a sum
+  over tiles accumulates that floor in the noise as well as in the signal, while a maximum over
+  blocks the search has already scored has a background that is a subset of the ungrouped one ---
+  the grouping reduces the trials factor without being able to lose a candidate. `TriggerClusterer`
   (DBSCAN or a greedy merge on the per-window scalar summaries) is kept as a cross-check.
 
 - **A coincidence is timed on the reconstructions, below the tile.**
