@@ -1,4 +1,4 @@
-"""Level one: the wavelet pixels of one detector as a graph over (t, f, scale).
+"""The detector stage: the wavelet pixels of one detector as a graph over (t, f, scale).
 
 A node is one surviving wavelet coefficient -- a time-frequency tile, at the
 window length it was found at. Edges join tiles that could belong to the same
@@ -11,7 +11,7 @@ found at different lengths are related by the same rule that relates tiles found
 at one, instead of by a reconciliation between separate clusterings.
 
 Assembling the connected components of this graph gives one detector's events,
-which are the nodes of level two, the inter-detector network graph in
+which are the nodes of the network stage, the inter-detector graph in
 `wdf.analysis.network_graph`. The same shape serves either way of deciding
 which edges survive: keeping every admissible edge is the deterministic
 clustering, and scoring them is the learned one -- both start from the same
@@ -210,7 +210,7 @@ def build_pixel_graph(pixels: pd.DataFrame,
 def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.DataFrame:
     """One detector's events, from the connected components of its pixel graph.
 
-    This is the step from level one to level two: what comes out is the node
+    This is the step from the detector stage to the network stage: what comes out is the node
     set of the inter-detector network graph. An event is the wavegram itself,
     the connected set of tiles, and every quantity below is a moment over those
     tiles and over nothing else.

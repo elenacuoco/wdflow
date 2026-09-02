@@ -33,7 +33,7 @@ from wdf.analysis.robust_events import (
 # peak time, peak frequency and the statistic is what the classical finder
 # already does; the coefficients carry the transient's time-frequency pattern,
 # which is the information a learned combiner can use and a time window cannot.
-# The grid's width is level one's, imported rather than restated: two constants
+# The grid's width is the detector stage's, imported rather than restated: two constants
 # for the shape of one object drift apart.
 
 # What a candidate edge carries: the arrival-time difference, the agreement
@@ -219,7 +219,7 @@ class TriggerGraphBuilder:
         frames, grids, clouds = [], [], []
         grid_shape = (0, self.wavegram_time_bins)
         # Like the width, the duration of a column comes from the grids that
-        # arrived: level one measures it from the data the search was run on.
+        # arrived: the detector stage measures it from the data the search was run on.
         bin_seconds = 1.0
         for ifo in ifos:
             per_cluster = coefficients[ifo]

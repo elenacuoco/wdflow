@@ -1,10 +1,10 @@
-"""Level one: one detector's triggers as a graph, and its events.
+"""The detector stage: one detector's triggers as a graph, and its events.
 
 A node is one WDF trigger -- one analysis block's surviving coefficients, at the
 window length it was found at. Edges join triggers that could belong to the same
 transient: close in time, with energy in bands that overlap or touch, and
 continuous in coefficient energy. The connected components are the detector's
-events, which are the nodes of level two, the inter-detector network graph in
+events, which are the nodes of the network stage, the inter-detector graph in
 `wdf.analysis.network_graph`.
 
 The block is a unit of computation and the event is the physical object, so no
@@ -411,7 +411,7 @@ class DetectorGraph:
 def build_detector_graph(triggers: pd.DataFrame,
                          significance=None,
                          config: DetectorGraphConfig | None = None) -> DetectorGraph:
-    """One detector's level-one graph, over all its window lengths at once.
+    """One detector's detector-stage graph, over all its window lengths at once.
 
     :type triggers: pandas.DataFrame
     :param triggers: the detector's triggers, at one or several window lengths.
@@ -636,7 +636,7 @@ def detector_events(graph: DetectorGraph, significance=None,
                     labels=None) -> pd.DataFrame:
     """The detector's events, from the connected components of its graph.
 
-    This is the step from level one to level two: the result is the node set of
+    This is the step from the detector stage to the network stage: the result is the node set of
     the inter-detector network graph, in the schema that graph reads.
 
     The event's statistic is measured on the reconstruction stitched across its
@@ -647,7 +647,7 @@ def detector_events(graph: DetectorGraph, significance=None,
     `EnWDF_window`, since that is what a search without this step would report.
 
     :type graph: DetectorGraph
-    :param graph: the detector's level-one graph.
+    :param graph: the detector's detector-stage graph.
     :param significance: each node's significance, or None to use `EnWDF`.
     :param labels: component label per node, or None to take every edge.
     :return: pandas.DataFrame -- one row per event, `DETECTOR_EVENT_COLUMNS`.
@@ -841,7 +841,7 @@ def detector_events(graph: DetectorGraph, significance=None,
 
 
 class EventWavegram:
-    """One level-one event's coefficients on the shared band-by-time grid.
+    """One event's coefficients on the shared band-by-time grid.
 
     `ClusterCoefficients` renders a cluster on the octave grid of one window
     length, which a multi-window event does not have: its members come from
@@ -895,7 +895,7 @@ class EventWavegram:
 def event_coefficients(graph: DetectorGraph, labels=None,
                        time_bins: int = WAVEGRAM_TIME_BINS,
                        bin_seconds: float | None = None) -> dict:
-    """Each level-one event's coefficients, assembled into one map.
+    """Each event's coefficients, assembled into one map.
 
     The members are laid out in absolute time, not at their position inside
     their own window: an event assembled from windows a second apart describes a
@@ -915,7 +915,7 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     recovered.
 
     :type graph: DetectorGraph
-    :param graph: the detector's level-one graph.
+    :param graph: the detector's detector-stage graph.
     :param labels: component label per node, or None to take every edge.
     :type time_bins: int
     :param time_bins: columns of the map.
@@ -1047,7 +1047,7 @@ def event_waveform(graph, labels=None, cluster_id=None):
     are what a search at a single length would have produced instead.
 
     :type graph: DetectorGraph
-    :param graph: the detector's level-one graph.
+    :param graph: the detector's detector-stage graph.
     :param labels: component label per node, or None to take every edge.
     :type cluster_id: int | None
     :param cluster_id: the event to reconstruct; every event when None.
@@ -1289,7 +1289,7 @@ def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
     than the search already found it.
 
     :type graph: DetectorGraph
-    :param graph: the detector's level-one graph.
+    :param graph: the detector's detector-stage graph.
     :param labels: component label per node, or None to take every edge.
     :return: numpy.ndarray -- one statistic per event.
     """
