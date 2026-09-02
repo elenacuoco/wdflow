@@ -99,6 +99,17 @@ spreads, and they must overlap in band. These are the candidates
 `wdf.analysis.robust_events.IndexedCoincidenceFinder.candidate_edges` admits, so
 the learned and the classical statistic rank one population.
 
+The arrival-time difference an edge carries is read on the two events'
+stitched reconstructions, at the lag that aligns them, with the uncertainty the
+correlation peak declares. The instant an event reports is the centre of the
+tile carrying its largest coefficient, and in a dyadic transform a tile's
+length is tied to its band, so two detectors whose loudest tile falls on
+different rungs of the ladder report instants displaced by the difference of
+two tile lengths; the reconstruction carries the waveform at the sample. What
+the correlation measures is a property of the two waveforms and not of a
+slide's shift, so it is measured once per pair of events and reused by every
+slide.
+
 The test is on the events' extents and not on any instant of them. An extended
 transient has no arrival time: which moment a detector calls its centroid or its
 peak depends on its own noise, its antenna response and which coefficients
