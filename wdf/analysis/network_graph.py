@@ -233,6 +233,10 @@ class TriggerGraphBuilder:
         for ifo in ifos:
             per_cluster = coefficients[ifo]
             events = clustered[ifo].reset_index(drop=True)
+            rate_of = ({int(label): float(value)
+                        for label, value in zip(events["cluster_id"].astype(int),
+                                                events["fs"].astype(float))}
+                       if "fs" in events else {})
             missing = set(events["cluster_id"].astype(int)) - set(per_cluster)
             if missing:
                 raise KeyError(
@@ -253,12 +257,16 @@ class TriggerGraphBuilder:
                 # untouched, so it is held here once and reused by every slide.
                 series.append(None if series_by_cluster is None
                               else series_by_cluster.get(ifo, {}).get(int(label)))
-                rates.append(float(getattr(rendered, "fs", 0.0)) or np.nan)
+                # The rate the waveform is sampled at belongs to the
+                # event, not to its rendering: a map knows its bins and
+                # not the grid the series lives on.
+                rates.append(rate_of.get(int(label), np.nan))
         return frames, grids, grid_shape, bin_seconds, clouds, series, rates
 
     def build(self, clustered: dict[str, pd.DataFrame],
               coefficients: dict[str, dict],
-              comparison: dict[str, dict] | None = None) -> TriggerGraph:
+              comparison: dict[str, dict] | None = None,
+              series: dict | None = None) -> TriggerGraph:
         """Assemble the graph from each detector's events and their coefficients.
 
         Two renderings of the same events answer two different questions and
@@ -281,7 +289,8 @@ class TriggerGraphBuilder:
         :raises KeyError: if an event has no coefficients.
         """
         return self.build_from_prepared(
-            clustered, self.prepare(clustered, coefficients, comparison))
+            clustered,
+            self.prepare(clustered, coefficients, comparison, series=series))
 
     def prepare(self, clustered: dict[str, pd.DataFrame],
                 coefficients: dict[str, dict],
