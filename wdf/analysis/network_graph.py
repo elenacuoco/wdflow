@@ -446,11 +446,17 @@ class TriggerGraphBuilder:
                 if first is None or second is None or not np.isfinite(fs):
                     cache[key] = 0.0
                 else:
+                    # Each series is placed relative to its own event's
+                    # instant, so what is correlated is the residual after the
+                    # pair is nominally aligned and the grid spans the two
+                    # events and not the time between them: under a slide two
+                    # events of one pair can be minutes apart, and correlating
+                    # them on absolute time would lay out that whole gap.
+                    here = (float(first[0]) - float(at[key[0]]), first[1])
+                    there = (float(second[0]) - float(at[key[1]]), second[1])
                     try:
-                        measured, _ = arrival_time_difference(
-                            first, second, fs, max_lag_s=max_lag_s)
-                        cache[key] = float(measured
-                                           - (at[key[0]] - at[key[1]]))
+                        cache[key] = float(arrival_time_difference(
+                            here, there, fs, max_lag_s=max_lag_s)[0])
                     except (ValueError, IndexError):
                         cache[key] = 0.0
             out[position] += cache[key]

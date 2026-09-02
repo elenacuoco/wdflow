@@ -101,3 +101,28 @@ def test_a_correction_that_cannot_be_measured_is_not_silently_zero():
     timed = TriggerGraphBuilder._timed_on_reconstruction(
         prepared, [0], [1], np.array([0.020]), max_lag_s=0.05)
     assert timed[0] == pytest.approx(-0.004, abs=1.5 / fs)
+
+
+def test_the_correlation_spans_the_events_and_not_the_gap_between_them():
+    """A slide can put the two events of an accidental pair minutes apart.
+    Correlating them on absolute time would lay out that whole gap, once per
+    pair; each series is placed relative to its own event's instant instead,
+    so the cost follows the events' own length."""
+    fs = 1024.0
+    wave = np.sin(2 * np.pi * 70.0 * np.arange(512) / fs)
+    far_apart = {
+        "series": [(0.0, wave), (600.0, wave)],
+        "rates": [fs, fs],
+        # The events are ten minutes apart and their instants say so.
+        "prepared_gps": np.array([0.25, 600.254]),
+        "reconstruction_offset": {},
+    }
+    import time as _time
+    began = _time.time()
+    out = TriggerGraphBuilder._timed_on_reconstruction(
+        far_apart, [0], [1], np.array([-600.004]), max_lag_s=0.05)
+    assert _time.time() - began < 1.0, "the gap was laid out"
+    # The residual is the pair's own misalignment: the first series begins
+    # four milliseconds later than the second relative to its own instant, so
+    # it arrives that much after it.
+    assert out[0] - (-600.004) == pytest.approx(+0.004, abs=1.5 / fs)
