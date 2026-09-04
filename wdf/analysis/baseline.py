@@ -112,12 +112,13 @@ class GraphCoincidenceFinder:
     """
 
     def __init__(self, builder: TriggerGraphBuilder, scorer, coefficients,
-                 on_graph: bool = False, comparison=None):
+                 on_graph: bool = False, comparison=None, prepared=None):
         self.builder = builder
         self.scorer = scorer
         self.coefficients = coefficients
         self.on_graph = on_graph
         self.comparison = comparison
+        self.prepared = prepared
 
     def find(self, events_by_ifo: dict) -> pd.DataFrame:
         """Score every physically admissible candidate of these events.
@@ -128,12 +129,15 @@ class GraphCoincidenceFinder:
         """
         if any(frame.empty for frame in events_by_ifo.values()):
             return pd.DataFrame()
-        graph = self.builder.build(
-            events_by_ifo,
-            {ifo: self.coefficients[ifo] for ifo in events_by_ifo},
-            comparison=None if self.comparison is None else
-            {ifo: self.comparison[ifo] for ifo in events_by_ifo},
-        )
+        if self.prepared is None:
+            graph = self.builder.build(
+                events_by_ifo,
+                {ifo: self.coefficients[ifo] for ifo in events_by_ifo},
+                comparison=None if self.comparison is None else
+                {ifo: self.comparison[ifo] for ifo in events_by_ifo},
+            )
+        else:
+            graph = self.builder.build_from_prepared(events_by_ifo, self.prepared)
         if not len(graph.cross_edges):
             # The empty table, with its columns. A DataFrame with no rows and no
             # columns reports a missing background as a missing statistic, which

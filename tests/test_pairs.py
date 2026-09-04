@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from wdf.analysis.pairs import cross_pairs, neighbour_pairs
+from wdf.analysis.pairs import cross_pairs, neighbour_pairs, paired_dot
 
 
 def _collect(iterator):
@@ -57,3 +57,38 @@ def test_an_empty_axis_yields_nothing():
     assert _collect(neighbour_pairs(np.zeros(0), 1.0)).shape == (0, 2)
     assert _collect(cross_pairs(np.zeros(0), np.arange(3.0), 1.0)).shape == (0, 2)
     assert _collect(cross_pairs(np.arange(3.0), np.zeros(0), 1.0)).shape == (0, 2)
+
+
+def test_a_node_quantity_is_not_a_pair_quantity():
+    """`paired_dot(a, a, i, i)` is each row's own dot product, which belongs to
+    the node. Computing it per pair repeats one row's reduction once for every
+    pair the row belongs to, and the network stage forms tens of millions."""
+    rng = np.random.default_rng(3)
+    raw = rng.standard_normal((200, 17))
+    i = rng.integers(0, 200, 5000)
+    per_pair = paired_dot(raw, raw, i, i, gpu=False)
+    per_node = np.einsum("ij,ij->i", raw, raw)[i]
+    assert np.allclose(per_pair, per_node, rtol=0, atol=1e-12)
+
+
+def test_a_matrix_kept_on_the_device_gives_the_same_answer():
+    """The residency is an optimisation and must not be a change of arithmetic.
+    Without a GPU the mapping is ignored, which is what makes the same code run
+    on a machine that has none."""
+    rng = np.random.default_rng(4)
+    left = rng.standard_normal((300, 11))
+    right = rng.standard_normal((300, 11))
+    i = rng.integers(0, 300, 900)
+    j = rng.integers(0, 300, 900)
+
+    plain = paired_dot(left, right, i, j)
+    held: dict = {}
+    once = paired_dot(left, right, i, j, resident=held)
+    twice = paired_dot(left, right, i, j, resident=held)
+    assert np.allclose(plain, once, rtol=0, atol=1e-10)
+    assert np.array_equal(once, twice)
+
+    # A different matrix at the same identity slot is not served the old copy.
+    other = rng.standard_normal((300, 11))
+    assert not np.allclose(paired_dot(other, right, i, j, resident=held),
+                           once, rtol=0, atol=1e-10)

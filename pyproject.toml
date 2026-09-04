@@ -1,6 +1,6 @@
 [project]
 name = "wdflow"
-version = "1.1.1"
+version = "1.2.0"
 authors = [
   { name="Elena Cuoco", email="elena.cuoco@unibo.it" },
 ]

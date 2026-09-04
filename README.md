@@ -92,14 +92,20 @@ Changes from the legacy `wdf` package:
   the grouping reduces the trials factor without being able to lose a candidate. `TriggerClusterer`
   (DBSCAN or a greedy merge on the per-window scalar summaries) is kept as a cross-check.
 
-- **A coincidence is timed on the reconstructions, below the tile.**
-  `wdf.analysis.timing.arrival_time_difference` places the two events' stitched reconstructions
-  on one absolute time grid and reads the arrival-time difference at the lag that maximises
-  their cross-correlation, with an uncertainty the pair itself declares (the half-width of the
-  correlation peak). The instants a trigger records are moments of the tiling and cannot resolve
-  better than the tile they sit on; the reconstruction carries the waveform at the sample, and
-  the estimator runs downstream on the coefficients the trigger already carries, adding nothing
-  to the front end.
+- **A coincidence is timed on the reconstructions, below the tile.** The instants a trigger
+  records are moments of the tiling and cannot resolve better than the tile they sit on, whose
+  length is tied to its band; the reconstruction carries the waveform at the sample. Two
+  estimators read it, for two purposes. `wdf.analysis.timing.envelope_instant` gives each event
+  an instant of its own, the peak of the analytic envelope of that event's stitched
+  reconstruction: it is a property of one event, so a time slide carries it with the event and a
+  background of millions of accidental pairs costs nothing per pair, which is why it is what
+  admits a pair and what a cross-detector edge carries.
+  `wdf.analysis.timing.arrival_time_difference` places the two reconstructions on one absolute
+  time grid and reads the difference at the lag that maximises their cross-correlation, with an
+  uncertainty the pair itself declares (the half-width of the correlation peak): it belongs to
+  the pair, costs one correlation, and is applied to the candidates a sky region is drawn for.
+  Both run downstream on the coefficients the trigger already carries, adding nothing to the
+  front end.
 
 - **Trigger output is Parquet, not CSV** (`wdf.observers.SingleEventPrintFileObserver`), written
   incrementally in row-group batches (`flush_every`, default 500 triggers) and finalized by a
