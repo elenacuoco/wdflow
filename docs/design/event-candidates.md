@@ -49,17 +49,27 @@ compared, not to replace one another:
   segments' graphs can be batched into one sparse forward/backward pass
   (`GNNCoincidenceScorer.fit`) rather than one Python-level call per segment.
 
+- **Morphological combination** (`network_morphology` on
+  `TriggerGraph.candidate_table`): the coherent amplitude the pair carries,
+  formed on the coefficients themselves.
+  `wdf.analysis.detector_graph.tile_coherence` multiplies the two events'
+  coefficient amplitudes on their noise scales and sums over the tiles whose
+  rectangles cover the same place on the plane, keeping the coefficients'
+  signs; `network_morphology` is the root of its magnitude, the root because
+  the sum is an energy and the column is reported on the noise scale, the
+  magnitude because two detectors can respond to one source with opposite
+  polarity. It is an inner product taken at the resolution the transform has,
+  with no grid imposed in between.
+
 This is a deliberately different architecture from a coherent multi-detector
-pipeline (e.g. Coherent WaveBurst): there is no combined-likelihood statistic
-built directly from multiple detectors' *waveforms* (a ρ_c/η_c-style coherent
-statistic, or a network correlation coefficient consistency check between
-reconstructed waveforms) -- both of wdflow's cross-detector methods above
-work from each detector's already-independent trigger/cluster list, not from
-a joint reconstruction. `reconstruct_cluster_waveform`/`Coloring` (waveform
-reconstruction back to strain units, per detector) already produce the kind
-of per-detector reconstructed waveform data a coherence check would need;
-using it for cross-detector waveform consistency (rather than timing/learned
-scoring alone) is a natural extension, not yet implemented.
+pipeline (e.g. Coherent WaveBurst). The coherent quantity here is formed on the
+two detectors' surviving coefficients rather than on a joint likelihood over
+the network response: no antenna patterns enter it, and no signal model is
+projected onto the data. Where a pair's arrival-time difference is wanted at
+better resolution than the tiles give ---  a sky region needs it ---
+`wdf.analysis.timing.arrival_time_difference` cross-correlates the two stitched
+reconstructions, which is a consistency check between reconstructed waveforms
+applied to candidates rather than to every admitted pair.
 
 ## The simulated set the efficiencies are read on
 

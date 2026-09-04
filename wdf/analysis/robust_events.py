@@ -17,6 +17,7 @@ accidental by construction and none of them has to be identified as such.
  
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Iterable
@@ -29,6 +30,16 @@ from wdf.analysis.detectors import network_light_travel_time
 from wdf.analysis.pairs import cross_pairs, interval_pairs, neighbour_pairs
 
 EPS = np.finfo(float).tiny
+
+
+#: Where an event's instant is read from, in the order it is preferred. The
+#: first is the peak of the event's own reconstruction, sample-resolved and
+#: written by whoever inverted it; the second is the centre of the tile
+#: carrying the event's largest coefficient, which lasts one over the upper
+#: edge of its band and so cannot resolve a network's light travel time
+#: wherever that band is low. Every one of them is a property of one event, so
+#: a time slide carries it with the event.
+INSTANT_COLUMNS = ("gpsEnvelope", "gpsPeak", "gpsCentroid")
 
 
 def _first_existing(frame: pd.DataFrame, names: Iterable[str], default=None):
@@ -576,16 +587,18 @@ class IndexedCoincidenceFinder:
         The pair must cover the same stretch of time once one of the two is
         allowed to shift by the light travel time, and share enough of its band.
 
-        The test is on the events' extents and not on any single instant of
-        them. An extended transient has no arrival time: a chirp lasting
-        seconds is spread over all of them, and which instant a detector calls
-        its centroid or its peak depends on its own noise, its antenna response
-        and which coefficients survived threshold, so the two detectors do not
-        agree on it. For a transient shorter than the light travel time the two
-        statements coincide, which is why this is the general one.
+        The test is on the events' stretches of time and not on any single
+        instant of them. A transient longer than one analysis window is
+        assembled as several events, and the two detectors do not keep the
+        same one: measured on injections both detectors recovered, the
+        smallest difference between two such instants is milliseconds for a
+        signal shorter than a window and hundreds of milliseconds for one
+        lasting minutes. Gating on it would discard the second, which is a
+        stage taking evidence away from a candidate the detectors assembled.
 
-        `dt` is still measured and carried, and ranks the survivors; it no
-        longer decides which pairs exist.
+        The difference is measured on every admitted pair, from each event's
+        own instant --- `INSTANT_COLUMNS` names where that is read from --- and
+        ranks the survivors. It does not decide which pairs exist.
 
         What survives is the candidate set; deciding among the survivors is a
         separate question, and this is what both the one-to-one assignment and
@@ -601,8 +614,30 @@ class IndexedCoincidenceFinder:
         # detector, so two detectors at different projected amplitudes place it
         # differently and the difference lands in dt, where it is
         # indistinguishable from geometry.
-        lt = _numeric(left, ("gpsPeak", "gpsCentroid"))
-        rt = _numeric(right, ("gpsPeak", "gpsCentroid"))
+        # The event's instant, best available: read on its own reconstruction
+        # where that was done, and otherwise the centre of the tile carrying
+        # its largest coefficient. Both are node quantities, so the difference
+        # of two of them is one too and a time slide carries it.
+        # The instant the pair is admitted on. `INSTANT_COLUMNS` prefers the
+        # one read on the event's own reconstruction and falls back to the
+        # centre of the tile the event was ranked on, whose length is one over
+        # the upper edge of its band --- tens of milliseconds low in the band,
+        # which is wider than the whole window a pair is admitted in. A
+        # coincidence timed on tile centres is a different measurement, so the
+        # fall-back is said out loud rather than taken quietly.
+        if not getattr(self, "_said_instant", False) and (
+                INSTANT_COLUMNS[0] not in left.columns
+                or INSTANT_COLUMNS[0] not in right.columns):
+            # Said once per finder: a slide loop calls this thousands of times
+            # and the fact is a property of the catalogues, not of the call.
+            self._said_instant = True
+            warnings.warn(
+                f"no {INSTANT_COLUMNS[0]!r} on one of the catalogues, so the "
+                f"pair is admitted on the next instant available; a tile "
+                f"centre can be longer than the window itself",
+                RuntimeWarning, stacklevel=2)
+        lt = _numeric(left, INSTANT_COLUMNS)
+        rt = _numeric(right, INSTANT_COLUMNS)
         ls = _numeric(left, ("tSpread",), default=0.0)
         rs = _numeric(right, ("tSpread",), default=0.0)
         ls = np.where(np.isfinite(ls), ls, 0.0)
@@ -629,10 +664,9 @@ class IndexedCoincidenceFinder:
         # anchor falls between its own start, less the cap and the farthest
         # any right event reaches past its anchor, and its own end plus the
         # cap. One long event then widens its own enumeration and nobody
-        # else's; a window of the longest duration either side holds --- what
-        # `coincidence_window` returns --- multiplies that event's reach onto
-        # every event of both detectors, and on data whose noise chains long
-        # events the enumeration alone exhausts the memory.
+        # else's; a window of the longest duration either side multiplies that
+        # event's reach onto every event of both detectors, and on data whose
+        # noise chains long events the enumeration alone exhausts the memory.
         tol_up = float(self.config.maximum_tolerance(pair))
         l_lo = np.where(np.isfinite(l_start), l_start, lt) - tol_up
         l_hi = np.where(np.isfinite(l_end), l_end, lt) + tol_up
@@ -649,6 +683,15 @@ class IndexedCoincidenceFinder:
             time_overlap = _shifted_overlap_fraction(
                 l_start[i], l_end[i], r_start[j], r_end[j],
                 self.config.travel_time(pair))
+            # The test is on the events' stretches of time, not on the
+            # difference of their instants. A transient longer than one
+            # analysis window is assembled as several events, and the two
+            # detectors do not keep the same one: their instants then differ
+            # by far more than the light travel time although both belong to
+            # one signal. Gating on that difference would discard the pair,
+            # which is a stage taking evidence away from a candidate the
+            # detectors did assemble. The difference is measured on every
+            # admitted pair and ranks it instead.
             keep = (
                 _intervals_touch(l_start[i], l_end[i], r_start[j], r_end[j],
                                  tolerance)
@@ -741,8 +784,8 @@ class IndexedCoincidenceFinder:
         sb = _numeric(right, ("EnWDF", "snrMax"), default=0.0)[j]
         # The same clock the admissibility used, so a candidate's recorded dt
         # is the quantity it was admitted and penalised on.
-        ta = _numeric(left, ("gpsPeak", "gpsCentroid"))[i]
-        tb = _numeric(right, ("gpsPeak", "gpsCentroid"))[j]
+        ta = _numeric(left, INSTANT_COLUMNS)[i]
+        tb = _numeric(right, INSTANT_COLUMNS)[j]
 
         out = pd.DataFrame({
             f"index_{left_ifo}": i,
@@ -785,8 +828,29 @@ class IndexedCoincidenceFinder:
 
 @dataclass
 class FARConfig:
+    """How the accidental background is drawn.
+
+    :param n_slides: how many displacements to draw. The accidental livetime
+        is this times the span, and the lowest rate a background resolves is
+        one over that livetime.
+    :param min_shift_s: the step between one displacement and the next,
+        seconds --- a stated constant, as published burst searches state
+        theirs. It does two jobs, and they ask for the same number: a
+        displacement below the window a pair is admitted in leaves a real
+        coincidence admissible, so the signal enters the background it is
+        measured against; and two lags closer together than the length the
+        trigger stream is correlated over re-use the same clusters, so the
+        tail is redrawn rather than sampled. Both scales are measured from the
+        data and a step below either is refused, so the constant is checked
+        rather than trusted. None derives it from those measurements instead,
+        which makes the step a property of the run and not of the analysis:
+        two runs then draw backgrounds a reader cannot compare.
+    :param seed: the generator's seed. The grid is regular, so this chooses
+        only the phase it starts at.
+    """
+
     n_slides: int = 100
-    min_shift_s: float = 2.0
+    min_shift_s: float | None = 4.0
     seed: int = 1
 
 
@@ -802,37 +866,92 @@ class TimeSlideFAR:
         self.config = FARConfig(**kwargs) if config is None else config
         self.n_slides = self.config.n_slides
 
-    def _draw_shifts(self, rng, n_shifted, span):
-        """One displacement per shifted detector, all mutually decorrelating.
+    def _admission_window(self, ifos):
+        """The widest arrival-time difference the coincidence admits, seconds.
 
-        Every detector but the reference is displaced by its own amount, so a
-        real coincidence survives in none of the pairs. Two detectors given
-        nearly the same shift would stay in step with each other and their own
-        pair would keep its real coincidences, so the draw is repeated until
-        every difference, and not only every shift, clears `min_shift_s`.
+        A displacement smaller than this leaves a real coincidence admissible,
+        and two lags closer together than this form the same pairings twice.
+        The number is the coincidence's own cap, so a background drawn for one
+        admission rule cannot be read against another.
 
-        :param rng: the generator to draw from.
+        :param ifos: the detectors being paired.
+        :return: float -- the widest tolerance over the pairs, seconds.
+        :raises TypeError: if the finder does not carry a coincidence
+            configuration to read it from.
+        """
+        finder = self.coincidence_finder
+        config = getattr(finder, "config", None)
+        if config is None:
+            builder = getattr(finder, "builder", None)
+            config = getattr(builder, "coincidence", None)
+        if config is None or not hasattr(config, "maximum_tolerance"):
+            raise TypeError(
+                f"{type(finder).__name__} carries no coincidence "
+                f"configuration, so the window a pair is admitted in --- which "
+                f"is the smallest displacement a slide may use --- cannot be "
+                f"read")
+        names = [str(i) for i in ifos]
+        return max(float(config.maximum_tolerance((a, b)))
+                   for a, b in combinations(names, 2))
+
+    def _shift_grid(self, rng, n_shifted, span, least):
+        """Every displacement the span holds, one row per slide.
+
+        Enumerated and not drawn. A displacement drawn at random can repeat a
+        pairing an earlier draw already formed, and two draws of one pairing
+        are two perfectly correlated rows in a distribution a threshold reads
+        as an order statistic: the tail is then redrawn rather than sampled,
+        and the livetime credited overstates what was measured. A grid of
+        multiples of one step gives each configuration once, which is what
+        published burst searches do.
+
+        The step is `min_shift_s`, one distance for every lag, and the span
+        holds as many as fit --- so a short segment yields fewer lags than
+        asked for rather than the same ones twice. `seed` chooses the phase the
+        grid starts at, which keeps a background reproducible and lets two runs
+        sample different offsets.
+
+        Every detector but the reference takes its own multiple of the step, so
+        every difference between two shifted detectors is a multiple of the
+        step as well and clears the floor by construction --- two detectors
+        moved by nearly the same amount would stay in step with each other and
+        their own pair would keep its real coincidences.
+
+        Only positive multiples are enumerated: a displacement wraps inside the
+        span, so a shift of `-s` is the shift of `span - s` and the positive
+        multiples already cover every distinct configuration.
+
+        :param rng: the generator the phase is drawn from.
         :type n_shifted: int
         :param n_shifted: how many detectors are displaced.
         :type span: float
         :param span: length of the segment, seconds.
-        :return: numpy.ndarray -- one shift per shifted detector, seconds.
-        :raises ValueError: if the span cannot hold that many separated shifts.
+        :type least: float
+        :param least: the smallest displacement, and the step between one lag
+            and the next: the window a pair is admitted in.
+        :return: numpy.ndarray -- shape ``(slides, n_shifted)``, the
+            displacement of each shifted detector in each slide. Fewer rows
+            than `n_slides` where the span cannot hold that many.
+        :raises ValueError: if the span holds no displacement at all.
         """
-        least = float(self.config.min_shift_s)
-        for _ in range(64):
-            magnitude = rng.uniform(least, span - least, size=n_shifted)
-            sign = np.where(rng.integers(0, 2, size=n_shifted) > 0, 1.0, -1.0)
-            shifts = magnitude * sign
-            if n_shifted == 1:
-                return shifts
-            gaps = np.abs(shifts[:, None] - shifts[None, :])
-            np.fill_diagonal(gaps, np.inf)
-            if gaps.min() >= least:
-                return shifts
-        raise ValueError(
-            f"could not place {n_shifted} shifts at least {least:g} s apart in "
-            f"a span of {span:g} s; lower min_shift_s or use fewer detectors")
+        # A fixed step, as published burst searches use: every lag is the same
+        # distance from the last, and a span holds as many as fit. Spreading a
+        # requested number over the whole span instead would make the step a
+        # function of how many were asked for, which is not a property of the
+        # data.
+        step = float(least)
+        asked = int(self.config.n_slides)
+        # Zero and the whole span are the identity, and one step of room is
+        # left for the phase.
+        available = int(np.floor(span / step)) - n_shifted - 1
+        if available < 1:
+            raise ValueError(
+                f"a span of {span:g} s holds no displacement of at least "
+                f"{least:g} s for {n_shifted} detector(s) beside the reference")
+        used = min(asked, available)
+        phase = float(rng.uniform(0.0, step))
+        k = np.arange(1, used + 1, dtype=float)
+        return step * (k[:, None] + np.arange(n_shifted)[None, :]) + phase
 
     def background_distribution(self, events_by_ifo, segment_bounds):
         """Accidental coincidences, by displacing every detector but the first.
@@ -853,16 +972,62 @@ class TimeSlideFAR:
         ref, shifted_ifos = ifos[0], ifos[1:]
         start, end = map(float, segment_bounds[shifted_ifos[0]])
         span = end - start
-        if span <= 2.0 * self.config.min_shift_s:
-            raise ValueError("Segment is too short for the requested time slides")
+        # The window a pair is admitted in. A pair is admitted when the two
+        # events' instants differ by no more than the coincidence's tolerance,
+        # so the widest that tolerance can be is the displacement below which
+        # a real coincidence stays admissible --- and equally the spacing below
+        # which two lags form the same pairings twice. It is read from the
+        # coincidence itself rather than assumed of it.
+        # A caller that states a floor has said what it wants; one that does
+        # not is asking the coincidence, and a coincidence that cannot answer
+        # is refused rather than guessed at.
+        stated = self.config.min_shift_s
+        try:
+            admission = self._admission_window(ifos)
+        except TypeError:
+            if stated is None:
+                raise
+            admission = None
+
+        # Clearing the admission window keeps a real coincidence out of the
+        # background and stops two lags forming the same pairing twice, but it
+        # does not make two lags independent. Triggers arrive in clusters as
+        # long as the events themselves, so two displacements closer together
+        # than that length re-use the same clusters in nearly the same
+        # configuration. The scale is taken from the events: the extent all
+        # but the longest hundredth of them fit inside.
+        correlated = 0.0
+        for frame in events_by_ifo.values():
+            if not len(frame):
+                continue
+            extent = _numeric(frame, ("duration",), default=0.0)
+            extent = extent[np.isfinite(extent)]
+            if extent.size:
+                correlated = max(correlated, float(np.quantile(extent, 0.99)))
+        floor = correlated if admission is None else max(admission, correlated)
+        least = floor if stated is None else float(stated)
+        if admission is not None and least < admission:
+            raise ValueError(
+                f"the smallest displacement is {least:g} s and a pair is "
+                f"admitted within {admission:g} s; a slide shorter than that "
+                f"keeps real coincidences in the background")
+        if least < correlated:
+            raise ValueError(
+                f"the smallest displacement is {least:g} s and the events "
+                f"reach {correlated:g} s; lags closer than that are not "
+                f"independent realisations of the trigger stream")
+        if span <= 2.0 * least:
+            raise ValueError(
+                f"a span of {span:g} s cannot hold displacements of at least "
+                f"{least:g} s in either direction")
 
         rng = np.random.default_rng(self.config.seed)
+        grid = self._shift_grid(rng, len(shifted_ifos), span, least)
         rows = []
         shifts = []
 
         template = None
-        for slide_index in range(self.config.n_slides):
-            drawn = self._draw_shifts(rng, len(shifted_ifos), span)
+        for slide_index, drawn in enumerate(grid):
             shifts.append(float(drawn[0]) if len(drawn) == 1
                           else tuple(float(s) for s in drawn))
 
@@ -876,8 +1041,8 @@ class TimeSlideFAR:
                 reference = _numeric(shifted, ("gpsCentroid", "gpsPeak", "gps"))
                 wrapped = start + ((reference - start + shift) % span)
                 displacement = wrapped - reference
-                for column in ("gpsMax", "gpsPeak", "gpsCentroid", "gpsStart",
-                               "gpsEnd"):
+                for column in ("gpsMax", "gpsPeak", "gpsEnvelope",
+                               "gpsCentroid", "gpsStart", "gpsEnd"):
                     if column in shifted:
                         shifted[column] = (pd.to_numeric(shifted[column],
                                                          errors="coerce")
@@ -902,9 +1067,18 @@ class TimeSlideFAR:
         # unrecognisable.
         background = pd.concat(rows, ignore_index=True) if rows else (
             pd.DataFrame() if template is None else template.copy())
-        background.attrs["n_slides"] = self.config.n_slides
+        # What the span held, which is what the livetime is credited on --- not
+        # what was asked for. A short segment yields fewer distinct lags, and a
+        # rate divided by the number requested would claim a livetime the
+        # slides never produced.
+        background.attrs["n_slides"] = int(len(grid))
+        background.attrs["n_slides_requested"] = int(self.config.n_slides)
         background.attrs["segment_duration_s"] = span
-        background.attrs["total_livetime_s"] = self.config.n_slides * span
+        background.attrs["min_shift_s"] = float(least)
+        background.attrs["admission_window_s"] = (
+            float("nan") if admission is None else float(admission))
+        background.attrs["correlated_length_s"] = float(correlated)
+        background.attrs["total_livetime_s"] = float(len(grid)) * span
         background.attrs["shifts_s"] = tuple(shifts)
         return background
 
@@ -924,7 +1098,12 @@ class TimeSlideFAR:
 
         if background.empty:
             out["n_background_ge"] = 0
-            total_livetime = self.config.n_slides * float(segment_duration_s)
+            # The slides the span held, not the number asked of it: a stretch
+            # too short for the request yields fewer, and crediting the request
+            # claims a livetime the slides never produced.
+            total_livetime = (
+                int(background.attrs.get("n_slides", self.config.n_slides))
+                * float(segment_duration_s))
             out["background_livetime_s"] = total_livetime
             out["far_hz"] = 1.0 / max(total_livetime, EPS)
             out["far_per_day"] = out["far_hz"] * 86400.0
@@ -939,7 +1118,8 @@ class TimeSlideFAR:
         total_livetime = float(
             background.attrs.get(
                 "total_livetime_s",
-                self.config.n_slides * float(segment_duration_s),
+                int(background.attrs.get("n_slides", self.config.n_slides))
+                * float(segment_duration_s),
             )
         )
         # A finite background cannot establish a zero rate.  The +1 count is

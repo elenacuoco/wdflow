@@ -1,18 +1,29 @@
-"""The arrival-time difference of a candidate, read off the reconstructions.
+"""Arrival times read off the reconstructions.
 
 A trigger records two instants, the energy centroid and the centre of the
 tile carrying its largest coefficient. Both are moments of the tiling: the
 centroid follows how much of the transient survived thresholding in that
-detector, and the tile centre cannot resolve better than the tile it sits on.
-The reconstruction carries the waveform at the sample, so the lag that
-maximises the cross-correlation of two events' stitched reconstructions
-measures their arrival-time difference on the morphology the two detectors
-share, below the tile.
+detector, and the tile centre cannot resolve better than the tile it sits on,
+whose length is one over the upper edge of its own band. The reconstruction
+carries the waveform at the sample, and two quantities are read off it here.
+
+:func:`envelope_instant` gives one event its own instant: the peak of the
+analytic envelope of its stitched reconstruction, sought within a stated width
+of the instant the event was ranked on. It is a property of that event and of
+nothing else, so a time slide carries it with the event and a difference of two
+of them is a difference of two node quantities, measured once per event rather
+than once per pair.
+
+:func:`arrival_time_difference` gives a pair its arrival-time difference: the
+lag that maximises the cross-correlation of the two events' stitched
+reconstructions, over the lags the network's geometry allows, together with the
+width the correlation peak declares. It measures on the morphology the two
+detectors share, below the tile, and costs one correlation per pair.
 
 Nothing here reaches back to the strain: a stitched series is a function of
 the coefficients a trigger already carries (see
-:func:`wdf.analysis.reconstruction.stitch`), so the estimator runs wherever
-the analysis runs and adds nothing to the front end.
+:func:`wdf.analysis.reconstruction.stitch`), so the estimators run wherever
+the analysis runs and add nothing to the front end.
 """
 from __future__ import annotations
 
@@ -157,3 +168,107 @@ def referred_to_instant(series, events, instant="gpsPeak"):
             "given; the offset is measured from the event's own instant")
     return {int(label): (float(start) - at[int(label)], samples)
             for label, (start, samples) in series.items()}
+
+
+def envelope_instant(series, around, fs, width_s):
+    """One event's instant, read on its own reconstruction.
+
+    The instant a trigger reports is the centre of the tile carrying its
+    largest coefficient, and in a dyadic transform a tile lasts one over the
+    upper edge of its own band --- a few milliseconds high in the band, tens of
+    milliseconds low in it. Where the loudest coefficient sits low the tile is
+    longer than the light travel time of the network and the difference of two
+    such instants carries no geometry. The reconstruction carries the waveform
+    at the sample, and the peak of its analytic envelope is where the event's
+    amplitude is largest, on the grid the samples are on.
+
+    The search is bounded to `width_s` about the tile instant. An event
+    assembled from many blocks spreads its energy over its whole extent, and
+    the envelope of a long transient peaks where that energy happened to
+    concentrate rather than where the event arrived; restricting the search to
+    the block the event was ranked on keeps the instant on the feature the
+    search selected it for.
+
+    This is a property of one event and of nothing else, so a time slide
+    carries it with the event and a difference of two of them is a difference
+    of two node quantities. It costs one pass over the samples of one block,
+    once per event, and nothing per pair.
+
+    :type series: tuple
+    :param series: ``(gps_start, samples)``, as
+        :func:`wdf.analysis.reconstruction.stitch` returns it.
+    :type around: float
+    :param around: the instant to search about, on the same clock as
+        `gps_start`; the tile instant of the block the event is ranked on.
+    :type fs: float
+    :param fs: sampling frequency of the series, Hz.
+    :type width_s: float
+    :param width_s: full width of the search about `around`, seconds. The
+        length of one analysis block is the value this was measured with; a
+        wider one lets a long transient's own energy pull the instant away.
+    :return: float -- the instant, on the clock `gps_start` is on, or NaN when
+        the series carries nothing to read it from.
+    :raises ValueError: if the sampling frequency or the width is not positive.
+    """
+    if not fs > 0:
+        raise ValueError(f"sampling frequency must be positive, got {fs}")
+    if not width_s > 0:
+        raise ValueError(f"the search width must be positive, got {width_s}")
+
+    start, samples = series
+    x = np.asarray(samples, dtype=float)
+    if x.size < 2 or not np.any(x):
+        return float("nan")
+
+    first = int(np.ceil((float(around) - 0.5 * width_s - float(start)) * fs))
+    last = int(np.floor((float(around) + 0.5 * width_s - float(start)) * fs))
+    first, last = max(first, 0), min(last, x.size - 1)
+    if last < first:
+        # The block the event is ranked on lies outside the samples the
+        # reconstruction covers, which is not a reading of anything.
+        return float("nan")
+
+    # The analytic signal by its definition: the spectrum with the negative
+    # frequencies removed and the positive ones doubled. Done here rather than
+    # through scipy so that the window actually transformed is the one read.
+    piece = x[first:last + 1]
+    spectrum = np.fft.fft(piece)
+    n = piece.size
+    weight = np.zeros(n)
+    weight[0] = 1.0
+    if n % 2 == 0:
+        weight[1:n // 2] = 2.0
+        weight[n // 2] = 1.0
+    else:
+        weight[1:(n + 1) // 2] = 2.0
+    envelope = np.abs(np.fft.ifft(spectrum * weight))
+    return float(start) + (first + int(np.argmax(envelope))) / fs
+
+
+def envelope_instants(series, events, fs, width_s, instant="gpsPeak"):
+    """Each event's instant, read on its own reconstruction.
+
+    :type series: dict
+    :param series: ``{cluster_id: (gps_start, samples)}``.
+    :type events: pandas.DataFrame
+    :param events: the events those reconstructions belong to, carrying
+        ``cluster_id`` and the `instant` column.
+    :type fs: float
+    :param fs: sampling frequency of the series, Hz.
+    :type width_s: float
+    :param width_s: full width of the search about each event's `instant`.
+    :type instant: str
+    :param instant: the column the search is centred on.
+    :return: numpy.ndarray -- one instant per row of `events`, NaN where the
+        event has no reconstruction to read.
+    :raises KeyError: if `events` carries no `instant` or ``cluster_id``.
+    """
+    labels = events["cluster_id"].astype(int).to_numpy()
+    around = events[instant].astype(float).to_numpy()
+    out = np.full(len(events), np.nan)
+    for row, (label, centre) in enumerate(zip(labels, around)):
+        held = series.get(int(label))
+        if held is None or not np.isfinite(centre):
+            continue
+        out[row] = envelope_instant(held, centre, fs, width_s)
+    return out

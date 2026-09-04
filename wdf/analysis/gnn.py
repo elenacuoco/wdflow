@@ -75,6 +75,12 @@ def _to_pyg_data(graph: TriggerGraph, labels: np.ndarray | None = None,
         edge_attr=torch.from_numpy(graph.intra_edge_features),
         cross_edge_index=torch.from_numpy(graph.cross_edges.T).long().reshape(2, -1),
         cross_edge_attr=torch.from_numpy(graph.cross_edge_features),
+        # One row per cross edge, flattened over band and lag. The width is
+        # stated rather than inferred: a graph with no edge and no lag has no
+        # element for `-1` to solve for, and reshaping it is refused.
+        cross_edge_profile=torch.from_numpy(graph.cross_edge_profiles.reshape(
+            len(graph.cross_edges),
+            int(np.prod(graph.cross_edge_profiles.shape[1:])))),
         num_nodes=graph.node_features.shape[0],
     )
     if labels is not None:
@@ -116,7 +122,7 @@ class GNNCoincidenceScorer(nn.Module):
     edge-classification head scores cross-detector candidate edges."""
 
     def __init__(self, node_dim: int, hidden: int = 16, seed: int = 0,
-                 device: str | None = None, cross_edge_dim: int = 2):
+                 device: str | None = None, cross_edge_dim: int = 2, profile_dim: int = 0):
         """
         :type node_dim: int
         :param node_dim: width of a node's feature vector, i.e.
@@ -128,16 +134,20 @@ class GNNCoincidenceScorer(nn.Module):
         :type device: str or None
         :param device: torch device; CUDA when available if None.
         :type cross_edge_dim: int
-        :param cross_edge_dim: number of features on a candidate edge, i.e.
-            `TriggerGraph.cross_edge_features.shape[1]`.
+        :param cross_edge_dim: number of scalar features on a candidate edge.
+        :type profile_dim: int
+        :param profile_dim: flattened width of the signed correlation profile; zero
+            loads legacy models without this feature.
         """
         super().__init__()
         torch.manual_seed(seed)
         self.device = usable_device(device)
         self.encoder = nn.Sequential(nn.Linear(node_dim, hidden), nn.ReLU())
         self.intra_mp = _IntraMessagePassing(hidden)
+        self.profile_dim = int(profile_dim)
         self.edge_head = nn.Sequential(
-            nn.Linear(hidden * 2 + cross_edge_dim, hidden), nn.ReLU(), nn.Linear(hidden, 1)
+            nn.Linear(hidden * 2 + cross_edge_dim + self.profile_dim, hidden),
+            nn.ReLU(), nn.Linear(hidden, 1)
         )
         # The feature scaling is part of the fitted model, not of a graph. A
         # scaling measured on each graph separately would have the model read
@@ -154,13 +164,23 @@ class GNNCoincidenceScorer(nn.Module):
         one segment or many at once with no special-casing.
         """
         x = data.x.to(self.device)
-        x = (x - self.feature_mean) / self.feature_scale
+        # Two statements would hold two copies of the node features at once;
+        # on a slid background this matrix is gigabytes and the call is made
+        # once per shift. The subtraction already owns its result, so the
+        # scaling is applied to it in place and `data.x` is left untouched.
+        x = (x - self.feature_mean).div_(self.feature_scale)
         h = self.encoder(x)
         h = self.intra_mp(h, data.edge_index.to(self.device), data.edge_attr.to(self.device))
         if data.cross_edge_index.numel() == 0:
             return torch.zeros(0, device=self.device)
         i, j = data.cross_edge_index[0].to(self.device), data.cross_edge_index[1].to(self.device)
         ef = data.cross_edge_attr.to(self.device)
+        if self.profile_dim:
+            profile = data.cross_edge_profile.to(self.device)
+            if profile.shape[1] != self.profile_dim:
+                raise ValueError(f"correlation profile width {profile.shape[1]} "
+                                 f"does not match model {self.profile_dim}")
+            ef = torch.cat([ef, profile], dim=1)
         return self.edge_head(torch.cat([h[i], h[j], ef], dim=1)).squeeze(-1)
 
     def edge_logits(self, graph: TriggerGraph) -> "torch.Tensor":
@@ -183,7 +203,8 @@ class GNNCoincidenceScorer(nn.Module):
             "state_dict": self.state_dict(),
             "node_dim": int(self.encoder[0].in_features),
             "hidden": hidden,
-            "cross_edge_dim": int(self.edge_head[0].in_features - 2 * hidden),
+            "cross_edge_dim": int(self.edge_head[0].in_features - 2 * hidden - self.profile_dim),
+            "profile_dim": self.profile_dim,
         }, path)
 
     @classmethod
@@ -200,7 +221,8 @@ class GNNCoincidenceScorer(nn.Module):
         """
         blob = torch.load(path, map_location="cpu", weights_only=False)
         model = cls(node_dim=blob["node_dim"], hidden=blob["hidden"],
-                    cross_edge_dim=blob["cross_edge_dim"], device=device)
+                    cross_edge_dim=blob["cross_edge_dim"],
+                    profile_dim=blob.get("profile_dim", 0), device=device)
         model.load_state_dict(blob["state_dict"])
         model.eval()
         return model

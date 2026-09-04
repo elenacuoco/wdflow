@@ -207,7 +207,14 @@ def test_a_curve_does_not_read_a_threshold_off_a_missing_value():
         n_injections=2, livetime_days=1.0)
     curve = mode_roc(mode)
     assert np.isfinite(curve.threshold).all()
-    assert curve.threshold.iloc[0] == pytest.approx(5.0)
+    # The four finite accidentals are 1, 2, 3 and 5, and the curve starts at
+    # the second largest: a threshold on the single loudest is a threshold on a
+    # maximum, which on recorded strain is a glitch.
+    assert curve.threshold.max() == pytest.approx(3.0)
+    # Every point states the rate its own threshold realises, and the ceiling
+    # the curve tends to is the fraction of injections a candidate matched.
+    assert curve.far_per_day.to_numpy() == pytest.approx([2.0, 3.0, 4.0])
+    assert curve.ceiling.eq(1.0).all()
 
 
 def test_an_empty_background_is_not_a_quiet_one():

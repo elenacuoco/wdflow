@@ -32,6 +32,16 @@ def _table(n, seed=0, separable=True):
         # same reason: two events of one transient are loud in the same
         # places on the plane and two of noise are not.
         "tile_coherence": rng.uniform(0, 15, n) + 20.0 * shift,
+        # The same question of the block each event was selected on: fewer
+        # tiles, so a smaller value, separating for the same reason.
+        "block_coherence": rng.uniform(0, 8, n) + 12.0 * shift,
+        # What the shared tiles say about the pair's timing and about how much
+        # of the energy they shared was coherent: a signal arrives together and
+        # shares most of what it has, an accidental neither.
+        "coherent_dt": rng.normal(0, 0.05, n) * (1.0 - 0.9 * shift),
+        "coherent_fraction": rng.uniform(0, 0.4, n) + 0.5 * shift,
+        "block_coherent_dt": rng.normal(0, 0.05, n) * (1.0 - 0.9 * shift),
+        "block_coherent_fraction": rng.uniform(0, 0.4, n) + 0.5 * shift,
     }), labels
 
 
