@@ -14,8 +14,8 @@ authors:
     affiliation: "Alma Mater Studiorum -- Università di Bologna"
 license: GPL-3.0-or-later
 repository-code: "https://github.com/elenacuoco/wdflow"
-version: "1.1.1"
-date-released: "2026-09-02"
+version: "1.2.0"
+date-released: "2026-09-04"
 
 preferred-citation:
   type: conference-paper

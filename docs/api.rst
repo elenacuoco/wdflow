@@ -205,6 +205,18 @@ wdf.analysis.network_graph
 .. automodule:: wdf.analysis.network_graph
    :members:
 
+wdf.analysis.wavegram_match
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.wavegram_match
+   :members:
+
+wdf.analysis.network_statistic
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.network_statistic
+   :members:
+
 wdf.analysis.detectors
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -263,6 +275,12 @@ wdf.analysis.timing
 ~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.timing
+   :members:
+
+wdf.analysis.timing_prior
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.timing_prior
    :members:
 
 wdf.analysis.robust_events

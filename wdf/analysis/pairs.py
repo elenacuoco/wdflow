@@ -127,7 +127,8 @@ def _paired_device(prefer_gpu):
     return torch.device("cuda")
 
 
-def paired_dot(left, right, i, j, block: int = PAIRED_BLOCK, gpu=None):
+def paired_dot(left, right, i, j, block: int = PAIRED_BLOCK, gpu=None,
+               resident=None):
     """Row-wise dot products of gathered rows, without gathering them all.
 
     Computes ``sum(left[i] * right[j], axis=1)`` for every pair, in blocks, so
@@ -151,6 +152,17 @@ def paired_dot(left, right, i, j, block: int = PAIRED_BLOCK, gpu=None):
     :type gpu: bool | None
     :param gpu: True to require a GPU, False to stay in numpy, None to use one
         when available.
+    :type resident: dict | None
+    :param resident: a mapping the caller owns, in which the device copies of
+        `left` and `right` are kept between calls. Sending a matrix to the
+        device costs far more than reducing it --- measured on a network stage's
+        shape, the transfer is the whole of the time and the reduction a
+        twentieth of what numpy takes --- and the same matrix is reduced once
+        per pair set, so a caller that reduces many pair sets against one
+        matrix should hand the same mapping to each call. Without it every call
+        sends its matrices again, which is correct and slower. Ignored when the
+        reduction runs in numpy, so a machine with no GPU behaves as it always
+        did.
     :return: numpy.ndarray -- one value per pair.
     :raises ValueError: if the two matrices have different widths, or the two
         index arrays different lengths.
@@ -179,11 +191,26 @@ def paired_dot(left, right, i, j, block: int = PAIRED_BLOCK, gpu=None):
         return out
 
     import torch
+
+    def on_device(array):
+        """The device copy of one matrix, kept if the caller offered a home.
+
+        Keyed on the array's identity, and the array itself is held beside its
+        copy: an identity is only unique while the object it names is alive.
+        """
+        if resident is None:
+            return torch.as_tensor(array, device=device, dtype=torch.float64)
+        held = resident.get(id(array))
+        if held is None or held[0] is not array:
+            held = (array, torch.as_tensor(array, device=device,
+                                           dtype=torch.float64))
+            resident[id(array)] = held
+        return held[1]
+
     # Both matrices are resident for the whole reduction: they are indexed by
     # every block, so sending them once is what makes the blocks cheap.
-    tl = torch.as_tensor(left, device=device, dtype=torch.float64)
-    tr = (tl if right is left
-          else torch.as_tensor(right, device=device, dtype=torch.float64))
+    tl = on_device(left)
+    tr = tl if right is left else on_device(right)
     ti = torch.as_tensor(i, device=device)
     tj = torch.as_tensor(j, device=device)
     for start in range(0, n, block):

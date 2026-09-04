@@ -849,14 +849,16 @@ class EventWavegram:
     between the lengths, so one event's members all land on the same grid
     whatever length produced them.
 
-    :param grid: (n_bands, n_time_bins) of summed coefficient magnitude.
+    :param grid: (n_bands, n_time_bins) of summed signed coefficients on the
+        noise scale. This is the event's compact local representation; it is
+        not the absolute-time rendering used for a detector coincidence.
     :param bin_seconds: duration one column stands for, seconds. Carried with
         the grid so that a lag between two maps can be read as a time.
     :param bands: (n_bands, 2) frequency edges of the rows, Hz.
-    :param gps_first: GPS time of the left edge of the first column. With
-        `bin_seconds` and `bands` this places the map in time and frequency; a
-        map that cannot be placed is not a map, and rederiving the placement at
-        the point of use puts two copies of the same arithmetic in the code.
+    :param gps_first: GPS time represented by the left edge of the compact
+        local grid. The lossless tiles retain their absolute GPS supports; a
+        coincidence renders those tiles on the pair's common absolute grid
+        instead of comparing two independently anchored local grids.
     :param tiles: the event's coefficients as tiles on the plane, as
         `event_tiles` returns them --- the lossless description the grid is a
         projection of. Everything an event is asked for should derive from this
@@ -867,12 +869,21 @@ class EventWavegram:
 
     def __init__(self, grid: np.ndarray, bin_seconds: float = 1.0,
                  bands: np.ndarray | None = None, gps_first: float = 0.0,
-                 tiles=None):
+                 tiles=None, block_tiles=None):
         self.grid = grid
         self.bin_seconds = float(bin_seconds)
         self.bands = np.zeros((len(grid), 2)) if bands is None else np.asarray(bands)
         self.gps_first = float(gps_first)
+        #: Every tile the event kept, over all the blocks it spans. What the
+        #: event is worth is measured on these.
         self.tiles = tiles
+        #: The tiles of the one block the event was selected on. A statistic
+        #: summed over tiles carries the threshold's floor once per tile, so a
+        #: sum over the whole event grows with the event's extent in noise as
+        #: well as in signal; reducing the event to the block that ranked it
+        #: bounds the number of tiles the sum can accumulate, whatever the
+        #: transient's duration.
+        self.block_tiles = block_tiles
 
     def times(self) -> np.ndarray:
         """The left edge of every column, in GPS seconds.
@@ -891,6 +902,38 @@ class EventWavegram:
         """
         return self.grid
 
+    def render_absolute(self, first: float, last: float, bin_seconds: float,
+                        bands: np.ndarray | None = None,
+                        selected_block: bool = False) -> np.ndarray:
+        """Render this event on a stated absolute time grid.
+
+        This is the representation for a detector coincidence. Unlike
+        :meth:`wavegram`, it has no event-dependent anchor: two events rendered
+        with the same ``first``, ``last`` and ``bin_seconds`` retain their
+        measured arrival-time difference, which the matcher may search only
+        over the physically admitted displacement.
+
+        :param first: left edge of the common grid, absolute GPS seconds.
+        :param last: right edge of the common grid, absolute GPS seconds.
+        :param bin_seconds: width of one time bin, seconds.
+        :param bands: the frequency scale of one window length. None uses this
+            event's stored scale.
+        :param selected_block: use only the block that selected the event when
+            True; otherwise use every tile of the assembled event.
+        :return: numpy.ndarray -- the signed absolute-time wavegram.
+        :raises ValueError: if the requested tile collection is unavailable.
+        """
+        cloud = self.block_tiles if selected_block else self.tiles
+        if cloud is None:
+            which = "selected block" if selected_block else "event"
+            raise ValueError(f"the {which} carries no tiles to render")
+        scale = self.bands if bands is None else np.asarray(bands, dtype=float)
+        # Local import keeps detector event construction independent of the
+        # optional network matcher and avoids an import cycle at module load.
+        from wdf.analysis.wavegram_match import render
+
+        return render(cloud, scale, first, last, bin_seconds)
+
 
 def event_coefficients(graph: DetectorGraph, labels=None,
                        time_bins: int = WAVEGRAM_TIME_BINS,
@@ -902,17 +945,17 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     transient a second long, and summing the members' own grids would fold it
     onto itself.
 
-    The map is on a **common** time base --- a bin is `bin_seconds` wherever it
-    is drawn --- and anchored on the centre of the tile carrying the event's
-    largest coefficient. Scaling each map to
-    its own event's extent instead would give a bin a different duration in each
-    detector, so two maps compared across the network would be stretched onto
-    each other, and the lag that best aligns them would be in no unit at all.
-    An event longer than `time_bins * bin_seconds` is truncated around that
-    anchor; a shorter one leaves the rest of the map empty. The anchor is what
-    makes two maps comparable: it is an instant both detectors measure on the
-    same transient, whereas a centroid is a property of what each of them
-    recovered.
+    The compact map is on a common time scale --- a bin is `bin_seconds`
+    wherever it is drawn --- and is anchored on the centre of the tile carrying
+    the event's largest coefficient. This anchor is only a storage convention
+    for a fixed-size node feature or a plot. It must not be used for a detector
+    coincidence, because anchoring each event independently removes the arrival
+    delay that the coincidence has to test. For that comparison,
+    :meth:`EventWavegram.render_absolute` renders the stored tiles on one
+    absolute grid shared by the pair.
+
+    An event longer than `time_bins * bin_seconds` is truncated only in this
+    compact view; its absolute tiles remain complete.
 
     :type graph: DetectorGraph
     :param graph: the detector's detector-stage graph.
@@ -956,13 +999,10 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     sigma_of = nodes["sigma"].to_numpy(dtype=float)
     span = scale / fs
 
-    # Anchored on the centre of the tile carrying each event's largest
-    # coefficient, which is an instant both detectors share. The energy centroid
-    # is not: it follows how much of a transient survived threshold in that
-    # detector, so an event recovered as one block and its counterpart recovered
-    # as five have centroids far apart, and two maps anchored on them are
-    # offset by a large part of their own width --- their agreement then
-    # measures the difference in extent and not the difference in morphology.
+    # A compact, fixed-size view is anchored on the centre of the tile carrying
+    # each event's largest coefficient. The anchor is not part of the physical
+    # coincidence: the absolute-time matcher renders `tiles` on one common grid
+    # and searches the admitted displacement there.
     anchor_of = nodes["gpsPeak"].to_numpy(dtype=float) \
         if "gpsPeak" in nodes else gps
     weight = np.maximum(nodes["EnWDF"].to_numpy(dtype=float) ** 2, EPS)
@@ -993,8 +1033,9 @@ def event_coefficients(graph: DetectorGraph, labels=None,
         flat_node = np.repeat(np.arange(len(labels)), counts)
         flat_index = np.concatenate(
             [np.atleast_1d(np.asarray(index_of[n], dtype=int)) for n in range(len(labels))])
-        flat_value = np.abs(np.concatenate(
-            [np.atleast_1d(np.asarray(value_of[n], dtype=float)) for n in range(len(labels))]))
+        flat_value = np.concatenate(
+            [np.atleast_1d(np.asarray(value_of[n], dtype=float))
+             for n in range(len(labels))])
 
         # Band row and tile centre depend only on the window length, of which
         # there are a handful, so each is resolved for all its coefficients at
@@ -1029,10 +1070,14 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     out = {}
     for label, (start, size) in enumerate(zip(starts, sizes)):
         members = order[start:start + size]
-        out[int(label)] = EventWavegram(grids[label], bin_seconds, bands,
-                                        float(first_of[label]),
-                                        tiles=event_tiles(nodes, members,
-                                                          context=tiles))
+        out[int(label)] = EventWavegram(
+            grids[label], bin_seconds, bands, float(first_of[label]),
+            tiles=event_tiles(nodes, members, context=tiles),
+            # The block that selected the event, and only it. `loudest` is the
+            # member carrying the largest per-window energy, which is what
+            # ranks a candidate at the detector stage.
+            block_tiles=event_tiles(nodes, loudest[label:label + 1],
+                                    context=tiles))
     return out
 
 
@@ -1173,15 +1218,70 @@ def flatten_clouds(clouds):
 TILE_PAIR_BLOCK = 20_000_000
 
 
-def tile_coherence_many(flat, i_sel, j_sel, tolerance) -> np.ndarray:
-    """`tile_coherence` for many pairs at once, by one reduction.
+def _tile_offsets(flat, displacement):
+    """Where each tile sits now, given how far its event has been moved.
 
-    The per-pair function forms every pair of tiles inside one call; across a
-    background of slides that call is made once per admitted pair, and a Python
-    loop over tens of thousands of pairs per slide is where the accidental
-    estimate spends its time. Here the cross product of every pair's tiles is
-    laid out as one flat index computation and summed with `bincount`, so the
-    cost is one pass over the tile pairs however many event pairs there are.
+    :param flat: the flattened tiles, as `flatten_clouds` returns them.
+    :param displacement: seconds each event has moved since its tiles were
+        laid out, one value per event, or None where nothing has moved.
+    :return: numpy.ndarray or None -- one displacement per tile, None where
+        every event is where its tiles were laid out.
+    :raises ValueError: if `displacement` does not carry one finite value per
+        event.
+    """
+    if displacement is None:
+        return None
+    displacement = np.asarray(displacement, dtype=float)
+    if displacement.size != len(flat["counts"]):
+        raise ValueError(
+            f"displacement carries {displacement.size} values for "
+            f"{len(flat['counts'])} events")
+    # A displacement that is not a number places an event nowhere: every
+    # comparison against it is false, so its tiles would meet nothing and the
+    # pair would score zero --- a measurement of no agreement rather than of an
+    # event that could not be placed.
+    if not np.all(np.isfinite(displacement)):
+        raise ValueError(
+            f"{int((~np.isfinite(displacement)).sum())} of "
+            f"{displacement.size} events carry no finite displacement")
+    # Nothing moved is the common case --- the unshifted population --- and it
+    # is left to the same arithmetic as before rather than adding zero to every
+    # tile of every pair.
+    if not np.any(displacement):
+        return None
+    return np.repeat(displacement, flat["counts"])
+
+
+def tile_coincidence_many(flat, i_sel, j_sel, tolerance, displacement=None,
+                          with_timing: bool = True) -> dict:
+    """What every pair's shared tiles say: energy, agreement and lag.
+
+    Three sums over the same set of tile pairs, taken in one pass. A tile is a
+    rectangle on the plane and two events describe the same transient where
+    their rectangles cover the same place, so all three are reductions over the
+    pairs of tiles that meet:
+
+    - ``coherent``, the product of the two amplitudes on their noise scales
+      summed with its sign. The sign is kept because a product of magnitudes is
+      positive whatever the data and accumulates with the number of tile pairs,
+      while a signed product has mean zero under the null, so what accumulates
+      over many tiles is agreement and not extent.
+    - ``available``, the same product in magnitude: how much energy the pair
+      had that *could* have been coherent. It is the denominator that turns the
+      first into a bounded agreement and never a ranking quantity on its own.
+    - ``dt``, the arrival-time difference of the shared structure: the
+      difference of the tile centres averaged over the shared tiles, weighted
+      by ``available``. It is not the difference of the two events' instants,
+      and for a transient longer than one analysis window the two are different
+      measurements: the detectors do not keep the same fragment, so their
+      instants differ by far more than the light travel time while the tiles
+      they share are the piece of the plane both of them kept. Its resolution
+      is the duration of a tile, which is enough to rank a pair and not enough
+      to place a source in the sky; the arrival time of a candidate is measured
+      on the two reconstructions by :mod:`wdf.analysis.timing`.
+
+    The sign convention is the caller's: ``dt`` is positive when the left
+    event's shared tiles sit later than the right event's.
 
     :param flat: the flattened tiles, as `flatten_clouds` returns them.
     :param i_sel: left event of each pair, as indices into the flattening.
@@ -1189,24 +1289,43 @@ def tile_coherence_many(flat, i_sel, j_sel, tolerance) -> np.ndarray:
     :type tolerance: float
     :param tolerance: how far the two may be displaced in time and still be
         taken to cover the same place, seconds.
-    :return: numpy.ndarray -- the coherent energy of each pair.
+    :param displacement: how far each event has been moved in time since its
+        tiles were laid out, seconds, one value per event of the flattening;
+        None where nothing has moved. A tile carries an absolute time, so an
+        event displaced without its tiles is compared at the place it used to
+        occupy, and every slid pair would share no tile whatever its
+        morphologies.
+    :type with_timing: bool
+    :param with_timing: also reduce the magnitude and the lag. False sums the
+        signed product alone, which is one reduction instead of three over the
+        same tile pairs.
+    :return: dict -- ``coherent`` per pair, always; ``available`` and ``dt``
+        per pair when `with_timing`, and None otherwise. ``dt`` is not a number
+        for a pair sharing no tile, since no lag was measured there.
+    :raises ValueError: if `displacement` does not carry one finite value per
+        event.
     """
     i_sel = np.asarray(i_sel, dtype=np.int64)
     j_sel = np.asarray(j_sel, dtype=np.int64)
+    offset = _tile_offsets(flat, displacement)
+
     nl, nr = flat["counts"][i_sel], flat["counts"][j_sel]
     per_pair = (nl * nr).astype(np.int64)
-    out = np.zeros(len(i_sel))
+    coherent = np.zeros(len(i_sel))
+    available = np.zeros(len(i_sel)) if with_timing else None
+    moment = np.zeros(len(i_sel)) if with_timing else None
+    lag = np.full(len(i_sel), np.nan) if with_timing else None
     if not int(per_pair.sum()):
-        return out
+        return dict(coherent=coherent, available=available, dt=lag)
 
-    # The flat layout is exact but its working arrays are the size of the
-    # cross product summed over every pair at once: one event assembled from
+    # The flat layout is exact but its working arrays are the size of the cross
+    # product summed over every pair at once: one event assembled from
     # thousands of windows meets hundreds of partners, and the product of the
     # two is billions of tile pairs in a single allocation. The pairs are
     # therefore taken in runs bounded by the tile pairs they lay out, and a
-    # single pair too large for a run on its own is split along its left
-    # tiles; only the per-pair sums survive either way, so the numbers are
-    # the ones the one-shot layout produces.
+    # single pair too large for a run on its own is split along its left tiles;
+    # only the per-pair sums survive either way, so the numbers are the ones
+    # the one-shot layout produces.
     bound = int(TILE_PAIR_BLOCK)
     edges = np.cumsum(per_pair)
     first = 0
@@ -1219,14 +1338,16 @@ def tile_coherence_many(flat, i_sel, j_sel, tolerance) -> np.ndarray:
             li, ri = flat["starts"][i_sel[first]], flat["starts"][j_sel[first]]
             n_left, n_right = int(nl[first]), int(nr[first])
             step = max(bound // max(n_right, 1), 1)
-            total = 0.0
             for lo in range(0, n_left, step):
-                left = np.repeat(li + np.arange(lo, min(lo + step, n_left)),
-                                 n_right)
-                right = np.tile(ri + np.arange(n_right),
-                                min(lo + step, n_left) - lo)
-                total += _tile_pair_energy(flat, left, right, tolerance).sum()
-            out[first] = total
+                hi = min(lo + step, n_left)
+                left = np.repeat(li + np.arange(lo, hi), n_right)
+                right = np.tile(ri + np.arange(n_right), hi - lo)
+                product, magnitude, weighted = _tile_pair_terms(
+                    flat, left, right, tolerance, offset, with_timing)
+                coherent[first] += product.sum()
+                if with_timing:
+                    available[first] += magnitude.sum()
+                    moment[first] += weighted.sum()
             first = last
             continue
 
@@ -1238,31 +1359,98 @@ def tile_coherence_many(flat, i_sel, j_sel, tolerance) -> np.ndarray:
         right_count = nr[sel][pair_id]
         left = flat["starts"][i_sel[sel]][pair_id] + within // right_count
         right = flat["starts"][j_sel[sel]][pair_id] + within % right_count
-        product = _tile_pair_energy(flat, left, right, tolerance)
-        out[first:last] = np.bincount(pair_id, weights=product,
-                                      minlength=last - first)
+        product, magnitude, weighted = _tile_pair_terms(
+            flat, left, right, tolerance, offset, with_timing)
+        width = last - first
+        coherent[first:last] = np.bincount(pair_id, weights=product,
+                                           minlength=width)
+        if with_timing:
+            available[first:last] = np.bincount(pair_id, weights=magnitude,
+                                                minlength=width)
+            moment[first:last] = np.bincount(pair_id, weights=weighted,
+                                             minlength=width)
         first = last
-    return out
+
+    if with_timing:
+        # A pair whose tiles never met has no lag: a zero there would be read
+        # as a perfectly aligned pair, which is the opposite of what it is.
+        met = available > 0.0
+        lag[met] = moment[met] / available[met]
+    return dict(coherent=coherent, available=available, dt=lag)
 
 
-def _tile_pair_energy(flat, left, right, tolerance):
-    """The coherent energy of each tile pair, zero where they do not meet.
+def tile_coherence_many(flat, i_sel, j_sel, tolerance,
+                        displacement=None) -> np.ndarray:
+    """The coherent energy of many pairs, by one reduction.
+
+    The signed sum alone, for a caller that wants no more:
+    :func:`tile_coincidence_many` takes the same pass over the same tile pairs
+    and also returns the energy available and the pair's lag.
+
+    :param flat: the flattened tiles, as `flatten_clouds` returns them.
+    :param i_sel: left event of each pair, as indices into the flattening.
+    :param j_sel: right event of each pair.
+    :type tolerance: float
+    :param tolerance: how far the two may be displaced in time and still be
+        taken to cover the same place, seconds.
+    :param displacement: seconds each event has moved since its tiles were laid
+        out, one value per event, or None where nothing has moved.
+    :return: numpy.ndarray -- the coherent energy of each pair, in units of the
+        noise scale squared, signed by the relative polarity of the two
+        detectors' coefficients.
+    :raises ValueError: if `displacement` does not carry one finite value per
+        event.
+    """
+    return tile_coincidence_many(flat, i_sel, j_sel, tolerance,
+                                 displacement=displacement,
+                                 with_timing=False)["coherent"]
+
+
+def _tile_pair_terms(flat, left, right, tolerance, offset=None,
+                     with_timing=True):
+    """The per-tile-pair terms the pair reductions sum, zero where they miss.
 
     :param flat: the flattened tiles, as `flatten_clouds` returns them.
     :param left: flat index of each pair's left tile.
     :param right: flat index of each pair's right tile.
     :type tolerance: float
     :param tolerance: displacement in time still counted as the same place.
-    :return: numpy.ndarray -- one signed coherent energy per tile pair.
+    :param offset: how far each tile's own event has been moved in time since
+        the tile was laid out, seconds, one value per tile of the flattening;
+        None where nothing has moved. Bands are untouched: a displacement in
+        time does not move a tile in frequency.
+    :type with_timing: bool
+    :param with_timing: also form the magnitude and the lag moment.
+    :return: tuple -- the signed product, its magnitude and the magnitude times
+        the difference of the two tile centres; the last two None when
+        `with_timing` is False.
     """
-    meets = ((np.minimum(flat["t_hi"][left], flat["t_hi"][right] + tolerance)
-              >= np.maximum(flat["t_lo"][left], flat["t_lo"][right] - tolerance))
+    if offset is None:
+        left_lo, left_hi = flat["t_lo"][left], flat["t_hi"][left]
+        right_lo, right_hi = flat["t_lo"][right], flat["t_hi"][right]
+    else:
+        left_lo = flat["t_lo"][left] + offset[left]
+        left_hi = flat["t_hi"][left] + offset[left]
+        right_lo = flat["t_lo"][right] + offset[right]
+        right_hi = flat["t_hi"][right] + offset[right]
+    meets = ((np.minimum(left_hi, right_hi + tolerance)
+              >= np.maximum(left_lo, right_lo - tolerance))
              & (np.minimum(flat["f_hi"][left], flat["f_hi"][right])
                 >= np.maximum(flat["f_lo"][left], flat["f_lo"][right])))
     product = np.zeros(len(left))
     product[meets] = (flat["amplitude"][left[meets]]
                       * flat["amplitude"][right[meets]])
-    return product
+    if not with_timing:
+        return product, None, None
+    magnitude = np.abs(product)
+    weighted = np.zeros(len(left))
+    # The centre of a tile, which is where the coefficient it carries places
+    # the energy: a tile is a rectangle and its two edges are the support, not
+    # the measurement.
+    weighted[meets] = magnitude[meets] * (
+        0.5 * (left_lo[meets] + left_hi[meets])
+        - 0.5 * (right_lo[meets] + right_hi[meets]))
+    return product, magnitude, weighted
 
 
 def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
@@ -1328,3 +1516,4 @@ def stitched_statistic(graph: DetectorGraph, labels=None) -> np.ndarray:
                          minlength=n_events * len(lengths))
     per_length = np.sqrt(summed).reshape(n_events, len(lengths))
     return np.maximum(best, per_length.max(axis=1))
+ 

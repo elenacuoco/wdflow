@@ -12,15 +12,14 @@ from __future__ import annotations
 
 from itertools import combinations
 
-import warnings
-
 import numpy as np
 import pandas as pd
 
 from wdf.analysis.detector_graph import (WAVEGRAM_TIME_BINS, flatten_clouds,
                                          tile_coherence_many)
 from wdf.analysis.pairs import neighbour_pairs, paired_dot
-from wdf.analysis.timing import arrival_time_difference
+from wdf.analysis.wavegram_match import (BIN_PER_TILE,
+                                         compare_on_pair_grids, render)
 from wdf.analysis.robust_events import (
     EPS,
     _numeric,
@@ -31,13 +30,15 @@ from wdf.analysis.robust_events import (
 )
 
 
-# A node is described by the wavelet coefficients of its cluster, rendered on a
-# fixed octave-by-time grid, not by scalar summaries. Scoring a coincidence on
-# peak time, peak frequency and the statistic is what the classical finder
-# already does; the coefficients carry the transient's time-frequency pattern,
-# which is the information a learned combiner can use and a time window cannot.
-# The grid's width is the detector stage's, imported rather than restated: two constants
-# for the shape of one object drift apart.
+# A node is described by the signed wavelet coefficients of its cluster on a
+# compact octave-by-time grid, not by scalar summaries. That local grid is a
+# fixed-size node feature; it does not carry the detector-to-detector arrival
+# delay. The physical coincidence is measured separately by rendering each
+# event's tiles on its own instant and searching the map lags that reach the
+# displacements the light travel time admits, the anchor difference being
+# carried alongside so that the displacement found is an absolute one.
+# The grid's width is the detector stage's, imported rather than restated: two
+# constants for the shape of one object drift apart.
 
 # What a candidate edge carries: the arrival-time difference, the agreement
 # between the two wavegrams, the shared fraction of band and of time support,
@@ -54,7 +55,7 @@ EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
 # noise event in the other satisfies. The correlation normalises it by the
 # energy present,
 #
-#     cc = 2 <w1, w2> / (<w1, w1> + <w2, w2>),
+#     cc = 2 |<w1, w2>| / (<w1, w1> + <w2, w2>),
 #
 # so it reaches one only where the two grids agree in shape *and* in amplitude,
 # and a pair that is merely loud does not. The ranking statistic is the coherent
@@ -69,13 +70,18 @@ EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
 # so it is large only where the two are loud together and aligned --- the
 # coherent energy of the pair, in the units the wavegram carries.
 
-# A real signal reaches the two detectors up to the light travel time apart, so
-# two maps anchored each at its own event's time are offset by that much. No
-# alignment is searched for here and none is precomputed as a feature: on a map
-# whose columns are finer than the light travel time the offset is visible in
-# the maps themselves, and the pair carries its own dt, so the correspondence
-# between the two morphologies in time is left for the network to learn.
+# Independently anchoring two compact node grids removes their arrival-time
+# difference. Such grids may describe each event to a learned model, but they
+# are not the detector-coincidence test. That test uses the tiles' absolute GPS
+# supports and one global shift bounded by the light travel time and timing
+# spread; `dt_s` records the resulting convention `t_left - t_right`.
 N_EDGE_FEATURES = len(EDGE_FEATURES)
+
+
+def _signed_log1p(values: np.ndarray) -> np.ndarray:
+    """Compress coefficient magnitude without discarding its sign."""
+    values = np.asarray(values)
+    return np.sign(values) * np.log1p(np.abs(values))
 
 
 class TriggerGraph:
@@ -92,7 +98,9 @@ class TriggerGraph:
 
     def __init__(
         self, nodes, node_features, intra_edges, intra_edge_features,
-        cross_edges, cross_edge_features, ifos,
+        cross_edges, cross_edge_features, ifos, cross_edge_profiles=None,
+        cross_edge_lags=None, cross_edge_match=None, cross_edge_match_dt=None,
+        cross_edge_measured=None,
     ):
         self.nodes = nodes
         self.node_features = node_features
@@ -100,6 +108,25 @@ class TriggerGraph:
         self.intra_edge_features = intra_edge_features
         self.cross_edges = cross_edges
         self.cross_edge_features = cross_edge_features
+        self.cross_edge_profiles = (np.zeros((len(cross_edges), 0, 0), dtype=np.float32)
+                                    if cross_edge_profiles is None else cross_edge_profiles)
+        self.cross_edge_lags = (np.zeros(0, dtype=float) if cross_edge_lags is None
+                                else cross_edge_lags)
+        # The comparison is taken on each pair's own grid, over a search as
+        # wide as that pair's transient, so its result cannot be recovered from
+        # the profile carried here --- that is the tolerance's own lags, the
+        # part every pair can be read on. The agreement, the displacement it
+        # was found at, and whether the pair was compared at all are therefore
+        # carried beside it rather than reduced again.
+        n_edges = len(cross_edges)
+        self.cross_edge_match = (np.zeros(n_edges) if cross_edge_match is None
+                                 else cross_edge_match)
+        self.cross_edge_match_dt = (np.full(n_edges, np.nan)
+                                    if cross_edge_match_dt is None
+                                    else cross_edge_match_dt)
+        self.cross_edge_measured = (np.zeros(n_edges, dtype=bool)
+                                    if cross_edge_measured is None
+                                    else cross_edge_measured)
         self.ifos = ifos
 
     def candidate_table(self) -> pd.DataFrame:
@@ -141,12 +168,36 @@ class TriggerGraph:
         ))
         for column, name in enumerate(EDGE_FEATURES):
             table[name] = self.cross_edge_features[:, column].astype(float)
+        # The comparison already answered all three questions the profile is
+        # carried for, on each pair's own grid: how alike the two renderings
+        # are, at which displacement, and whether the pair was compared at all.
+        # Reducing the carried profile again would answer a fourth --- the
+        # best agreement within the tolerance --- and give it these names.
+        table["network_wavegram_match"] = self.cross_edge_match
+        # The pair's arrival-time difference as the match measures it, out of
+        # the same pass as the agreement, so it is not a second estimate to be
+        # reconciled with it: it is where the agreement is. It is not
+        # constrained to the light travel time --- the two events' instants are
+        # the centres of two tiles that need not be the same part of one
+        # transient, so the search reaches as far as the transient lasts --- and
+        # a displacement larger than the geometry allows is the match saying the
+        # two renderings do not align physically. A pair compared at no
+        # displacement has none to report, and says so rather than naming the
+        # first point of an axis.
+        table["network_wavegram_match_dt"] = self.cross_edge_match_dt
+        table["network_wavegram_matched"] = self.cross_edge_measured
+        if (self.cross_edge_profiles.ndim == 3
+                and self.cross_edge_profiles.shape[0] == len(table)
+                and self.cross_edge_profiles.shape[2] > 0):
+            within = self.cross_edge_profiles.sum(axis=1)
+            table["network_correlation_lag_s"] = self.cross_edge_lags[
+                np.argmax(np.abs(within), axis=1)]
+        else:
+            table["network_correlation_lag_s"] = np.nan
 
         # How loud the pair is, weighted by how alike the two grids are. The
         # weight carries no amplitude of its own -- the cosine is invariant to
-        # scale -- so the loudness is not counted twice, and that invariance is
-        # what keeps the antenna responses from penalising a real signal seen
-        # unequally in the two detectors, which normalising by amplitude does.
+        # scale -- so the loudness is not counted twice.
         table["network_shape_weighted"] = (
             table["network_enwdf"] * table["wavegram_similarity"])
 
@@ -196,6 +247,7 @@ class TriggerGraphBuilder:
         coincidence: "CoincidenceConfig | None" = None,
         ifos: list[str] | None = None,
         wavegram_time_bins: int = WAVEGRAM_TIME_BINS,
+        match_wavegrams: bool = True,
     ):
         """
         :type intra_ifo_window_s: float
@@ -211,30 +263,30 @@ class TriggerGraphBuilder:
         """
         self.intra_ifo_window_s = intra_ifo_window_s
         self.coincidence = CoincidenceConfig() if coincidence is None else coincidence
+        # Whether the two renderings of a coincident pair are compared. The
+        # comparison is a morphological baseline and enters no ranking, and it
+        # costs a correlation per candidate, so a study that does not read it
+        # need not pay for it. With it off, `network_wavegram_match`,
+        # `network_correlation` and `coherent_statistic` are not measured, and
+        # `network_wavegram_matched` says so rather than a zero standing in for
+        # a measurement.
+        self.match_wavegrams = bool(match_wavegrams)
         self.ifos = ifos
         self.wavegram_time_bins = wavegram_time_bins
-        # What a pair's own waveforms say about its arrival-time difference is
-        # a property of the two events, so it is measured once and kept here
-        # rather than in a preparation: a slide loop rebuilds the node side and
-        # would otherwise measure the same correlation for every shift.
-        self._reconstruction_offset = {}
-        self._said_untimed = False
-        self._said_partly_untimed = False
 
-    def _stack(self, clustered, coefficients, ifos, series_by_cluster=None):
+    @staticmethod
+    def event_order(clustered, ifos):
+        """Return the stable event order used by prepared node arrays."""
+        return [(ifo, int(label))
+                for ifo in ifos
+                for label in clustered[ifo]["cluster_id"].astype(int)]
+
+    def _stack(self, clustered, coefficients, ifos):
         """Every event's map, in the detector order given.
 
-        :param series_by_cluster: ``{ifo: {cluster_id: (offset_s, samples)}}``
-            or None, each waveform placed relative to its own event's instant
-            by :func:`wdf.analysis.timing.referred_to_instant`. A rendered
-            event carries its tiles and not the coefficients they were
-            inverted from, so the waveform cannot be recovered here and is
-            supplied by whoever assembled it. An event with no entry keeps no
-            series, and its pair is timed on the tiles.
-        :return: tuple -- (frames, grids, grid_shape, bin_seconds, clouds,
-            series, rates); `series` holds None throughout when not asked for.
+        :return: tuple -- (frames, grids, grid_shape, bin_seconds).
         """
-        frames, grids, clouds, series, rates = [], [], [], [], []
+        frames, grids, clouds = [], [], []
         grid_shape = (0, self.wavegram_time_bins)
         # Like the width, the duration of a column comes from the grids that
         # arrived: the detector stage measures it from the data the search was run on.
@@ -242,10 +294,6 @@ class TriggerGraphBuilder:
         for ifo in ifos:
             per_cluster = coefficients[ifo]
             events = clustered[ifo].reset_index(drop=True)
-            rate_of = ({int(label): float(value)
-                        for label, value in zip(events["cluster_id"].astype(int),
-                                                events["fs"].astype(float))}
-                       if "fs" in events else {})
             missing = set(events["cluster_id"].astype(int)) - set(per_cluster)
             if missing:
                 raise KeyError(
@@ -260,24 +308,11 @@ class TriggerGraphBuilder:
                 bin_seconds = getattr(rendered, "bin_seconds", bin_seconds)
                 grids.append(grid.ravel())
                 clouds.append(getattr(rendered, "tiles", None))
-                # The event's own waveform, inverted from its own
-                # coefficients by whoever assembled it and already placed
-                # relative to that event's instant. It is what the
-                # arrival-time difference is read on, and a slide moves the
-                # instant but not the waveform inside it, so the offset is the
-                # same in every slide and is held here once.
-                series.append(None if series_by_cluster is None
-                              else series_by_cluster.get(ifo, {}).get(int(label)))
-                # The rate the waveform is sampled at belongs to the
-                # event, not to its rendering: a map knows its bins and
-                # not the grid the series lives on.
-                rates.append(rate_of.get(int(label), np.nan))
-        return frames, grids, grid_shape, bin_seconds, clouds, series, rates
+        return frames, grids, grid_shape, bin_seconds, clouds
 
     def build(self, clustered: dict[str, pd.DataFrame],
               coefficients: dict[str, dict],
-              comparison: dict[str, dict] | None = None,
-              series: dict | None = None) -> TriggerGraph:
+              comparison: dict[str, dict] | None = None) -> TriggerGraph:
         """Assemble the graph from each detector's events and their coefficients.
 
         Two renderings of the same events answer two different questions and
@@ -296,22 +331,15 @@ class TriggerGraphBuilder:
         :type comparison: dict[str, dict] | None
         :param comparison: the same events rendered for the cross-detector
             comparison; the assembly map when None.
-        :type series: dict | None
-        :param series: ``{ifo: {cluster_id: (offset_s, samples)}}``, each
-            event's reconstruction placed relative to its own instant by
-            :func:`wdf.analysis.timing.referred_to_instant`. Without it the
-            pairs are timed on their tile centres.
         :return: TriggerGraph
         :raises KeyError: if an event has no coefficients.
         """
         return self.build_from_prepared(
-            clustered,
-            self.prepare(clustered, coefficients, comparison, series=series))
+            clustered, self.prepare(clustered, coefficients, comparison))
 
     def prepare(self, clustered: dict[str, pd.DataFrame],
                 coefficients: dict[str, dict],
-                comparison: dict[str, dict] | None = None,
-                series: dict | None = None) -> dict:
+                comparison: dict[str, dict] | None = None) -> dict:
         """Everything about the nodes that does not depend on when they happened.
 
         A time slide moves a detector's events, so it changes which pairs are
@@ -330,39 +358,43 @@ class TriggerGraphBuilder:
         :type comparison: dict[str, dict] | None
         :param comparison: the same events rendered for the cross-detector
             comparison; the assembly map when None.
-        :type series: dict | None
-        :param series: ``{ifo: {cluster_id: (offset_s, samples)}}``, each
-            event's reconstruction placed relative to its own instant by
-            :func:`wdf.analysis.timing.referred_to_instant`. Without it the
-            pairs are timed on their tile centres.
         :return: dict -- the node-side arrays, to be given to
             `build_from_prepared` together with the events they describe.
         :raises KeyError: if an event has no coefficients.
         """
         ifos = self.ifos or list(clustered.keys())
-        frames, grids, grid_shape, bin_seconds, clouds, waveforms, rates = self._stack(
-            clustered, coefficients, ifos, series_by_cluster=series)
+        frames, grids, grid_shape, bin_seconds, clouds = self._stack(
+            clustered, coefficients, ifos)
         if comparison is None:
             fine, fine_shape, fine_bin = grids, grid_shape, bin_seconds
+            comparison_clouds = clouds
         else:
-            _, fine, fine_shape, fine_bin, _, _, _ = self._stack(
+            _, fine, fine_shape, fine_bin, comparison_clouds = self._stack(
                 clustered, comparison, ifos)
         nodes_df = pd.concat(frames, ignore_index=True)
+        first_rendered = next((comparison[ifo][int(label)]
+                       for ifo in ifos
+                       for label in clustered[ifo]["cluster_id"]), None) \
+            if comparison is not None else next((coefficients[ifo][int(label)]
+                              for ifo in ifos
+                              for label in clustered[ifo]["cluster_id"]), None)
 
-        # |coefficient|/sigma spans decades, so compress before standardising;
-        # log1p leaves the empty cells of the grid at exactly zero.
-        wavegrams = np.log1p(np.vstack(grids)) if grids else np.zeros((0, 1))
-        onehot = pd.get_dummies(nodes_df["ifo"]).reindex(columns=ifos, fill_value=0).to_numpy(dtype=float)
+        # Coefficient/sigma spans decades in both directions. Signed log1p
+        # compresses the magnitude, preserves polarity and leaves empty cells
+        # exactly zero.
+        wavegrams = (_signed_log1p(np.vstack(grids))
+                     if grids else np.zeros((0, 1)))
+        onehot = (pd.get_dummies(nodes_df["ifo"])
+                  .reindex(columns=ifos, fill_value=0).to_numpy(dtype=float))
         X = np.hstack([wavegrams, onehot])
         X = X.astype(np.float32)
 
-        # Unit-norm grids, so the similarity between two of them is a shape
-        # comparison and not an amplitude one: the same signal reaches two
-        # detectors with amplitudes set by their antenna responses.
-        # The comparison is made on the fine rendering, where the light travel
-        # time is several columns wide.
+        # Unit-norm compact grids give a local shape summary rather than an
+        # amplitude comparison: the same signal reaches two detectors with
+        # amplitudes set by their antenna responses. They do not replace the
+        # matcher, which works on the tiles and an admitted displacement.
         raw = np.vstack(fine) if fine else np.zeros((0, 1))
-        compressed = np.log1p(raw)
+        compressed = _signed_log1p(raw)
         norms = np.linalg.norm(compressed, axis=1, keepdims=True)
         norms[norms == 0.0] = 1.0
         shapes = compressed / norms
@@ -378,134 +410,97 @@ class TriggerGraphBuilder:
         band_hi = _numeric(nodes_df, ("freqQ95", "freqMax"), default=np.nan)
         spread = _numeric(nodes_df, ("tSpread",), default=0.0)
         spread = np.where(np.isfinite(spread), spread, 0.0)
+        if first_rendered is not None and hasattr(first_rendered, "bands"):
+            profile_bands = np.asarray(first_rendered.bands, dtype=float)
+        else:
+            pairs = [(lo, hi) for cloud in comparison_clouds if cloud is not None
+                     for lo, hi in zip(cloud[2], cloud[3])]
+            profile_bands = (np.unique(np.asarray(pairs, dtype=float), axis=0)
+                             if pairs else np.zeros((1, 2), dtype=float))
+
+        # The bin the two detectors are compared on is fixed by what the
+        # comparison has to resolve, not by the column width of whichever
+        # rendering happened to arrive. Two conditions bound it from opposite
+        # sides and both are physical. A bin coarser than a tile adds the
+        # signed coefficients of one detector to each other before either
+        # detector is compared with the other, so an oscillating transient
+        # cancels against itself and the highest bands, whose tiles are
+        # shortest, lose most --- a frequency prior the search does not carry.
+        # A bin coarser than the light travel time cannot represent the delay
+        # the coincidence exists to measure, so the lag axis collapses onto
+        # zero whatever the tolerance allows. The shortest tile the ladder
+        # holds is one over the upper edge of its highest band; where that is
+        # longer than the travel time, the travel time is what binds.
+        upper = float(np.max(profile_bands[:, 1])) if len(profile_bands) else 0.0
+        travel = self.coincidence.travel_time(tuple(ifos))
+        bounds = [b for b in (BIN_PER_TILE / upper if upper > 0.0 else 0.0,
+                              travel) if b > 0.0]
+        profile_bin = min(bounds) if bounds else fine_bin
+        profile_refs = nodes_df["gpsPeak"].to_numpy(dtype=float)
+        # Each event on a window of its own, centred on its own instant and no
+        # wider than the event reaches. What two events are compared on is then
+        # a property of that pair and of nothing else. Rendering every event on
+        # the widest event of the run would make a transient lasting minutes
+        # fix the grid of every millisecond-long one, and what may turn up in a
+        # run is not known in advance: at a bin of a millisecond that array
+        # does not exist.
+        profile_extent = np.zeros(len(comparison_clouds))
+        profile_half = np.zeros(len(comparison_clouds), dtype=np.int64)
+        profile_windows = []
+        empty = tuple(np.zeros(0) for _ in range(6))
+        # The windows are the only expensive thing here: one rendering per
+        # event, on the finest bin the ladder holds. A builder that will not
+        # compare them has no reason to build them, so a study that does not
+        # read the comparison does not pay for it in time or in memory. The
+        # extents are kept either way --- they cost a minimum and a maximum
+        # over tiles already in hand, and they describe the events.
+        blank = render(empty, profile_bands, 0.0, profile_bin, profile_bin)
+        for at, (cloud, reference) in enumerate(zip(comparison_clouds, profile_refs)):
+            if cloud is None or not len(cloud[5]):
+                profile_windows.append(blank)
+                continue
+            shifted = [np.asarray(field, dtype=float).copy() for field in cloud]
+            shifted[0] -= reference
+            shifted[1] -= reference
+            # The event's own maximum extension in time, from the tiles it is
+            # made of. It is how far the two detectors' renderings of one
+            # transient can be displaced and still describe it, which is not
+            # the same question as how far apart the arrival times may be.
+            profile_extent[at] = shifted[1].max() - shifted[0].min()
+            # Symmetric about the instant, so that the middle bin holds it
+            # whatever side of it the event's tiles fall on and one number
+            # places the window.
+            if not self.match_wavegrams:
+                profile_windows.append(blank)
+                continue
+            half = int(np.ceil(max(abs(float(shifted[0].min())),
+                                   abs(float(shifted[1].max()))) / profile_bin))
+            profile_half[at] = half
+            profile_windows.append(render(
+                tuple(shifted), profile_bands, -half * profile_bin,
+                (half + 1) * profile_bin, profile_bin))
+
         return dict(
             ifos=ifos, node_features=X, shapes=shapes, raw=raw, clouds=clouds,
             cloud_flat=flatten_clouds(clouds),
-            series=waveforms, rates=rates,
-            reconstruction_offset={},
+            profile_clouds=comparison_clouds,
+            profile_bands=profile_bands,
+            profile_windows=profile_windows,
+            profile_half=profile_half,
+            profile_bin=profile_bin,
+            profile_extent=profile_extent,
+            profile_refs=profile_refs,
             energy=energy, band_lo=band_lo, band_hi=band_hi, spread=spread,
-            fine_bin=fine_bin,
+            fine_bin=fine_bin, raw_maps=raw.reshape(len(raw), *fine_shape),
+            gps_peak=nodes_df["gpsPeak"].to_numpy(dtype=float),
             # The order the arrays are in, so that a later call cannot silently
             # index them with a different event set.
-            order=self.event_order(clustered, ifos))
-
-    @staticmethod
-    def event_order(clustered, ifos=None):
-        """Which events a prepared set describes, in the order it holds them.
-
-        The node-side arrays are indexed by position, so this is the identity
-        of the catalogue they were built from: two calls agreeing on it may
-        share prepared arrays, and two that do not may not.
-
-        :type clustered: dict
-        :param clustered: ``{ifo: event catalogue}``.
-        :param ifos: the detector order, or None to take the mapping's.
-        :return: list -- ``(ifo, cluster_id)`` per event.
-        """
-        ifos = list(clustered) if ifos is None else list(ifos)
-        return [(ifo, int(label))
-                for ifo in ifos
-                for label in clustered[ifo]["cluster_id"].astype(int)]
-
-    def _timed_on_reconstruction(self, prepared, i_sel, j_sel, tile_dt,
-                                 max_lag_s):
-        """The pair's arrival-time difference, read on the two reconstructions.
-
-        The instant an event reports is the centre of the tile carrying its
-        largest coefficient, and in a dyadic transform a tile's length is tied
-        to its band: two detectors whose loudest tile falls on different rungs
-        of the ladder report instants displaced by the difference of two tile
-        lengths, which can exceed the light travel time and does. The
-        reconstruction carries the waveform at the sample, so the lag that
-        aligns the two waveforms measures the difference on the morphology the
-        two detectors share.
-
-        What the correlation gives is a property of the two waveforms and not
-        of the shift a slide applied, so it is measured once per pair of events
-        and reused: the slid difference is the slid tile difference plus that
-        pair's own correction. That holds because each waveform arrives placed
-        relative to its own event's instant: a slide moves the instant and the
-        waveform with it, so the offset between them is the same in every
-        slide, and nothing on this path ever sees an absolute time.
-
-        :param prepared: the node-side arrays, carrying `series`, `rates`
-            and the cache.
-        :param i_sel: left event of each pair, as node indices.
-        :param j_sel: right event of each pair.
-        :type tile_dt: numpy.ndarray
-        :param tile_dt: the difference of the tile centres, already slid.
-        :type max_lag_s: float
-        :param max_lag_s: how far the correlation may look, seconds. A lag
-            beyond what the geometry allows is not a candidate alignment.
-        :return: numpy.ndarray -- one difference per pair. A pair whose
-            reconstruction is missing keeps the difference it came with.
-        """
-        series = prepared.get("series")
-        if not series or all(one is None for one in series):
-            if not self._said_untimed:
-                warnings.warn(
-                    "no reconstruction was given for these events, so pairs "
-                    "are timed on their tile centres; a tile's length is tied "
-                    "to its band, so that difference can exceed the light "
-                    "travel time. Pass `series` to `prepare`.",
-                    RuntimeWarning, stacklevel=2)
-                self._said_untimed = True
-            return tile_dt
-        rates = prepared.get("rates")
-        # Keyed on which events the pair is, not on where they sit in this
-        # preparation: a slide loop rebuilds the node side and the correction
-        # is the same waveforms' either way.
-        order = prepared.get("order")
-        cache = self._reconstruction_offset
-
-        out = np.asarray(tile_dt, dtype=float).copy()
-        untimed = 0
-        for position, (i, j) in enumerate(zip(np.asarray(i_sel, dtype=int),
-                                              np.asarray(j_sel, dtype=int))):
-            at_i, at_j = int(i), int(j)
-            key = ((order[at_i], order[at_j]) if order is not None
-                   else (at_i, at_j))
-            if key not in cache:
-                first, second = series[at_i], series[at_j]
-                # Both series are on the same clock only if they are sampled
-                # alike; a pair of detectors run at different rates has no
-                # common grid to be correlated on.
-                fs = rates[at_i] if rates is not None else np.nan
-                other = rates[at_j] if rates is not None else np.nan
-                if (first is None or second is None or not np.isfinite(fs)
-                        or fs != other):
-                    cache[key] = None
-                else:
-                    # What is correlated is the residual after the pair is
-                    # nominally aligned, each waveform sitting where it does
-                    # inside its own event. The grid therefore spans the two
-                    # events and not the time between them, which under a
-                    # slide can be minutes.
-                    try:
-                        cache[key] = float(arrival_time_difference(
-                            first, second, fs, max_lag_s=max_lag_s)[0])
-                    except (ValueError, IndexError):
-                        cache[key] = None
-            correction = cache[key]
-            # None is not zero: a pair that could not be measured keeps the
-            # difference it came with, and saying so is the difference between
-            # a stage that timed its pairs and one that did not.
-            if correction is None:
-                untimed += 1
-            else:
-                out[position] += correction
-        if untimed and not self._said_partly_untimed:
-            warnings.warn(
-                f"{untimed} of {len(out)} pairs could not be timed on their "
-                "reconstructions and keep their tile difference; a background "
-                "timed on tiles is not the population a candidate timed on "
-                "reconstructions is read against.",
-                RuntimeWarning, stacklevel=2)
-            self._said_partly_untimed = True
-        return out
+            order=[(ifo, int(label))
+                   for ifo in ifos
+                   for label in clustered[ifo]["cluster_id"].astype(int)])
 
     def build_from_prepared(self, clustered: dict[str, pd.DataFrame],
-                            prepared: dict) -> TriggerGraph:
+                            prepared: dict, with_neighbours: bool = True) -> TriggerGraph:
         """The graph, from events whose node-side quantities are already known.
 
         Only the times are read from `clustered`: everything else comes from
@@ -533,10 +528,19 @@ class TriggerGraphBuilder:
 
         X = prepared["node_features"]
         shapes, raw, clouds = prepared["shapes"], prepared["raw"], prepared["clouds"]
+        profile_windows = prepared["profile_windows"]
+        profile_half = prepared["profile_half"]
+        profile_bands = prepared["profile_bands"]
+
+        profile_bands = prepared["profile_bands"]
         energy = prepared["energy"]
         band_lo, band_hi = prepared["band_lo"], prepared["band_hi"]
         spread = prepared["spread"]
         fine_bin = prepared["fine_bin"]
+        # The comparison bin, which is the profile's alone: `fine_bin` is the
+        # width of the compact node grid and says nothing about what the two
+        # detectors can be told apart by.
+        profile_bin = prepared["profile_bin"]
         # Prepared alongside the clouds; an older prepared dict without it is
         # flattened here once rather than refused.
         cloud_flat = prepared.get("cloud_flat")
@@ -545,6 +549,8 @@ class TriggerGraphBuilder:
 
         nodes_df = pd.concat([clustered[ifo].reset_index(drop=True).assign(ifo=ifo)
                               for ifo in ifos], ignore_index=True)
+        displacement = (nodes_df["gpsPeak"].to_numpy(dtype=float)
+                - prepared["gps_peak"])
         idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
         gps = nodes_df["gpsPeak"].to_numpy(dtype=float)
 
@@ -558,7 +564,7 @@ class TriggerGraphBuilder:
         }
 
         intra_edges, intra_feats = [], []
-        for idxs in sorted_by_ifo.values():
+        for idxs in sorted_by_ifo.values() if with_neighbours else []:
             for left, right in neighbour_pairs(gps[idxs], self.intra_ifo_window_s):
                 i_sel, j_sel = idxs[left], idxs[right]
                 dt_sel = gps[i_sel] - gps[j_sel]
@@ -571,7 +577,9 @@ class TriggerGraphBuilder:
         # the graph ranks the survivors of known physics rather than rediscovering
         # that two events a second apart cannot be one gravitational wave.
         finder = IndexedCoincidenceFinder(self.coincidence)
-        cross_edges, cross_feats = [], []
+        cross_edges, cross_feats, cross_profiles = [], [], []
+        cross_match, cross_dt, cross_measured = [], [], []
+        profile_lags = np.zeros(0, dtype=float)
         for ifo_a, ifo_b in combinations(ifos, 2):
             idx_a, idx_b = idx_by_ifo[ifo_a], idx_by_ifo[ifo_b]
             admissible = finder.candidate_edges(
@@ -583,43 +591,96 @@ class TriggerGraphBuilder:
                               for i, j, _, dt, f_overlap, t_overlap in admissible])
             i_sel = idx_a[local[:, 0].astype(int)]
             j_sel = idx_b[local[:, 1].astype(int)]
-            # No alignment is applied and none is precomputed. The maps are
-            # rendered finely enough that a real delay moves several columns,
-            # and the pair carries its own dt, so how the two morphologies
-            # correspond in time is left for the network to learn rather than
-            # answered here.
+            # These fixed-size grids are compact node views anchored within
+            # each event. Their dot products are retained as local shape
+            # summaries, not presented as the physical time-of-flight match.
+            # The latter is computed on the tile supports, at one lag for the
+            # whole plane, with the two anchors' difference carried alongside
+            # so that the displacement it reports is an absolute one.
             # The morphology at the resolution the transform has, with no grid
             # in between: the two events' own coefficients, paired where their
             # tiles cover the same place.
             travel = self.coincidence.travel_time((ifo_a, ifo_b))
-            # The difference of arrival times, measured below the tile. The
-            # correlation may look no further than the geometry allows: the
-            # light travel time, widened by the tolerance the pair's own extents
-            # claim.
-            local[:, 2] = self._timed_on_reconstruction(
-                prepared, i_sel, j_sel, local[:, 2],
-                max_lag_s=float(travel + np.max(
-                    self.coincidence.timing_tolerance(spread[i_sel],
-                                                      spread[j_sel],
-                                                      (ifo_a, ifo_b)))))
-            coherence = tile_coherence_many(cloud_flat, i_sel, j_sel, travel)
+            coherence = tile_coherence_many(
+                cloud_flat, i_sel, j_sel, travel, displacement=displacement)
+            tolerance = self.coincidence.timing_tolerance(
+                spread[i_sel], spread[j_sel], (ifo_a, ifo_b))
+            # The wavegram match is a comparison of two morphologies at a
+            # displacement, and it is asked only of pairs that are already
+            # coincident: the events' own instants within the tolerance the
+            # geometry and their own timing spreads allow. A pair whose
+            # instants are further apart than that is admitted --- a transient
+            # longer than one analysis window is assembled as several events
+            # and the two detectors need not keep the same one --- but no
+            # displacement the tolerance permits brings its two instants
+            # together, so what a search over those displacements would find is
+            # the agreement between the tail of one event and the head of the
+            # other, at the price of a trials factor, and not what the
+            # statistic means. It is reported as no agreement, and the pair is
+            # ranked on the statistics that do not require a displacement.
+            coincident = np.abs(local[:, 2]) <= tolerance
+            matched = np.flatnonzero(coincident)
+            # Once the pair is coincident, how far the two maps may be slid
+            # against each other is not how far apart the arrival times may be.
+            # Each map is laid on its event's own instant, the centre of the
+            # tile carrying its largest coefficient, and two detectors seeing
+            # one transient at different amplitudes need not make that the same
+            # part of it: their two renderings can therefore be displaced by as
+            # much as the transient lasts while their arrival times differ by
+            # the light travel time. The search spans the longer of the two
+            # events' own extents, widened by the tolerance, and stops there:
+            # beyond it the two maps share nothing to agree about.
+            # The displacements searched are the tolerance's. Each map is laid
+            # on its own event's instant and the whole bins of the difference
+            # between the two instants are applied as a shift of the map, at no
+            # cost whatever that difference is, so the alignment where the same
+            # part of one transient meets itself --- which is at an
+            # arrival-time difference no larger than the light travel time --- is
+            # already reachable. Searching further would only find agreements
+            # at displacements the geometry forbids, and would cost the square
+            # of the transient's own length.
+            carry = int(np.ceil(
+                (self.coincidence.maximum_tolerance((ifo_a, ifo_b))
+                 + 0.5 * profile_bin) / profile_bin))
+            profile_lags = np.arange(-carry, carry + 1, dtype=float) * profile_bin
+            profiles = np.zeros((len(i_sel), len(profile_bands), len(profile_lags)))
+            edge_match = np.zeros(len(i_sel))
+            edge_dt = np.full(len(i_sel), np.nan)
+            edge_measured = np.zeros(len(i_sel), dtype=bool)
+            if self.match_wavegrams:
+                found, found_match, found_dt, found_measured = compare_on_pair_grids(
+                    profile_windows, profile_half, profile_bin,
+                    i_sel[matched], j_sel[matched], tolerance[matched],
+                    gps[i_sel[matched]] - gps[j_sel[matched]], profile_lags)
+                profiles[matched] = found
+                edge_match[matched] = found_match
+                edge_dt[matched] = found_dt
+                edge_measured[matched] = found_measured
 
             # Gathered a block at a time, and on a GPU when there is one. The
             # plain form --- `shapes[i_sel]` inside an einsum --- builds one
             # copy of a map per pair before reducing it: at a few million pairs
             # that is tens of gigabytes held to produce one number each, which
             # is what makes this stage the memory wall of the run.
-            similarity = paired_dot(shapes, shapes, i_sel, j_sel)
-            coherent = np.maximum(paired_dot(raw, raw, i_sel, j_sel), 0.0)
+            signed_similarity = paired_dot(shapes, shapes, i_sel, j_sel)
+            similarity = np.abs(signed_similarity)
+            signed_coherent = paired_dot(raw, raw, i_sel, j_sel)
+            coherent = np.abs(signed_coherent)
             overlap = np.sqrt(coherent)
             present = (paired_dot(raw, raw, i_sel, i_sel)
                        + paired_dot(raw, raw, j_sel, j_sel))
-            correlation = np.clip(2.0 * coherent / np.maximum(present, EPS),
-                                  0.0, 1.0)
+            # Taken once, where the comparison took it, and carried: a
+            # second maximum over the part of the profile that was kept would
+            # be a different quantity wearing the same name.
+            correlation = np.clip(edge_match, 0.0, 1.0)
             cross_edges.append(np.column_stack([i_sel, j_sel]))
+            cross_profiles.append(profiles)
+            cross_match.append(edge_match)
+            cross_dt.append(edge_dt)
+            cross_measured.append(edge_measured)
             cross_feats.append(np.column_stack([
                 local[:, 2],                                   # dt
-                similarity,                                    # agreement at zero lag
+                similarity,                                    # polarity-free local shape
                 local[:, 3],                                   # frequency overlap
                 local[:, 4],                                   # time overlap
                 np.log(np.maximum(energy[i_sel], EPS)
@@ -645,10 +706,23 @@ class TriggerGraphBuilder:
                 np.sqrt(np.abs(coherence)),
             ]))
 
-        intra_edges = np.concatenate(intra_edges) if intra_edges else np.zeros((0, 2), dtype=np.int64)
-        intra_feats = np.concatenate(intra_feats) if intra_feats else np.zeros((0, 1), dtype=np.float32)
-        cross_edges = np.concatenate(cross_edges) if cross_edges else np.zeros((0, 2), dtype=np.int64)
-        cross_feats = np.concatenate(cross_feats) if cross_feats else np.zeros((0, N_EDGE_FEATURES), dtype=np.float32)
+        intra_edges = (np.concatenate(intra_edges) if intra_edges
+                       else np.zeros((0, 2), dtype=np.int64))
+        intra_feats = (np.concatenate(intra_feats) if intra_feats
+                       else np.zeros((0, 1), dtype=np.float32))
+        cross_edges = (np.concatenate(cross_edges) if cross_edges
+                       else np.zeros((0, 2), dtype=np.int64))
+        cross_feats = (np.concatenate(cross_feats) if cross_feats
+                       else np.zeros((0, N_EDGE_FEATURES), dtype=np.float32))
+        n_bands = profile_windows[0].shape[0] if profile_windows else 1
+        cross_profiles = (np.concatenate(cross_profiles) if cross_profiles
+                          else np.zeros((0, n_bands, len(profile_lags)), dtype=np.float32))
+        cross_match = (np.concatenate(cross_match) if cross_match
+                       else np.zeros(0, dtype=float))
+        cross_dt = (np.concatenate(cross_dt) if cross_dt
+                    else np.zeros(0, dtype=float))
+        cross_measured = (np.concatenate(cross_measured) if cross_measured
+                          else np.zeros(0, dtype=bool))
 
         return TriggerGraph(
             nodes=nodes_df,
@@ -657,6 +731,9 @@ class TriggerGraphBuilder:
             intra_edge_features=intra_feats.astype(np.float32).reshape(-1, 1),
             cross_edges=cross_edges.astype(np.int64).reshape(-1, 2),
             cross_edge_features=cross_feats.astype(np.float32).reshape(-1, N_EDGE_FEATURES),
+            cross_edge_profiles=cross_profiles.astype(np.float32),
+            cross_edge_lags=profile_lags, cross_edge_match=cross_match,
+            cross_edge_match_dt=cross_dt, cross_edge_measured=cross_measured,
             ifos=ifos,
         )
 
@@ -715,12 +792,11 @@ class WavegramCoincidenceFinder:
     population is built the same way as the zero-lag one rather than by a
     second route that would have to be kept in step.
 
-    The node-side quantities are prepared once and reused for every slide. A
-    slide moves an event in time and does not change its coefficients, and the
-    map two detectors are compared on is centred on each event's own energy
-    rather than on an absolute time, so nothing prepared depends on the shift.
-    Rebuilding them per slide would make the cost of a background estimate grow
-    as the number of slides times the number of events.
+    The compact node-side quantities are prepared once and reused for every
+    slide because a slide changes no coefficient. An absolute-time wavegram
+    comparison is different: it must apply the slide displacement to the tile
+    times before searching the admitted global lag. Original absolute GPS tile
+    coordinates must never be reused unchanged as if they had been slid.
 
     :param finder: the finder deciding which pairs are admissible.
     :param builder: the builder rendering the admitted pairs as a graph.
@@ -729,43 +805,53 @@ class WavegramCoincidenceFinder:
         comparison; the assembly map when None.
     :param events: the events the maps belong to, used to prepare the node-side
         arrays once. None prepares them on the first call instead.
+    :param scorer: a ranking that reads the graph, or None for the graph's own
+        columns alone. It is applied here, where the graph still exists: the
+        table this returns keeps no reference to it, so a caller cannot attach
+        a learned ranking afterwards. A background built without the scorer the
+        foreground was read with carries no rate for that ranking.
     """
 
     def __init__(self, finder, builder, coefficients, comparison=None,
-                 events=None, series=None):
+                 events=None, prepared=None, scorer=None):
         self.finder = finder
+        self.scorer = scorer
         self.builder = builder
         self.coefficients = coefficients
         self.comparison = comparison
-        self.series = series
-        self._prepared = (None if events is None
-                          else builder.prepare(events, coefficients, comparison,
-                                               series=series))
+        if prepared is not None and events is not None:
+            raise ValueError("pass either prepared or events, not both")
+        self._prepared = (prepared if prepared is not None else
+                          None if events is None else
+                          builder.prepare(events, coefficients, comparison))
+        self._prepared_order = None if prepared is None else prepared["order"]
 
     def find(self, events_by_ifo) -> pd.DataFrame:
         """The admitted pairs, described by the graph.
 
         :type events_by_ifo: dict
         :param events_by_ifo: `{ifo: event catalogue}`.
-        :return: pandas.DataFrame -- `TriggerGraph.candidate_table`'s schema;
-            empty when no pair is admitted.
+        :return: pandas.DataFrame -- `TriggerGraph.candidate_table`'s schema,
+            widened by whatever the scorer adds when there is one; empty when
+            no pair is admitted.
         """
         ifos = list(events_by_ifo)
         if any(events_by_ifo[ifo].empty for ifo in ifos):
             return pd.DataFrame()
-        # A slide moves events in time and leaves the set intact, so the
-        # preparation is reused across every slide of one set. A different set
-        # --- one stretch of a background slid within itself, rather than the
-        # whole of it --- is prepared again, once, and then reused in turn.
-        order = self.builder.event_order(events_by_ifo, ifos)
-        if self._prepared is None or self._prepared.get("order") != order:
+        if self._prepared is None:
             self._prepared = self.builder.prepare(
                 events_by_ifo,
                 {ifo: self.coefficients[ifo] for ifo in ifos},
                 comparison=None if self.comparison is None
-                else {ifo: self.comparison[ifo] for ifo in ifos},
-                series=self.series)
+                else {ifo: self.comparison[ifo] for ifo in ifos})
+        elif self.builder.event_order(events_by_ifo, ifos) != self._prepared["order"]:
+            raise ValueError("prepare a finder for the set of events being scored")
         graph = self.builder.build_from_prepared(events_by_ifo, self._prepared)
         if not len(graph.cross_edges):
             return pd.DataFrame()
-        return graph.candidate_table()
+        # Scored where the graph is still in hand. A ranking absent from part
+        # of a background is a rate for a population that was never measured,
+        # so the scorer applies to every pair set this forms or to none.
+        return (graph.candidate_table() if self.scorer is None
+                else self.scorer.score(graph))
+ 

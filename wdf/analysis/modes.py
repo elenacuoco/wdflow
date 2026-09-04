@@ -109,7 +109,8 @@ def mode_roc(mode: DetectionMode, n_points: int = 60) -> pd.DataFrame:
     """
     foreground, background = mode.scores()
     if not len(background) or not len(foreground):
-        return pd.DataFrame(columns=["far_per_day", "threshold", "efficiency"])
+        return pd.DataFrame(
+            columns=["far_per_day", "threshold", "ceiling", "efficiency"])
 
     # A non-finite score is not a candidate: it sorts before every real value
     # in a descending order, so leaving it in would give the lowest rates a
@@ -118,18 +119,35 @@ def mode_roc(mode: DetectionMode, n_points: int = 60) -> pd.DataFrame:
     background = np.asarray(background, dtype=float)
     background = background[np.isfinite(background)]
     if not len(background):
-        return pd.DataFrame(columns=["far_per_day", "threshold", "efficiency"])
+        return pd.DataFrame(
+            columns=["far_per_day", "threshold", "ceiling", "efficiency"])
     ranked = np.sort(background)[::-1]
+    # The first point would be a threshold on the single loudest accidental,
+    # which is a maximum and not a rate: on recorded strain the loudest
+    # anything is a glitch, and a curve is not drawn through it.
     counts = np.unique(np.geomspace(1, len(ranked), n_points).astype(int))
+    counts = counts[counts > 1]
+    # The fraction of the injections some candidate matched at all. It is the
+    # value the curve tends to as the threshold falls, so a curve saturating
+    # there is limited by what the coincidence admitted and not by the ranking,
+    # and no change of statistic moves it.
+    ceiling = len(foreground) / max(mode.n_injections, 1)
     rows = []
     for count in counts:
         threshold = float(ranked[count - 1])
+        # The rate the threshold realises, not the rank that produced it. A
+        # statistic with an atom --- a pair sharing no tile scores exactly
+        # zero --- maps a whole range of ranks to one threshold, and quoting
+        # the rank would draw a shelf across rates the curve never had.
         rows.append(dict(
-            far_per_day=count / mode.livetime_days,
+            far_per_day=(float(np.count_nonzero(ranked >= threshold))
+                         / mode.livetime_days),
             threshold=threshold,
+            ceiling=ceiling,
             efficiency=float(np.count_nonzero(foreground >= threshold))
             / max(mode.n_injections, 1)))
-    return pd.DataFrame(rows).sort_values("far_per_day").reset_index(drop=True)
+    return (pd.DataFrame(rows).drop_duplicates(subset="far_per_day")
+            .sort_values("far_per_day").reset_index(drop=True))
 
 
 def mode_threshold(mode: DetectionMode, far_per_day: float) -> float:

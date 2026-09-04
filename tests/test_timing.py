@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wdf.analysis.timing import arrival_time_difference, referred_to_instant
+from wdf.analysis.timing import (arrival_time_difference, envelope_instant,
+                                 envelope_instants, referred_to_instant)
 
 
 FS = 2048.0
@@ -116,3 +117,69 @@ def test_the_cost_follows_the_length_and_not_its_square():
     assert dt == pytest.approx(+7.0 / fs, abs=0.5 / fs)
     # Quadratic in the length would be 4e10 products here, minutes of work.
     assert elapsed < 5.0, f"the whole correlation was formed ({elapsed:.1f} s)"
+
+
+def test_the_envelope_peak_is_read_at_the_sample():
+    """The instant is where the amplitude is largest, on the sample grid, and
+    the tile centre it is sought about only says where to look."""
+    fs = 2048.0
+    t = np.arange(1024) / fs
+    wave = np.sin(2 * np.pi * 150.0 * t) * np.exp(-((t - 0.30) / 0.01) ** 2)
+    read = envelope_instant((1000.0, wave), 1000.30, fs, 0.25)
+    assert read == pytest.approx(1000.30, abs=1.0 / fs)
+    # The tile centre may be off by a good fraction of the window and the
+    # answer does not move, because it is the envelope that is read.
+    assert envelope_instant((1000.0, wave), 1000.38, fs, 0.25) == \
+        pytest.approx(read, abs=1.0 / fs)
+
+
+def test_the_search_is_bounded_by_the_block():
+    """An event assembled from many blocks spreads its energy over its extent,
+    and the envelope of a long transient peaks where that energy concentrated.
+    The instant stays on the block the event was ranked on."""
+    fs = 2048.0
+    t = np.arange(8192) / fs
+    early = np.sin(2 * np.pi * 150.0 * t) * np.exp(-((t - 0.30) / 0.01) ** 2)
+    late = 5.0 * np.sin(2 * np.pi * 150.0 * t) * np.exp(-((t - 3.50) / 0.01) ** 2)
+    wave = early + late
+
+    # Sought about the early feature within one block: the later and louder
+    # one is outside the window and does not win.
+    assert envelope_instant((1000.0, wave), 1000.30, fs, 0.25) == \
+        pytest.approx(1000.30, abs=1.0 / fs)
+    # Sought over the whole event, the loudest feature wins instead.
+    assert envelope_instant((1000.0, wave), 1000.30, fs, 8.0) == \
+        pytest.approx(1003.50, abs=1.0 / fs)
+
+
+def test_a_series_with_nothing_to_read_gives_no_instant():
+    fs = 2048.0
+    assert np.isnan(envelope_instant((1000.0, np.zeros(512)), 1000.1, fs, 0.25))
+    assert np.isnan(envelope_instant((1000.0, np.zeros(0)), 1000.1, fs, 0.25))
+    # A block that lies outside the samples is not a reading of anything.
+    wave = np.sin(2 * np.pi * 150.0 * np.arange(512) / fs)
+    assert np.isnan(envelope_instant((1000.0, wave), 1005.0, fs, 0.25))
+
+
+def test_the_instant_is_refused_without_a_rate_or_a_width():
+    wave = np.ones(64)
+    with pytest.raises(ValueError, match="sampling frequency"):
+        envelope_instant((0.0, wave), 0.0, 0.0, 0.25)
+    with pytest.raises(ValueError, match="search width"):
+        envelope_instant((0.0, wave), 0.0, 2048.0, 0.0)
+
+
+def test_every_event_gets_its_own_instant_and_none_gets_another_s():
+    fs = 2048.0
+    t = np.arange(1024) / fs
+    events = pd.DataFrame({"cluster_id": [3, 7, 9],
+                           "gpsPeak": [1000.30, 2000.40, 3000.10]})
+    series = {
+        3: (1000.0, np.sin(2 * np.pi * 150 * t) * np.exp(-((t - 0.30) / 0.01) ** 2)),
+        7: (2000.0, np.sin(2 * np.pi * 150 * t) * np.exp(-((t - 0.40) / 0.01) ** 2)),
+        # 9 has no reconstruction
+    }
+    out = envelope_instants(series, events, fs, 0.25)
+    assert out[0] == pytest.approx(1000.30, abs=1.0 / fs)
+    assert out[1] == pytest.approx(2000.40, abs=1.0 / fs)
+    assert np.isnan(out[2])

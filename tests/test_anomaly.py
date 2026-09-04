@@ -58,9 +58,16 @@ def test_a_candidate_unlike_the_accidentals_scores_higher():
 
 def test_no_candidate_gives_an_empty_table_and_no_crash():
     graph = _graph({"H1": 15, "L1": 15}, seed=4)
+    # Everything an edge carries goes with the edges: a graph holding a profile
+    # for a candidate it no longer has is a state the builder cannot produce,
+    # and testing against it would test the emptying and not the scorer.
     graph.cross_edges = np.zeros((0, 2), dtype=np.int64)
     graph.cross_edge_features = np.zeros((0, len(graph.cross_edge_features[0])),
                                          dtype=np.float32)
+    graph.cross_edge_profiles = graph.cross_edge_profiles[:0]
+    graph.cross_edge_match = graph.cross_edge_match[:0]
+    graph.cross_edge_match_dt = graph.cross_edge_match_dt[:0]
+    graph.cross_edge_measured = graph.cross_edge_measured[:0]
     model = BackgroundAnomalyScorer(node_dim=graph.node_features.shape[1],
                                     cross_edge_dim=graph.cross_edge_features.shape[1],
                                     hidden=8, seed=0)
