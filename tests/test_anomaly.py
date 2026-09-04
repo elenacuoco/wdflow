@@ -58,9 +58,16 @@ def test_a_candidate_unlike_the_accidentals_scores_higher():
 
 def test_no_candidate_gives_an_empty_table_and_no_crash():
     graph = _graph({"H1": 15, "L1": 15}, seed=4)
+    # Everything an edge carries goes with the edges: a graph holding a profile
+    # for a candidate it no longer has is a state the builder cannot produce,
+    # and testing against it would test the emptying and not the scorer.
     graph.cross_edges = np.zeros((0, 2), dtype=np.int64)
     graph.cross_edge_features = np.zeros((0, len(graph.cross_edge_features[0])),
                                          dtype=np.float32)
+    graph.cross_edge_profiles = graph.cross_edge_profiles[:0]
+    graph.cross_edge_match = graph.cross_edge_match[:0]
+    graph.cross_edge_match_dt = graph.cross_edge_match_dt[:0]
+    graph.cross_edge_measured = graph.cross_edge_measured[:0]
     model = BackgroundAnomalyScorer(node_dim=graph.node_features.shape[1],
                                     cross_edge_dim=graph.cross_edge_features.shape[1],
                                     hidden=8, seed=0)
@@ -114,3 +121,25 @@ def test_a_broken_gpu_is_not_a_reason_to_stop():
     finally:
         gnn.torch.cuda = real
         gnn.torch.zeros = real_zeros
+
+
+def test_a_fitted_model_survives_a_round_trip(tmp_path):
+    """The scaling is part of the model, so it has to travel with the weights:
+    a scaling re-measured on the graph the model is later shown would read the
+    accidental population and the candidates on two different scales."""
+    import torch
+
+    from wdf.analysis.anomaly import BackgroundAnomalyScorer
+
+    model = BackgroundAnomalyScorer(node_dim=6, cross_edge_dim=4, hidden=8, seed=5)
+    with torch.no_grad():
+        model.feature_mean.copy_(torch.arange(6, dtype=torch.float32))
+        model.edge_scale.copy_(torch.full((4,), 2.5))
+
+    path = tmp_path / "anomaly.pt"
+    model.save(str(path))
+    back = BackgroundAnomalyScorer.load(str(path))
+
+    assert not back.training, "a loaded model is read, not trained further"
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, back.state_dict()[name]), name

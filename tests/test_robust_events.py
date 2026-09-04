@@ -43,7 +43,10 @@ def test_indexed_coincidence_is_one_to_one_and_exposes_enwdf_statistics():
 
 def test_far_uses_total_slide_livetime_and_never_reports_exact_zero():
     finder = IndexedCoincidenceFinder(timing_jitter_s=0.05)
-    estimator = TimeSlideFAR(finder, FARConfig(n_slides=10))
+    # The default floor is set by the extents of a real run; a synthetic
+    # segment of a hundred seconds states its own, above these events.
+    estimator = TimeSlideFAR(finder, FARConfig(n_slides=10,
+                                              min_shift_s=2.0))
     candidate = pd.DataFrame(
         {"network_min_enwdf": [20.0], "network_enwdf": [25.0]}
     )
@@ -127,15 +130,17 @@ def test_a_pair_further_apart_than_its_own_tolerance_is_not_a_candidate():
     assert len(finder.find({"H1": left, "L1": far})) == 0
 
 
-def test_a_long_pair_is_admitted_on_its_extent_and_not_on_an_instant():
-    """An extended transient has no arrival time. Two detectors seeing one
-    chirp put their centroids far further apart than the light travel time,
-    because which instant each calls the centre depends on its own noise and
-    antenna response --- so the test is that the stretches of time they cover
-    meet, which for a transient shorter than the light travel time is the same
-    statement."""
+def test_a_long_pair_is_admitted_on_its_extent_and_ranked_on_its_instant():
+    """A transient longer than one analysis window is assembled as several
+    events, and the two detectors do not keep the same one: their instants
+    then differ by far more than the light travel time although both belong to
+    one signal. Gating on that difference would take evidence away from a
+    candidate the detectors did assemble, so the test is that the stretches of
+    time they cover meet --- and the difference ranks the survivors."""
     finder = IndexedCoincidenceFinder(light_travel_time_s=0.01, timing_jitter_s=0.001,
                                       timing_sigma=3.0, maximum_tolerance_s=0.025)
+    # Four seconds long each and overlapping almost entirely, their instants
+    # three hundred milliseconds apart: one long transient, two fragments.
     long_left = _timed_events([100.0], [0.5], [4.0], [10.0], "H1")
     long_right = _timed_events([100.3], [0.5], [4.0], [9.0], "L1")
     assert len(finder.find({"H1": long_left, "L1": long_right})) == 1
@@ -287,7 +292,11 @@ def test_a_time_slide_moves_an_event_without_tearing_it_apart():
             seen.append(events_by_ifo["L1"].copy())
             return pd.DataFrame()
 
-    slider = TimeSlideFAR(Recorder(), config=FARConfig(n_slides=20, seed=3))
+    # A synthetic hundred-second segment states its own floor; the default
+    # is set by the extents an event of a real run reaches.
+    slider = TimeSlideFAR(Recorder(),
+                          config=FARConfig(n_slides=20, seed=3,
+                                           min_shift_s=2.0))
     slider.background_distribution({"H1": events.assign(ifo="H1"), "L1": events},
                                    segment_bounds={"H1": (start, start + span),
                                     "L1": (start, start + span)})
@@ -320,7 +329,9 @@ def test_an_empty_background_keeps_its_columns():
         sigma=[1.0]))
 
     background = TimeSlideFAR(
-        NeverFinds(), FARConfig(n_slides=5, seed=0)).background_distribution(
+        NeverFinds(),
+        FARConfig(n_slides=5, seed=0,
+                  min_shift_s=2.0)).background_distribution(
         {"H1": events.assign(ifo="H1"), "L1": events},
         segment_bounds={"H1": (900.0, 1100.0), "L1": (900.0, 1100.0)})
 
@@ -336,13 +347,20 @@ def test_time_slides_displace_every_detector_but_the_reference():
     excludes it is decorrelated only by the *difference* of two shifts, which is
     the case a two-detector implementation never has to consider.
     """
-    slides = TimeSlideFAR(IndexedCoincidenceFinder(CoincidenceConfig()), FARConfig(n_slides=25, seed=3,
-                                                            min_shift_s=5.0))
-    rng = np.random.default_rng(0)
-    for _ in range(25):
-        drawn = slides._draw_shifts(rng, 2, span=600.0)
+    slides = TimeSlideFAR(IndexedCoincidenceFinder(CoincidenceConfig()),
+                          FARConfig(n_slides=25, seed=3, min_shift_s=5.0))
+    grid = slides._shift_grid(np.random.default_rng(0), 2, span=600.0,
+                              least=5.0)
+    assert len(grid) >= 1
+    for drawn in grid:
         assert np.abs(drawn).min() >= 5.0
-        assert abs(drawn[0] - drawn[1]) >= 5.0
+        # One step apart by construction; the comparison carries the rounding
+        # of a product of floats, not a shortfall.
+        assert abs(drawn[0] - drawn[1]) >= 5.0 - 1e-9
+    # Enumerated, so no configuration is formed twice and none reaches the
+    # span, where the wrap would make it the identity.
+    assert len({tuple(row) for row in grid}) == len(grid)
+    assert grid.max() < 600.0
 
 
 def test_time_slides_refuse_a_single_detector():
@@ -350,3 +368,97 @@ def test_time_slides_refuse_a_single_detector():
     with pytest.raises(ValueError, match="at least two"):
         slides.background_distribution({"H1": pd.DataFrame()},
                                        {"H1": (0.0, 100.0)})
+
+
+def test_a_slide_shorter_than_the_admission_window_is_refused():
+    """A pair is admitted when the two instants differ by no more than the
+    coincidence's tolerance, so a displacement below that window leaves a real
+    coincidence admissible and the signal joins the background it is measured
+    against. The window is read from the coincidence, not assumed of it, and a
+    floor below it is refused."""
+    import pandas as pd
+    import pytest
+
+    from wdf.analysis.robust_events import (CoincidenceConfig, FARConfig,
+                                            IndexedCoincidenceFinder,
+                                            TimeSlideFAR)
+
+    config = CoincidenceConfig(light_travel_time_s=0.01,
+                               maximum_tolerance_s=0.025)
+    finder = IndexedCoincidenceFinder(config)
+
+    def events(ifo, gps):
+        return pd.DataFrame(dict(
+            cluster_id=[0], ifo=[ifo], gps=[gps], gpsStart=[gps],
+            gpsCentroid=[gps], gpsPeak=[gps], tSpread=[0.001], duration=[0.1],
+            freqMin=[20.0], freqMean=[100.0], freqMax=[400.0], EnWDF=[10.0],
+            sigma=[1.0]))
+
+    span = 600.0
+    catalogues = {"H1": events("H1", 100.0), "L1": events("L1", 300.0)}
+    bounds = {"H1": (0.0, span), "L1": (0.0, span)}
+
+    with pytest.raises(ValueError, match="keeps real coincidences"):
+        TimeSlideFAR(finder, FARConfig(n_slides=4, min_shift_s=0.005)
+                     ).background_distribution(catalogues, segment_bounds=bounds)
+
+    # Asked rather than told --- `min_shift_s=None` --- the step is the wider
+    # of two measured scales: the window a pair is admitted in, and the length
+    # the trigger stream is correlated over, since two lags closer than that
+    # re-use the same clusters. The released analyses state a constant instead.
+    drawn = TimeSlideFAR(
+        finder, FARConfig(n_slides=4, min_shift_s=None)
+    ).background_distribution(catalogues, segment_bounds=bounds)
+    assert drawn.attrs["admission_window_s"] == pytest.approx(0.025)
+    assert drawn.attrs["correlated_length_s"] == pytest.approx(0.1)
+    assert drawn.attrs["min_shift_s"] == pytest.approx(0.1)
+
+
+def test_the_lags_are_enumerated_and_the_livetime_is_what_the_span_held():
+    """A span that cannot hold the number of lags asked for yields fewer, and
+    the livetime credited is what it held. Drawing at random instead would
+    return the number asked for, with the shortfall made up of configurations
+    already formed --- correlated rows in a distribution a threshold reads as
+    an order statistic."""
+    import pandas as pd
+
+    from wdf.analysis.robust_events import FARConfig, TimeSlideFAR
+
+    class NeverFinds:
+        def find(self, slid):
+            return pd.DataFrame()
+
+    def events(ifo):
+        return pd.DataFrame(dict(
+            cluster_id=[0], ifo=[ifo], gps=[500.0], gpsStart=[500.0],
+            gpsCentroid=[500.0], gpsPeak=[500.0], tSpread=[0.01],
+            duration=[0.1], freqMin=[20.0], freqMean=[100.0], freqMax=[400.0],
+            EnWDF=[10.0], sigma=[1.0]))
+
+    # A thousand lags of at least a hundred seconds do not fit in an hour.
+    span = 3600.0
+    background = TimeSlideFAR(
+        NeverFinds(), FARConfig(n_slides=1000, seed=0, min_shift_s=100.0)
+    ).background_distribution(
+        {"H1": events("H1"), "L1": events("L1")},
+        segment_bounds={"H1": (0.0, span), "L1": (0.0, span)})
+
+    held = background.attrs["n_slides"]
+    assert background.attrs["n_slides_requested"] == 1000
+    assert 1 <= held <= int(span // 100.0)
+    assert background.attrs["total_livetime_s"] == held * span
+
+    # Asked instead of told, the window is the coincidence's own tolerance --
+    # milliseconds -- and the same hour then holds every lag that was asked
+    # for: a floor above the window buys nothing and costs configurations the
+    # stretch had.
+    from wdf.analysis.robust_events import (CoincidenceConfig,
+                                            IndexedCoincidenceFinder)
+    measured = TimeSlideFAR(
+        IndexedCoincidenceFinder(CoincidenceConfig(light_travel_time_s=0.01)),
+        FARConfig(n_slides=1000, seed=0,
+                  min_shift_s=None)).background_distribution(
+        {"H1": events("H1"), "L1": events("L1")},
+        segment_bounds={"H1": (0.0, span), "L1": (0.0, span)})
+    assert measured.attrs["min_shift_s"] < 1.0
+    assert measured.attrs["n_slides"] > held

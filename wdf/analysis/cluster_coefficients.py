@@ -145,11 +145,22 @@ class ClusterCoefficients:
     def reconstruct(self) -> tuple[float, np.ndarray]:
         """Invert the coefficients and stitch the windows into one time series.
 
+        The series is a function of the coefficients, which are fixed when the
+        cluster is assembled, so it is inverted once and kept. The statistic
+        over the cluster is the norm of this series and the network stage times
+        a pair on it: asking for both would otherwise invert every window of
+        every event twice. Each caller receives its own samples.
+
         :return: ``(gps_start, samples)`` -- see `wdf.analysis.reconstruction`.
         """
         from wdf.analysis.reconstruction import stitch
 
-        return stitch(self.as_frame(), self.fs, self.window, self.overlap)
+        held = getattr(self, "_reconstruction", None)
+        if held is None:
+            held = stitch(self.as_frame(), self.fs, self.window, self.overlap)
+            self._reconstruction = held
+        start, samples = held
+        return start, samples.copy()
 
     def enwdf(self) -> float:
         """The statistic over the whole cluster: the norm of the stitched

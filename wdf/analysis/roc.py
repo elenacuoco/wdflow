@@ -1,5 +1,5 @@
 """ROC curve for a coincidence detection statistic (classical `network_enwdf`
-or GNN `gnn_score`), built from known-event candidate scores (TRUE class)
+or GNN `gnn_logit`), built from known-event candidate scores (TRUE class)
 against time-slide background candidate scores (FALSE class, from
 significance.BackgroundEstimator).
 
