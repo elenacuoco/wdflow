@@ -154,8 +154,6 @@ whose signal variation is of order one. A shape term belongs in
 `wdf.analysis.network_statistic.CoherentRanking`, where it enters as a measured
 log density ratio in the units the coherent energy is already in.
 
-## 1.2.0 --- 2026-09-03
-
 ### A pair is admitted on the arrival-time difference
 
 The network stage admits a pair when the difference of the two events' own
@@ -223,20 +221,17 @@ one it held when its tiles were laid out --- so it needs no knowledge of what
 moved them. A displacement of zero is the arithmetic that was there before, so
 the unshifted population is unchanged to the bit.
 
-### The coherent statistic obeys the rule the detector stage obeys
+### An event carries the tiles of the block it was selected on
 
-An event carries the tiles of every block it spans and, beside them, the tiles
-of the one block it was selected on
-(`wdf.analysis.detector_graph.EventWavegram.block_tiles`, the member with the
-largest per-window energy). The candidate table carries the coherent energy
-over both: `network_morphology` over the whole event, and
-`network_block_morphology` over the selecting blocks. A statistic summed over
-tiles carries the threshold's floor once per tile, and a signed sum has mean
-zero but a variance that grows with the number of tile pairs, so a sum over the
-whole event is ranked partly on how long the transient lasted; one block bounds
-that count. `block_coherence` joins `EDGE_FEATURES`, so the learned ranking
-reads it too --- a model fitted before this carries a different number of edge
-inputs and cannot be loaded against it.
+`wdf.analysis.detector_graph.EventWavegram.block_tiles` holds the tiles of the
+member with the largest per-window energy, beside the tiles of every block the
+event spans. A signed sum has mean zero, but its variance grows with the number
+of tile pairs, so a coherent statistic taken over a whole event is ranked partly
+on how long the transient lasted; summing over the selecting block alone would
+bound that count by the analysis window whatever the transient lasted. That is
+how the statistic that ranks is to be separated from the one that measures. It
+is a candidate definition: the tiles are carried, and no column is formed from
+them.
 
 ### The candidate table
 
