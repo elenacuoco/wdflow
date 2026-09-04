@@ -154,8 +154,6 @@ whose signal variation is of order one. A shape term belongs in
 `wdf.analysis.network_statistic.CoherentRanking`, where it enters as a measured
 log density ratio in the units the coherent energy is already in.
 
-## 1.2.0 --- 2026-09-03
-
 ### A pair is admitted on the arrival-time difference
 
 The network stage admits a pair when the difference of the two events' own
