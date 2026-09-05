@@ -940,16 +940,24 @@ class TimeSlideFAR:
         k = np.arange(1, used + 1, dtype=float)
         return step * (k[:, None] + np.arange(n_shifted)[None, :]) + phase
 
-    def background_distribution(self, events_by_ifo, segment_bounds):
+    def background_distribution(self, events_by_ifo, segment_bounds,
+                                reduce=None):
         """Accidental coincidences, by displacing every detector but the first.
 
         :param events_by_ifo: `{ifo: events}`, two or more detectors. The first
             is the reference and is never moved.
         :param segment_bounds: `{ifo: (start, end)}`, the stretch each
             detector's events were found in.
+        :param reduce: called with each slide's candidates as they are formed,
+            as `reduce(candidates, livetime_s)`. Given one, the slides are not
+            accumulated: what a rate needs is an order statistic, and the
+            caller keeps only that, so the memory a background costs stops
+            growing with the number of slides. The frame returned is then empty
+            and carries the run's `attrs` alone.
+        :type reduce: callable or None
         :return: pandas.DataFrame -- the accidental candidates, carrying
             `slide_index` and the shifts applied, with the number of slides and
-            the total slid livetime in `attrs`.
+            the total slid livetime in `attrs`; empty when `reduce` was given.
         :raises ValueError: with fewer than two detectors, or a segment too
             short for the requested shifts.
         """
@@ -1047,13 +1055,24 @@ class TimeSlideFAR:
                 candidates["slide_shift_s"] = (
                     float(drawn[0]) if len(drawn) == 1
                     else [tuple(float(s) for s in drawn)] * len(candidates))
-                rows.append(candidates)
+                if reduce is None:
+                    rows.append(candidates)
+                else:
+                    reduce(candidates, span)
+                    # The slide is released here: holding it is what makes the
+                    # background cost grow with the number of displacements,
+                    # and nothing downstream reads it again.
+                    del candidates
 
         # Slides that produced nothing still say what a candidate looks like, so
         # an empty background keeps its columns and is empty rather than
         # unrecognisable.
-        background = pd.concat(rows, ignore_index=True) if rows else (
-            pd.DataFrame() if template is None else template.copy())
+        if reduce is not None:
+            background = (template.copy() if template is not None
+                          else pd.DataFrame())
+        else:
+            background = pd.concat(rows, ignore_index=True) if rows else (
+                pd.DataFrame() if template is None else template.copy())
         # What the span held, which is what the livetime is credited on --- not
         # what was asked for. A short segment yields fewer distinct lags, and a
         # rate divided by the number requested would claim a livetime the

@@ -201,6 +201,17 @@ so the lag axis collapses onto a single point whatever tolerance the edge was
 admitted on. The bin is therefore the shorter of the shortest tile the band
 ladder holds and the network's light travel time.
 
+The two maps are compared as magnitudes. A coefficient carries the phase as
+well as the energy: two detectors resolve one transient onto different basis
+functions, at an arrival-time difference finer than a bin, and the two LIGO
+detectors respond to one source with opposite sign besides, so their
+coefficients disagree cell by cell where the morphologies are identical. A
+cosine between signed maps measures that disagreement rather than the shape,
+and taking its magnitude afterwards does not undo it, because the cancellation
+is inside the sum and not on the total. The sign is not discarded from the
+analysis --- the coherent energy is a signed sum whose magnitude is taken once
+at the end --- only from the question of whether two maps have the same shape.
+
 Each event's map is laid on that event's own instant, and the difference between
 the two anchors is carried alongside, so a map lag `L` places the pair at the
 absolute displacement `offset + L`. The lags searched are the ones that reach
