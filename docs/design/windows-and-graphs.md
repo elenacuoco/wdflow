@@ -110,51 +110,55 @@ learned stage costs the network stage's time and not the search's.
 ## The network stage: `wdf.analysis.network_graph`
 
 The detector stage's events become the nodes. An edge exists only where a signal
-could have produced the pair: the difference of the two events' own instants
-must not exceed the light travel time, widened by what each event declares its
-instant is worth, and they must overlap in band. These are the candidates
+could have produced the pair: the two events must cover the same stretch of time
+once one of them is allowed to shift by the light travel time widened by what
+each event declares its instant is worth, and they must overlap in band. These
+are the candidates
 `wdf.analysis.robust_events.IndexedCoincidenceFinder.candidate_edges` admits, so
-the learned and the classical statistic rank one population.
+the learned and the classical statistic rank one population. The difference of
+the two events' own instants is measured on every admitted pair and ranks it; it
+does not decide which pairs exist.
 
 The arrival-time difference an edge carries is the difference of the two
-events' own instants. An event's instant is the peak of its reconstruction's
-analytic envelope, sought within one block of the tile carrying its largest
-coefficient (`wdf.analysis.timing.envelope_instant`), and it is written into
-the catalogue as `gpsEnvelope`. `wdf.analysis.robust_events.INSTANT_COLUMNS`
-names where it is read from and in what order it is preferred: that instant,
-then the centre of the tile, then the energy centroid.
+events' own instants: the centre of the tile carrying each event's largest
+coefficient, found on the event's own wavegram rather than on one block's.
+`wdf.analysis.robust_events.INSTANT_COLUMNS` names where that is read from and
+in what order it is preferred, the energy centroid being the last resort.
 
-The instant is read on the reconstruction because a tile lasts one over the
-upper edge of its own band --- a few milliseconds high in the band, tens of
-milliseconds low in it --- so where an event's loudest coefficient sits low the
-tile is longer than the light travel time of the network and a difference of
-two tile centres carries no geometry. The search is bounded to one block
-because an event assembled from many blocks spreads its energy over its whole
-extent, and the envelope of a long transient peaks where that energy happened
-to concentrate rather than where the event arrived.
+What such a difference can resolve is bounded by the tiling. A tile lasts one
+over the upper edge of its own band --- a few milliseconds high in the band,
+tens of milliseconds low in it --- so where an event's loudest coefficient sits
+low the tile is longer than the light travel time of the network, and the
+difference of two tile centres is then a statement about the two tilings and
+not about the geometry. That is a bound on what an edge's timing is worth, and
+`tSpread` is what declares it; a candidate whose direction is wanted is
+measured again, below the tile, on its reconstruction.
 
 It is a property of one event and of nothing else. A time slide moves the
 event's times and carries its instant with them, so a difference of two of them
 is a difference of two node quantities and nothing is measured per pair --- on
 the zero-lag population or on a background of tens of millions of accidentals.
-That is what an edge needs: whether the pair is causally possible, and how much
-of its timing tolerance it consumed.
+That is what an edge needs: how much of its timing tolerance the pair consumed,
+on every pair the admission rule left it.
 
-What a candidate deserves is finer. The lag that maximises the cross-correlation
-of the two events' stitched reconstructions
-(`wdf.analysis.timing.arrival_time_difference`) measures the difference on the
-morphology the two detectors share, with the uncertainty the correlation peak
-declares, and that is what a sky region is built from. It costs a correlation
-per pair, so it is applied to the candidates and not to the graph.
+What a candidate deserves is finer, and it is measured outside these stages.
+`wdf.analysis.timing.arrival_time_difference` reads the difference at the lag
+that maximises the cross-correlation of the two events' stitched
+reconstructions, with the uncertainty the correlation peak declares, which is
+what a sky region wants. It costs a correlation per pair, so it belongs to the
+candidates a map is drawn for and not to the graph, and no stage here calls it:
+a study that wants a direction applies it to its own candidates.
 
-The test is on the instants and not on the events' extents. An extent says how
-long the transient lasted, not when it arrived: two long events overlapping for
-seconds are not thereby causally compatible, and a rule that admits them makes
-the accidental population that of pairs which happen to be simultaneous rather
-than of pairs a source could have produced. What makes the instant answerable is
-that each event has one of its own, read on its reconstruction rather than off
-the tiling --- a centroid or a tile centre is a property of what that detector
-recovered, and the two detectors do not agree on it.
+Admission is on the events' stretches of time and not on the difference of
+their instants. A transient longer than one analysis window is assembled as
+several events and the two detectors need not keep the same one, so their
+instants can differ by far more than the light travel time although both belong
+to one signal; gating on that difference would take evidence away from a
+candidate the detectors did assemble. The difference ranks the pair instead,
+which is answerable only because each event has an instant of its own, taken on
+the tile it was ranked on rather than on where its energy happened to sit --- a
+centroid is a property of what that detector recovered, and the two detectors
+do not agree on it.
 
 The map two detectors are compared on is anchored the same way: on the centre of
 the tile carrying the loudest member's largest coefficient, not on the event's
@@ -169,15 +173,14 @@ centroid is a moment of the energy that survived threshold in that detector;
 two detectors seeing one source at different projected amplitudes keep
 different portions of it and place their centroids differently, and that
 difference is indistinguishable from geometry once it enters the arrival-time
-difference. The envelope peak and the peak tile both track the loudest instant,
-which both detectors share. Where an event is timed on the tile centre, the
+difference. The peak tile tracks the loudest instant, which both detectors
+share. Where an event is timed on the tile centre, the
 uncertainty is the duration of that tile, since the time assigned is its centre
 rather than an instant within it, and `tSpread` is what declares it.
 
 An edge carries the arrival-time difference, the shared fraction of band and of
-time support, the log ratio of the two energies, and the agreement between the
-two wavegrams. No alignment is searched for: each event's map is centred on its
-own energy, so the arrival-time difference is not in the maps at all. The energy
+time support, the log ratio of the two energies, the coherent amplitude over the
+tiles the pair shares, and the agreement between the two wavegrams. The energy
 ratio is a feature and not a penalty: the antenna responses make unequal
 amplitudes between detectors physical.
 
@@ -225,16 +228,11 @@ the grid of every short pair --- at a bin of the shortest tile, an array that
 does not exist. Pairs sharing a grid are compared together, by powers of two, so
 a grid is built once per scale and never once per pair.
 
-How far the two maps may be slid against each other is not how far apart the
-arrival times may be. Each is laid on its event's own instant, the centre of the
-tile carrying its largest coefficient, and two detectors seeing one transient at
-different amplitudes need not make that the same part of it, so the two
-renderings can be displaced by as much as the transient lasts. The search spans
-the longer of the two events' own extents, taken from the tiles they are made
-of, widened by the tolerance, and stops there: beyond it the two maps share
-nothing to agree about. The displacement found is reported beside the agreement
-and is not constrained to the light travel time, so a displacement larger than
-the geometry allows says the two renderings do not align physically.
+The displacement found is reported beside the agreement, out of the same pass,
+so it is not a second estimate to be reconciled with it. It is read on the
+`gpsPeak` clock the two maps are anchored on, which is not the clock `dt_s` is
+measured on, and a pair compared at no displacement reports none rather than the
+first point of an axis.
 
 The anchor difference is split to search them on one axis: a whole number of
 bins, applied as a shift of the map, and what the rounding leaves over. Pairs
@@ -273,8 +271,8 @@ ladder fixed by the bin sizes, which no member can leave for the extrapolated
 branch a candidate reaches. `out_of_sample_significance` scores a background
 fold by fold from the others, and `significance_off_source` scores any event
 from the background of every time fold but its own, which is what a single
-recorded stretch allows. Beyond the largest value a bin
-measured it continues along an exponential fitted to that bin's own upper tail.
+recorded stretch allows. Beyond the largest value a bin measured it continues
+along an exponential fitted to that bin's own upper tail.
 The continuation is what keeps the statistic usable: an empirical survival cannot
 fall below one count in its bin, so on its own it caps the significance at the
 logarithm of the bin's size, and a threshold beyond that cap silently rejects
@@ -291,19 +289,21 @@ That ranking is `network_morphology`, the root of the magnitude of the coherent
 energy: the product of the two events' coefficient amplitudes on their noise
 scales, summed over the tiles that cover the same place on the plane, and
 carrying the coefficients' signs. The column is a coherent *amplitude*, on the
-noise scale, and a ranking that reads it as an energy has to square it back. A tile carries an absolute time, so where a stage displaces
-an event --- a time slide does --- the tiles are carried with it, and the pair
-is compared where it stands rather than where it stood. A product of magnitudes is positive whatever the data, so
-its mean under the null grows with the number of tile pairs that happen to meet,
-and two long events overlapping by accident then outrank two short ones
-describing one transient. The signed product has mean zero under the null, which
-is what makes summing over many tiles pay for agreement rather than for extent.
-Both polarities are physical --- two detectors can respond to one source with
-opposite sign --- so the magnitude is what ranks. The table also carries
-loudness-only readings (`network_enwdf`, `network_min_enwdf`, and
-`network_min_enwdf_timed`, which discounts a pair by the fraction of its timing
-tolerance it consumed), which ask that both detectors were loud and never
-whether they agree.
+noise scale, and a ranking that reads it as an energy has to square it back. A
+product of magnitudes is positive whatever the data, so its mean under the null
+grows with the number of tile pairs that happen to meet, and two long events
+overlapping by accident then outrank two short ones describing one transient.
+The signed product has mean zero under the null, which is what makes summing
+over many tiles pay for agreement rather than for extent. Both polarities are
+physical --- two detectors can respond to one source with opposite sign --- so
+the magnitude is what ranks. A tile carries an absolute time, so where a stage
+displaces an event --- a time slide does --- the tiles are carried with it and
+the pair is compared where it stands rather than where it stood.
+
+The table also carries loudness-only readings (`network_enwdf`,
+`network_min_enwdf`, and `network_min_enwdf_timed`, which discounts a pair by
+the fraction of its timing tolerance it consumed), which ask that both
+detectors were loud and never whether they agree.
 
 Two learned rankings read the same graph.
 `wdf.analysis.gnn.GNNCoincidenceScorer` is supervised: its `fit` takes graphs
