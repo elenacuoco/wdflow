@@ -140,12 +140,14 @@ class TriggerGraph:
         :return: pandas.DataFrame -- one row per candidate edge.
         """
         i, j = self.cross_edges[:, 0], self.cross_edges[:, 1]
-        # The same clock the pair was admitted on, and the one `dt_s` is
-        # measured with. The energy centroid is a property of how much of the
-        # transient each detector recovered, so two detectors seeing one source
-        # at different amplitudes place their centroids differently and that
-        # difference lands in the arrival-time difference, which is the whole of
-        # the coincidence and of the sky position.
+        # The clock the two events' maps are anchored on, and the one the
+        # wavegram match reports its displacement in. It is not the clock
+        # `dt_s` is measured on --- that is each event's own instant, which
+        # `INSTANT_COLUMNS` prefers read on the reconstruction --- so the two
+        # are not to be added to each other. The energy centroid is a property
+        # of how much of the transient each detector recovered, so two
+        # detectors seeing one source at different amplitudes place their
+        # centroids differently, which is why it anchors nothing.
         gps = self.nodes["gpsPeak"].to_numpy(dtype=float)
         # An event is ranked by the block that selects it and not by the
         # energy that measures it: a sum over an event's tiles carries the
@@ -176,14 +178,13 @@ class TriggerGraph:
         table["network_wavegram_match"] = self.cross_edge_match
         # The pair's arrival-time difference as the match measures it, out of
         # the same pass as the agreement, so it is not a second estimate to be
-        # reconciled with it: it is where the agreement is. It is not
-        # constrained to the light travel time --- the two events' instants are
-        # the centres of two tiles that need not be the same part of one
-        # transient, so the search reaches as far as the transient lasts --- and
-        # a displacement larger than the geometry allows is the match saying the
-        # two renderings do not align physically. A pair compared at no
-        # displacement has none to report, and says so rather than naming the
-        # first point of an axis.
+        # reconciled with it: it is where the agreement is. It is not measured
+        # on the same clock as `dt_s`: the maps are anchored on `gpsPeak`, and
+        # the whole bins of the difference between the two anchors are applied
+        # as a shift, so what is reported is the absolute displacement the two
+        # renderings agree at on that clock. A pair compared at no displacement
+        # has none to report, and says so rather than naming the first point of
+        # an axis.
         table["network_wavegram_match_dt"] = self.cross_edge_match_dt
         table["network_wavegram_matched"] = self.cross_edge_measured
         if (self.cross_edge_profiles.ndim == 3
@@ -227,13 +228,15 @@ class TriggerGraphBuilder:
     coincidences as cross-detector edges.
 
     The edges are not the graph's own invention. They are the candidate pairs
-    the classical finder admits -- within the light travel time plus the events'
-    own timing spreads, overlapping in band, overlapping in time once the
-    travel time is allowed for -- so that the learned and the classical
+    the classical finder admits -- the two events' stretches of time meeting
+    once one may shift by the light travel time plus their own timing spreads,
+    and their bands overlapping -- so that the learned and the classical
     statistic rank the same candidate set and can be compared at a fixed false
-    alarm rate. What the graph decides is which of those survivors are coherent,
-    not which pairs are geometrically possible: that is known physics, and it is
-    imposed rather than learned.
+    alarm rate. The difference of the two events' own instants is measured on
+    every such pair and ranks it; it does not decide which pairs exist. What the
+    graph decides is which of those survivors are coherent, not which pairs are
+    geometrically possible: that is known physics, and it is imposed rather than
+    learned.
 
     A node carries the cluster's wavegram, not only its scalar summary, so the
     morphology that the coefficients measured reaches the model. The detector's
@@ -620,16 +623,6 @@ class TriggerGraphBuilder:
             # ranked on the statistics that do not require a displacement.
             coincident = np.abs(local[:, 2]) <= tolerance
             matched = np.flatnonzero(coincident)
-            # Once the pair is coincident, how far the two maps may be slid
-            # against each other is not how far apart the arrival times may be.
-            # Each map is laid on its event's own instant, the centre of the
-            # tile carrying its largest coefficient, and two detectors seeing
-            # one transient at different amplitudes need not make that the same
-            # part of it: their two renderings can therefore be displaced by as
-            # much as the transient lasts while their arrival times differ by
-            # the light travel time. The search spans the longer of the two
-            # events' own extents, widened by the tolerance, and stops there:
-            # beyond it the two maps share nothing to agree about.
             # The displacements searched are the tolerance's. Each map is laid
             # on its own event's instant and the whole bins of the difference
             # between the two instants are applied as a shift of the map, at no
