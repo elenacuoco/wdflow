@@ -30,9 +30,16 @@ its form:
   is bounded by one whatever either event's loudness, and a pair that is merely
   loud cannot reach it. Loudness is measured elsewhere and belongs in the
   ranking beside this, not inside it.
-- **It is invariant to which polarity the two detectors saw.** Two detectors
-  can respond to one source with opposite sign, so what is reported is the
-  magnitude of the cosine and the polarity is returned beside it.
+- **It is taken on magnitudes.** Two detectors can respond to one source with
+  opposite sign, and they resolve one transient onto different basis functions
+  and at an arrival-time difference finer than a bin, so their coefficients
+  disagree cell by cell even where the morphologies are identical. A cosine
+  between signed maps then measures that phase difference rather than the
+  shape, and taking its magnitude afterwards does not undo it: the
+  cancellation is inside the sum, not on the total. The maps are therefore
+  compared as magnitudes. The sign is not discarded from the analysis --- the
+  coherent energy is a signed sum whose magnitude is taken once at the end ---
+  only from the question of whether two maps have the same shape.
 
 Each map may be rendered on its own event's instant, which costs nothing as
 long as the displacement between the two anchors is carried alongside and the
@@ -158,14 +165,15 @@ def render(cloud, bands, first, last, bin_seconds):
 
 
 def correlation_profile(left, right, max_shift_s, bin_seconds):
-    """Return the signed, per-band cosine profile on admitted lags.
+    """Return the per-band cosine profile of the magnitudes, on admitted lags.
 
     :param left: one event's map, shape ``(n_bands, n_bins)``.
     :param right: the other event's map, with the same shape.
     :param max_shift_s: largest admitted displacement, seconds.
     :param bin_seconds: duration of one time bin, seconds.
     :return: tuple -- ``(profile, lags, norm_left, norm_right)`` where the
-        profile has shape ``(n_bands, n_admitted_lags)`` and retains the sign.
+        profile has shape ``(n_bands, n_admitted_lags)`` and is non-negative,
+        the maps having been compared as magnitudes.
     :raises ValueError: if the maps have different shapes or invalid timing.
     """
     if not np.isfinite(bin_seconds) or bin_seconds <= 0.0:
@@ -178,6 +186,8 @@ def correlation_profile(left, right, max_shift_s, bin_seconds):
         raise ValueError(
             f"the two maps are {left.shape} and {right.shape}; they must be "
             f"rendered on one grid to be compared")
+    # Shape is compared on magnitudes; see the module docstring.
+    left, right = np.abs(left), np.abs(right)
     norm_left = np.linalg.norm(left)
     norm_right = np.linalg.norm(right)
     lag = correlation_lags(left.shape[1], right.shape[1], mode="full")
@@ -196,7 +206,7 @@ def correlation_profile(left, right, max_shift_s, bin_seconds):
 
 def correlation_profiles(left, right, i, j, max_shift_s, bin_seconds,
                          offset_s=0.0):
-    """Compute signed profiles for many event pairs without pairwise matrices.
+    """Profiles of many event pairs, on magnitudes, without pairwise matrices.
 
     :param left: maps with shape ``(n_events, n_bands, n_bins)``.
     :param right: maps with the same shape.
@@ -216,7 +226,8 @@ def correlation_profiles(left, right, i, j, max_shift_s, bin_seconds,
         displacement of edge ``e`` at lag ``lags[m]`` is
         ``residual[e] + lags[m]``.
     """
-    left, right = np.asarray(left), np.asarray(right)
+    # Shape is compared on magnitudes; see the module docstring.
+    left, right = np.abs(np.asarray(left)), np.abs(np.asarray(right))
     i, j = np.asarray(i, dtype=np.int64), np.asarray(j, dtype=np.int64)
     max_shift_s = np.asarray(max_shift_s, dtype=float)
     offset_s = np.asarray(offset_s, dtype=float)

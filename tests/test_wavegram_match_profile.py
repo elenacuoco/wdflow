@@ -8,7 +8,7 @@ def _at(lags, value):
     return int(np.flatnonzero(np.isclose(lags, value))[0])
 
 
-def test_batched_profile_preserves_sign_shape_and_admitted_lags():
+def test_batched_profile_is_on_magnitudes_over_the_admitted_lags():
     left = np.zeros((2, 5))
     left[0, 2] = 2.0
     left[1, 3] = -1.0
@@ -27,11 +27,17 @@ def test_batched_profile_preserves_sign_shape_and_admitted_lags():
     # A tolerance of zero admits one displacement, and the axis carries nothing
     # at the others: an inadmissible lag is not a small agreement, it is none.
     narrow, narrow_lags, _ = correlation_profiles(
-        left[None], -right[None], [0], [0], [0.0], 1.0)
+        left[None], right[None], [0], [0], [0.0], 1.0)
     inadmissible = np.ones(len(narrow_lags), dtype=bool)
     inadmissible[_at(narrow_lags, 0.0)] = False
-    assert narrow[0, 0, _at(narrow_lags, 0.0)] < 0.0
+    assert narrow[0, 0, _at(narrow_lags, 0.0)] > 0.0
     assert not np.any(narrow[0][:, inadmissible])
+    # The comparison is on magnitudes, so the polarity of a map is not a
+    # disagreement: it says where the source sits with respect to the two
+    # detectors, and what this measures is the shape.
+    flipped, _, _ = correlation_profiles(
+        left[None], -right[None], [0], [0], [0.0], 1.0)
+    np.testing.assert_allclose(flipped, narrow, atol=1e-12)
 
 
 def test_the_lag_axis_reaches_every_displacement_the_pair_admits():
@@ -85,7 +91,7 @@ def test_the_norm_is_the_event_s_and_not_the_edge_s():
     profiles, lags, _ = correlation_profiles(maps, maps, i, j, np.full(4, 2.0), 1.0)
     flat = maps.reshape(len(maps), -1)
     at = _at(lags, 0.0)
-    expected = [float(flat[a] @ flat[b]
+    expected = [float(np.abs(flat[a]) @ np.abs(flat[b])
                       / (np.linalg.norm(flat[a]) * np.linalg.norm(flat[b])))
                 for a, b in zip(i, j)]
     np.testing.assert_allclose(profiles[:, :, at].sum(axis=1), expected, atol=1e-12)
