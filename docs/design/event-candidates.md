@@ -69,7 +69,8 @@ projected onto the data. Where a pair's arrival-time difference is wanted at
 better resolution than the tiles give ---  a sky region needs it ---
 `wdf.analysis.timing.arrival_time_difference` cross-correlates the two stitched
 reconstructions, which is a consistency check between reconstructed waveforms
-applied to candidates rather than to every admitted pair.
+applied to candidates by a caller that wants one, rather than by a stage to
+every admitted pair.
 
 ## The simulated set the efficiencies are read on
 
