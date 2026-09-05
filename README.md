@@ -253,10 +253,9 @@ only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdf
   (2001).
   [10.1103/PhysRevD.64.122002](https://doi.org/10.1103/PhysRevD.64.122002)
 
-`CITATION.cff` in this repository carries the published references in
-machine-readable form; GitHub's *Cite this repository* button reads it. The
-pipeline paper above is in preparation and has no DOI yet, so it is named here
-and not there.
+`CITATION.cff` in this repository carries the same list in machine-readable
+form, the pipeline paper marked `in-preparation`; GitHub's *Cite this
+repository* button reads it.
 
 ## Use of generative AI
 
