@@ -5,8 +5,8 @@ needs two things per detector and nothing else: an arrival time, and the
 uncertainty on it. Everything that distinguishes this map from one drawn by any
 other pipeline is therefore in where those two numbers come from, and they come
 from the same machinery that assembled the event in the first place — the
-wavegram, the two levels of graph, and, for which candidates are worth a map at
-all, the learned score.
+wavegram, the detector and network stages of graph, and, for which candidates
+are worth a map at all, the learned score.
 
 ## The time is the event's, not the block's
 
@@ -18,34 +18,25 @@ straight into the sky position, where nothing downstream could separate the two.
 
 The time a map is built on is the assembled event's: the detector stage
 (`wdf.analysis.detector_graph`) joins every block the transient touched on
-geometry alone, and the event is then timed on its own reconstruction. Every
-block it touched is inverted and stitched, and
-`wdf.analysis.timing.envelope_instant` takes the peak of that waveform's
-analytic envelope. The catalogue carries it as `gpsEnvelope`.
-
-The peak is sought within one block of `gpsPeak`, the centre of the tile
-carrying the event's largest coefficient, which is found on the event's own
-wavegram rather than one block's. The bound is what keeps the instant on the
-feature the event was selected for: an event assembled from many blocks spreads
-its energy over its whole extent, and the envelope of a long transient peaks
-where that energy happened to concentrate. Where the envelope cannot be read
-the tile centre answers, so the column always carries the best instant the
-event has.
-
-The tile centre alone is not enough, because a tile lasts one over the upper
-edge of its own band. Where an event's largest coefficient sits low in the band
-the tile is longer than the light travel time of the network, and a difference
-of two such instants then carries no geometry at all.
+geometry alone, and the event's instant is `gpsPeak`, the centre of the tile
+carrying its largest coefficient, found on the event's own wavegram rather than
+one block's.
 
 It is deliberately not `gpsCentroid`. A centroid is a moment of the energy that
 survived threshold *in that detector*: two detectors seeing one source at
 different projected amplitudes keep different portions of it and place their
 centroids differently, and that difference is indistinguishable from geometry
-once it enters an arrival-time difference. The envelope peak and the peak tile
-both track the loudest instant, which both detectors share. The same reasoning
-fixes the anchor of the comparison map in
-[the network-stage note](windows-and-graphs.md); the sky map inherits it rather
-than choosing again.
+once it enters an arrival-time difference. The peak tile tracks the loudest
+instant, which both detectors share. The same reasoning fixes the anchor of the
+comparison map in [the network-stage note](windows-and-graphs.md); the sky map
+inherits it rather than choosing again.
+
+The tile centre is not enough for a map, though, because a tile lasts one over
+the upper edge of its own band. Where an event's largest coefficient sits low
+in the band the tile is longer than the light travel time of the network, and a
+difference of two such instants carries no geometry at all --- which is why the
+difference a map is built on is measured again, below the tile, on the
+reconstructions themselves.
 
 ## Two arrival-time differences, and which one a map uses
 
@@ -56,16 +47,18 @@ On a network edge it is the difference of the two events' own instants. That is
 a difference of two node quantities: a time slide moves an event's times and
 carries its instant with them, so nothing is measured per pair, on the
 unshifted population or on a background of accidentals. What an edge needs is
-whether the pair is causally possible and how much of its timing tolerance it
-consumed, and the event instant resolves that.
+how much of its timing tolerance the pair consumed, and the event instant
+resolves that at no cost per pair.
 
 A sky region needs the finer one, and it is a property of the pair rather than
 of either event. `wdf.analysis.timing.arrival_time_difference` takes the lag
 that maximises the cross-correlation of the two stitched reconstructions, over
 the lags the network's geometry allows, and returns with it the width the
 correlation peak declares. It measures the difference on the morphology the two
-detectors share, at a cost of one correlation per pair, so it is applied to the
-candidates a map is drawn for and not to the graph.
+detectors share, at a cost of one correlation per pair, so it belongs to the
+candidates a map is drawn for and not to the graph. No stage calls it and
+`localise` does not reach for it: the pair a map is wanted for is measured by
+whoever wants the map, and `localise` is given the two numbers.
 
 ## The uncertainty is declared, not chosen
 
@@ -90,10 +83,15 @@ be run rather than asserted.
 
 ## Which coincidences get a map
 
-The network stage (`wdf.analysis.network_graph`) decides which pairs of events could
-have come from one source: the difference of the two events' own instants
-must not exceed the light travel time, widened by what each declares its
-instant is worth.
+The network stage (`wdf.analysis.network_graph`) decides which pairs of events
+could have come from one source: the two events must cover the same stretch of
+time once one of them is allowed to shift by the light travel time widened by
+what each declares its instant is worth, and their bands must overlap. The
+difference of the two events' own instants is measured on every pair so admitted
+and ranks it --- a transient longer than one analysis window is assembled as
+several events and the two detectors need not keep the same one, so gating on
+that difference would take a candidate away from detectors that did assemble
+it.
 
 The learned score on the network graph ranks those pairs; it does not change
 their geometry. A graph neural network can order candidates better than a

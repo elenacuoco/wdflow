@@ -92,20 +92,19 @@ Changes from the legacy `wdf` package:
   the grouping reduces the trials factor without being able to lose a candidate. `TriggerClusterer`
   (DBSCAN or a greedy merge on the per-window scalar summaries) is kept as a cross-check.
 
-- **A coincidence is timed on the reconstructions, below the tile.** The instants a trigger
-  records are moments of the tiling and cannot resolve better than the tile they sit on, whose
-  length is tied to its band; the reconstruction carries the waveform at the sample. Two
-  estimators read it, for two purposes. `wdf.analysis.timing.envelope_instant` gives each event
-  an instant of its own, the peak of the analytic envelope of that event's stitched
-  reconstruction: it is a property of one event, so a time slide carries it with the event and a
-  background of millions of accidental pairs costs nothing per pair, which is why it is what
-  admits a pair and what a cross-detector edge carries.
-  `wdf.analysis.timing.arrival_time_difference` places the two reconstructions on one absolute
-  time grid and reads the difference at the lag that maximises their cross-correlation, with an
-  uncertainty the pair itself declares (the half-width of the correlation peak): it belongs to
-  the pair, costs one correlation, and is applied to the candidates a sky region is drawn for.
-  Both run downstream on the coefficients the trigger already carries, adding nothing to the
-  front end.
+- **A pair is admitted on the events' extents and ranked on their instants.** The two events'
+  stretches of time have to meet once one may shift by the light travel time plus their own
+  spreads: a transient longer than one window is assembled as several events and two detectors
+  need not keep the same one, so gating on an instant would take evidence away from a candidate
+  the detectors did assemble. The difference of the two events' instants --- the centre of the
+  tile carrying each one's largest coefficient, the order
+  `wdf.analysis.robust_events.INSTANT_COLUMNS` names --- then ranks the survivors. It is a
+  property of one event, so a time slide carries it with the event and a background of millions
+  of accidental pairs costs nothing per pair, which is what such a background requires. What
+  that difference resolves is bounded by the tiling: a tile's length is one over the upper edge
+  of its own band, so where an event's loudest coefficient sits low the tile is longer than the
+  light travel time itself, and `tSpread` is what declares that. It is a bound on what a pair's
+  timing is worth, not a bound on the search: nothing before it reads a time at all.
 
 - **Trigger output is Parquet, not CSV** (`wdf.observers.SingleEventPrintFileObserver`), written
   incrementally in row-group batches (`flush_every`, default 500 triggers) and finalized by a
@@ -118,7 +117,7 @@ Changes from the legacy `wdf` package:
   on plain pandas DataFrames / saved trigger files, so it works standalone.
 
 Left behind deliberately (not used by `wdfUnitDSWorker`'s pipeline, not ported or audited):
-`AdaptiveWhitening`, `Coloring`, `createsegmentsMinMax`, `CreateSegments`, `DownSamplingLF`,
+`AdaptiveWhitening`, `createsegmentsMinMax`, `CreateSegments`, `DownSamplingLF`,
 `DownSampling`, `StateVectorSegments`, `wdf_reconstruct`, `wdfUnitBPDSWorker`, `wdfUnitWorker`
 (the last two share the pre-fix `ExtraSize=0` whitening issue -- worth the same fix if/when
 ported), `structures.ClusteredEvent` (an empty data holder), `structures.segment`, `utility.*`.
@@ -255,7 +254,8 @@ only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdf
   [10.1103/PhysRevD.64.122002](https://doi.org/10.1103/PhysRevD.64.122002)
 
 `CITATION.cff` in this repository carries the same list in machine-readable
-form; GitHub's *Cite this repository* button reads it.
+form, the pipeline paper marked `in-preparation`; GitHub's *Cite this
+repository* button reads it.
 
 ## Use of generative AI
 

@@ -65,28 +65,16 @@ with the agreement, the displacement it was found at and whether the pair was
 compared at all --- taken where the comparison took them, over the pair's whole
 search, and not reduced a second time from the part that was kept.
 
-### The match is slid over the transient, not over the light travel time
-
-Each event's rendering is laid on that event's own instant, the centre of the
-tile carrying its largest coefficient. Two detectors seeing one transient at
-different amplitudes need not make that the same part of it, so their two
-renderings can be displaced by as much as the transient lasts while their
-arrival times differ by no more than the light travel time. The displacements
-searched are therefore the longer of the two events' own extents --- measured
-on the tiles the event is made of --- widened by the timing tolerance, and not
-the tolerance alone. Searching the tolerance alone cannot reach the alignment
-of a pair whose two detectors anchored on different parts of one transient, and
-what it reports for such a pair is the largest agreement among displacements
-that do not align it.
+### The displacement the match found is reported beside it
 
 The displacement found is reported beside the agreement, from the same pass, so
-it is not a second estimate to be reconciled with it. It is not constrained to
-the light travel time: a displacement larger than the geometry allows is the
-match saying the two renderings do not align physically, which is a statement
-about the pair rather than a truncation of the search. `candidate_table` now
-also carries whether a pair was compared at all, so that a match of zero is
-distinguishable from a match that was never formed, and a pair never compared
-reports no displacement rather than the first point of the lag axis.
+it is not a second estimate to be reconciled with it. It is read on the
+`gpsPeak` clock the two renderings are anchored on, which is not the clock
+`dt_s` is measured on, so the two are not to be added to each other.
+`candidate_table` now also carries whether a pair was compared at all, so that a
+match of zero is distinguishable from a match that was never formed, and a pair
+never compared reports no displacement rather than the first point of the lag
+axis.
 
 ### The match is asked only of a pair already coincident in time
 
@@ -154,41 +142,28 @@ whose signal variation is of order one. A shape term belongs in
 `wdf.analysis.network_statistic.CoherentRanking`, where it enters as a measured
 log density ratio in the units the coherent energy is already in.
 
-### A pair is admitted on the arrival-time difference
+### The slide step is stated, and checked against what it has to clear
 
-The network stage admits a pair when the difference of the two events' own
-instants does not exceed the light travel time, widened by what each event
-declares its instant is worth --- the tolerance
-`CoincidenceConfig.timing_tolerance` already computed and which, until now,
-only widened an overlap of extents. An extent says how long a transient lasted
-and not when it arrived, so two long events overlapping for seconds were
-admitted as causally compatible when they are not; the accidental population
-was that of pairs which happen to be simultaneous.
+`TimeSlideFAR` checks a step against the coincidence's own timing-tolerance cap
+and against the length the trigger stream is correlated over, and refuses one
+below either: under the first a real coincidence stays admissible, under the
+second two lags re-use the same clusters. The step itself is a stated constant
+--- `FARConfig.min_shift_s`, four seconds --- as published burst searches state
+theirs; None derives it from those two measurements instead, which makes the
+step a property of the run rather than of the analysis.
 
-The window a pair is admitted in is therefore the coincidence's own tolerance
-cap, tens of milliseconds rather than the seconds an extent reaches.
-`TimeSlideFAR` checks a step against it, and against the length the trigger
-stream is correlated over, and refuses one below either: under the first a
-real coincidence stays admissible, under the second two lags re-use the same
-clusters. The step itself is a stated constant --- `FARConfig.min_shift_s`,
-four seconds --- as published burst searches state theirs; None derives it
-from those two measurements instead, which makes the step a property of the
-run rather than of the analysis.
+The admission rule itself is unchanged: a pair is admitted on the events'
+stretches of time, and the difference of their own instants ranks it.
 
-### An event carries its own instant
+### The instant a coincidence reads is named once
 
-`wdf.analysis.timing.envelope_instant` reads one event's arrival time on its
-own stitched reconstruction: the peak of the analytic envelope, sought within a
-stated width of the instant the event was ranked on. The detector stage writes
-it as `gpsEnvelope`, and `wdf.analysis.robust_events.INSTANT_COLUMNS` names the
-order a coincidence prefers its instants in --- that one, then the centre of the
-tile carrying the largest coefficient, then the energy centroid. A tile lasts
-one over the upper edge of its own band, so where an event's largest
-coefficient sits low the tile is longer than the light travel time of the
-network and a difference of two tile centres carries no geometry; the
-reconstruction carries the waveform at the sample. Where the envelope cannot be
-read the tile centre answers, so the column always holds the best instant an
-event has.
+`wdf.analysis.robust_events.INSTANT_COLUMNS` names the order a coincidence
+prefers its instants in, ending at the energy centroid. A centroid is a moment
+of the energy that survived threshold in that detector, so two detectors seeing
+one source at different projected amplitudes place it differently and that
+difference is indistinguishable from geometry once it enters an arrival-time
+difference; the centre of the tile carrying the largest coefficient is what both
+detectors measure on the same transient, and it is what a pair is timed on.
 
 `TimeSlideFAR` displaces every instant column together, so an event's instant
 and its tiles stay on one clock through a slide.
@@ -199,13 +174,13 @@ A network edge carries the difference of the two events' own instants. That is
 a difference of two node quantities: nothing is measured per pair, on the
 unshifted population or on a background of accidentals.
 
-A candidate's arrival-time difference is measured on the pair.
-`arrival_time_difference` returns the lag that maximises the cross-correlation
-of the two stitched reconstructions, with the width the correlation peak
-declares, and forms only the lags the network's geometry allows. A placement it
-cannot reach --- two series further apart than the maximum lag --- raises rather
-than returning a bound. This is what a sky region is built from, and it is
-applied to candidates and not to the graph.
+`wdf.analysis.timing.arrival_time_difference` measures the finer one, on the
+pair: the lag that maximises the cross-correlation of the two stitched
+reconstructions, with the width the correlation peak declares, forming only the
+lags the network's geometry allows. A placement it cannot reach --- two series
+further apart than the maximum lag --- raises rather than returning a bound. It
+costs a correlation per pair and no stage calls it: a study that wants a sky
+region applies it to its own candidates.
 
 ### A displaced event carries its tiles
 
@@ -235,23 +210,21 @@ them.
 
 ### The candidate table
 
-`network_morphology`, the magnitude of the signed coherent energy over the
-tiles a pair shares, is the deterministic ranking beside the learned columns.
-`WavegramCoincidenceFinder` given a scorer returns the learned reading on every
-set of pairs it describes, so a background and the candidates it calibrates are
-scored by one model over one population; on that path the table carries
-`gnn_logit` in single precision and not the sigmoid `gnn_score`, which is a
-function of it.
+`network_morphology`, the root of the magnitude of the signed coherent energy
+over the tiles a pair shares, is the deterministic ranking beside the learned
+columns. `WavegramCoincidenceFinder` given a scorer returns the learned
+reading on every set of pairs it describes, so a background and the candidates
+it calibrates are scored by one model over one population; on that path the
+table carries `gnn_logit` in single precision and not the sigmoid `gnn_score`,
+which is a function of it.
 
 ### Cost
 
-`rescore_on_reconstruction` takes `keep_series`, so a caller that reads the
-statistic alone does not hold a waveform per event. An event is inverted once
-and the samples cross the C++ boundary in one narrowing rather than one per
-sample. `wdf.analysis.pairs.paired_dot` takes a `resident` cache, so a matrix
-re-used across calls is sent to the device once. The learned scorer normalises
-its node features in place on the difference it already owns, holding one copy
-of that matrix and not two.
+An event is inverted once and the samples cross the C++ boundary in one
+narrowing rather than one per sample. `wdf.analysis.pairs.paired_dot` takes a
+`resident` cache, so a matrix re-used across calls is sent to the device once.
+The learned scorer normalises its node features in place on the difference it
+already owns, holding one copy of that matrix and not two.
 
 ## 1.1.1 --- 2026-09-02
 
