@@ -289,6 +289,12 @@ wdf.analysis.robust_events
 .. automodule:: wdf.analysis.robust_events
    :members:
 
+wdf.analysis.background
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.background
+   :members:
+
 wdf.analysis.injections
 ~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -3,6 +3,43 @@
 Versions follow [semantic versioning](https://semver.org). A release records
 what the software does differently, not how it came to.
 
+## Unreleased
+
+### The shape of a wavegram is compared on magnitudes
+
+A coefficient carries the phase as well as the energy. Two detectors resolve one
+transient onto different basis functions, at an arrival-time difference finer
+than a bin, and two nearly antialigned detectors respond to one source with
+opposite sign besides, so their coefficients disagree cell by cell where the
+morphologies are identical. A cosine between signed maps therefore measures that
+disagreement and not the shape, and taking its magnitude afterwards does not
+undo it: the cancellation is inside the sum, not on the total. `shapes`, and so
+`wavegram_similarity`, and the correlation `wavegram_match` reports, are formed
+on `log(1 + |W|)`. The node features are formed the same way: the polarity of a
+coefficient says where the source sits with respect to the two detectors, not
+what the transient is, and a model that reads it learns the antenna pattern.
+
+The sign is not discarded from the analysis. The coherent energy behind
+`network_morphology` remains a signed sum whose magnitude is taken once at the
+end, which is where a polarity that is physical belongs.
+
+Every model fitted before this reads a different representation and has to be
+refitted, and the lag the match reports moves with the change, so a sky region
+derived from it is remeasured. The feature widths do not change, so a loaded
+model stays loadable and says nothing about which representation it saw: a
+caller checks the model against the builder rather than against the shapes.
+
+### A background can be reduced as it is formed
+
+`TimeSlideFAR.background_distribution` takes `reduce`. Given one, each slide's
+candidates are handed to it and released, and the frame returned carries the
+run's `attrs` alone: what a rate needs is an order statistic, and an order
+statistic does not need the sample. `wdf.analysis.background.BackgroundAccumulator`
+is one such reducer --- it keeps the largest values of every ranking exactly,
+bins the rest, and says of every threshold whether it came from the exact tail
+or from the histogram --- so the memory a background costs stops growing with
+the number of displacements. Without `reduce` nothing changes.
+
 ## 1.2.0 --- 2026-09-04
 
 ### The wavegram match is measured on a grid that can resolve the delay
