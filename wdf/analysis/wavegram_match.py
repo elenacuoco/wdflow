@@ -300,15 +300,45 @@ def correlation_profiles(left, right, i, j, max_shift_s, bin_seconds,
                         <= max_shift_s[group])
             if not admitted.any():
                 continue
+            # Reduced on the whole group and selected afterwards. Selecting
+            # first copies both gathered blocks at every lag, and a copy of a
+            # map per pair is what this stage cannot afford; the slice is a
+            # view, and the arithmetic it carries is a fraction of the copy it
+            # would take to narrow it.
             overlap = np.einsum("gbt,gbt->gb",
-                                gathered_left[admitted][:, :, cut_left],
-                                gathered_right[admitted][:, :, cut_right])
-            profiles[group[admitted], :, position] = overlap / scale[admitted]
+                                gathered_left[:, :, cut_left],
+                                gathered_right[:, :, cut_right])
+            profiles[group[admitted], :, position] = (overlap[admitted]
+                                                      / scale[admitted])
     return profiles, lags, residual
 
 
+def flatten_windows(windows):
+    """Every event's window in one array, with where each one begins.
+
+    The windows differ in width, so a list of them can only be gathered by
+    iterating over it in Python. Laying them end to end turns the gather into
+    an indexing operation, which is what a stage asked for one window per pair
+    at every displacement of a time slide needs.
+
+    :param windows: one rendered map per event, shape ``(n_bands, w_e)``.
+    :return: tuple -- ``(flat, offsets, widths)``. `flat` is
+        ``(sum_e w_e, n_bands)``, event `e` occupying the rows
+        ``offsets[e] : offsets[e] + widths[e]``, transposed so that one
+        window's bins are contiguous.
+    """
+    n_bands = windows[0].shape[0] if len(windows) else 1
+    widths = np.array([w.shape[1] for w in windows], dtype=np.int64)
+    flat = (np.concatenate([np.asarray(w, dtype=float).T for w in windows])
+            if len(windows) else np.zeros((0, n_bands)))
+    offsets = np.zeros(len(widths), dtype=np.int64)
+    if len(widths):
+        offsets[1:] = np.cumsum(widths)[:-1]
+    return flat, offsets, widths
+
+
 def compare_on_pair_grids(windows, half, bin_seconds, i, j, search, offset_s,
-                          carry_lags):
+                          carry_lags, flat_windows=None):
     """Compare each pair on a grid its own two events fix, not the catalogue's.
 
     An event is rendered once, on a window centred on its own instant and no
@@ -336,6 +366,9 @@ def compare_on_pair_grids(windows, half, bin_seconds, i, j, search, offset_s,
         common to every pair, so it is what a fixed-size feature can be read
         on; the maximum is taken over each pair's own search and may fall
         outside it.
+    :param flat_windows: what `flatten_windows` returned for `windows`, when
+        the caller formed it once; it is formed here otherwise. It is what
+        keeps the padding from being a loop over events.
     :return: tuple -- ``(profiles, match, displacement, measured)``. `profiles`
         has shape ``(n_pairs, n_bands, len(carry_lags))``. `match` is the
         largest agreement found over the pair's own search, `displacement`
@@ -354,6 +387,8 @@ def compare_on_pair_grids(windows, half, bin_seconds, i, j, search, offset_s,
     if not len(i):
         return profiles, match, displacement, measured
     half = np.asarray(half, dtype=np.int64)
+    flat, offsets, widths = (flatten_windows(windows) if flat_windows is None
+                             else flat_windows)
     reach = np.ceil(search / bin_seconds).astype(np.int64)
     need = np.maximum(np.maximum(half[i], half[j]) + reach, 1)
     scale = np.ceil(np.log2(need)).astype(np.int64)
@@ -367,10 +402,19 @@ def compare_on_pair_grids(windows, half, bin_seconds, i, j, search, offset_s,
         # construction, the scale being at least the wider of the two.
         events = np.unique(np.concatenate([i[block], j[block]]))
         grid = np.zeros((len(events), n_bands, 2 * reference + 1))
-        for position, event in enumerate(events):
-            window = windows[event]
-            start = reference - int(half[event])
-            grid[position, :, start:start + window.shape[1]] = window
+        # Placed by indexing rather than one event at a time: the destination
+        # column of every bin of every window is an arithmetic sequence
+        # restarting at each event, so the whole scatter is one assignment.
+        lengths = widths[events]
+        total = int(lengths.sum())
+        if total:
+            row_start = np.zeros(len(lengths), dtype=np.int64)
+            row_start[1:] = np.cumsum(lengths)[:-1]
+            within = np.arange(total) - np.repeat(row_start, lengths)
+            rows = np.repeat(np.arange(len(events)), lengths)
+            columns = np.repeat(reference - half[events], lengths) + within
+            source = np.repeat(offsets[events], lengths) + within
+            grid[rows, :, columns] = flat[source]
         left = np.searchsorted(events, i[block])
         right = np.searchsorted(events, j[block])
         found, lags, residual = correlation_profiles(
