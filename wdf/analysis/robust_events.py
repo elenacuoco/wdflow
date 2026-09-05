@@ -17,7 +17,6 @@ accidental by construction and none of them has to be identified as such.
  
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Iterable
@@ -33,12 +32,14 @@ EPS = np.finfo(float).tiny
 
 
 #: Where an event's instant is read from, in the order it is preferred. The
-#: first is the peak of the event's own reconstruction, sample-resolved and
-#: written by whoever inverted it; the second is the centre of the tile
-#: carrying the event's largest coefficient, which lasts one over the upper
-#: edge of its band and so cannot resolve a network's light travel time
-#: wherever that band is low. Every one of them is a property of one event, so
-#: a time slide carries it with the event.
+#: usual one is the second, the centre of the tile carrying the event's largest
+#: coefficient, which is what the search itself produces; it lasts one over the
+#: upper edge of its band and so cannot resolve a network's light travel time
+#: wherever that band is low. The first is offered for a catalogue that has had
+#: an instant read below the tile, on the event's own reconstruction (see
+#: `wdf.analysis.timing`), and no stage here writes it. The last is the energy
+#: centroid, which two detectors do not agree on. Every one of them is a
+#: property of one event, so a time slide carries it with the event.
 INSTANT_COLUMNS = ("gpsEnvelope", "gpsPeak", "gpsCentroid")
 
 
@@ -608,34 +609,18 @@ class IndexedCoincidenceFinder:
         :param right: the other detector's events.
         :return: list of (i, j, cost, dt, frequency_overlap, time_overlap).
         """
-        # The pair's dt is read on the centre of the tile carrying each
-        # event's largest coefficient, the same clock the sky position uses. A
-        # centroid measures how much of a transient survived threshold in that
-        # detector, so two detectors at different projected amplitudes place it
-        # differently and the difference lands in dt, where it is
-        # indistinguishable from geometry.
-        # The event's instant, best available: read on its own reconstruction
-        # where that was done, and otherwise the centre of the tile carrying
-        # its largest coefficient. Both are node quantities, so the difference
-        # of two of them is one too and a time slide carries it.
-        # The instant the pair is admitted on. `INSTANT_COLUMNS` prefers the
-        # one read on the event's own reconstruction and falls back to the
-        # centre of the tile the event was ranked on, whose length is one over
-        # the upper edge of its band --- tens of milliseconds low in the band,
-        # which is wider than the whole window a pair is admitted in. A
-        # coincidence timed on tile centres is a different measurement, so the
-        # fall-back is said out loud rather than taken quietly.
-        if not getattr(self, "_said_instant", False) and (
-                INSTANT_COLUMNS[0] not in left.columns
-                or INSTANT_COLUMNS[0] not in right.columns):
-            # Said once per finder: a slide loop calls this thousands of times
-            # and the fact is a property of the catalogues, not of the call.
-            self._said_instant = True
-            warnings.warn(
-                f"no {INSTANT_COLUMNS[0]!r} on one of the catalogues, so the "
-                f"pair is admitted on the next instant available; a tile "
-                f"centre can be longer than the window itself",
-                RuntimeWarning, stacklevel=2)
+        # The instant the pair is ranked on. `INSTANT_COLUMNS` is an order of
+        # preference and not a requirement: the search itself produces the
+        # centre of the tile carrying the event's largest coefficient, and a
+        # catalogue that has had an instant read below the tile --- see
+        # `wdf.analysis.timing` --- is timed on that one instead, without
+        # anything here having to know which happened. Both are node
+        # quantities, so the difference of two of them is one too and a time
+        # slide carries it. The energy centroid is last because it measures how
+        # much of a transient survived threshold in that detector, so two
+        # detectors at different projected amplitudes place it differently and
+        # the difference lands in dt, where it is indistinguishable from
+        # geometry.
         lt = _numeric(left, INSTANT_COLUMNS)
         rt = _numeric(right, INSTANT_COLUMNS)
         ls = _numeric(left, ("tSpread",), default=0.0)
@@ -867,11 +852,13 @@ class TimeSlideFAR:
         self.n_slides = self.config.n_slides
 
     def _admission_window(self, ifos):
-        """The widest arrival-time difference the coincidence admits, seconds.
+        """The widest timing tolerance the coincidence allows, seconds.
 
         A displacement smaller than this leaves a real coincidence admissible,
         and two lags closer together than this form the same pairings twice.
-        The number is the coincidence's own cap, so a background drawn for one
+        Admission also widens by the events' own extents, which is the second
+        scale the step is held against below; this is the part of it the
+        coincidence configuration fixes, so a background drawn for one
         admission rule cannot be read against another.
 
         :param ifos: the detectors being paired.
