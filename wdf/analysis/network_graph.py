@@ -78,12 +78,6 @@ EDGE_FEATURES = ["dt_s", "wavegram_similarity", "frequency_overlap",
 N_EDGE_FEATURES = len(EDGE_FEATURES)
 
 
-def _signed_log1p(values: np.ndarray) -> np.ndarray:
-    """Compress coefficient magnitude without discarding its sign."""
-    values = np.asarray(values)
-    return np.sign(values) * np.log1p(np.abs(values))
-
-
 class TriggerGraph:
     """Node = clustered per-IFO event. Intra-IFO edges = temporally-close
     same-detector clusters (local-density context). Cross-IFO edges =
@@ -382,10 +376,16 @@ class TriggerGraphBuilder:
                               for ifo in ifos
                               for label in clustered[ifo]["cluster_id"]), None)
 
-        # Coefficient/sigma spans decades in both directions. Signed log1p
-        # compresses the magnitude, preserves polarity and leaves empty cells
-        # exactly zero.
-        wavegrams = (_signed_log1p(np.vstack(grids))
+        # Coefficient/sigma spans decades, and the logarithm compresses it
+        # while leaving an empty cell exactly zero. The magnitude is what is
+        # kept: the polarity of a coefficient is a property of where the source
+        # sits with respect to the two detectors and of the delay between them,
+        # not of the transient, so the same signal renders with opposite signs
+        # in H1 and L1 and a model reading the sign learns the antenna pattern
+        # rather than the morphology. The sign is not discarded from the
+        # analysis --- the coherent energy is a signed sum, taken in magnitude
+        # once at the end --- only from the description of one event.
+        wavegrams = (np.log1p(np.abs(np.vstack(grids)))
                      if grids else np.zeros((0, 1)))
         onehot = (pd.get_dummies(nodes_df["ifo"])
                   .reindex(columns=ifos, fill_value=0).to_numpy(dtype=float))
@@ -397,7 +397,19 @@ class TriggerGraphBuilder:
         # amplitudes set by their antenna responses. They do not replace the
         # matcher, which works on the tiles and an admitted displacement.
         raw = np.vstack(fine) if fine else np.zeros((0, 1))
-        compressed = _signed_log1p(raw)
+        # The shape is compared on magnitudes, which is what the statistic it
+        # feeds is defined on: `|c_k| / sigma`. A coefficient carries the phase
+        # as well as the energy, and two detectors see one signal at an arrival
+        # time difference of up to the light travel time --- a fraction of a
+        # cell --- so their signed coefficients disagree cell by cell even
+        # where the morphologies are identical, and the two LIGO detectors
+        # respond to one source with opposite sign besides. A cosine between
+        # signed grids therefore measures that phase difference and not the
+        # shape, and taking its magnitude afterwards does not undo it: the
+        # cancellation is inside the sum. The sign belongs to the coherent
+        # energy below, where the product is summed first and its magnitude
+        # taken once.
+        compressed = np.log1p(np.abs(raw))
         norms = np.linalg.norm(compressed, axis=1, keepdims=True)
         norms[norms == 0.0] = 1.0
         shapes = compressed / norms

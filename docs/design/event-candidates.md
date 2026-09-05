@@ -61,6 +61,13 @@ compared, not to replace one another:
   polarity. It is an inner product taken at the resolution the transform has,
   with no grid imposed in between.
 
+The node's own description and the shape summary an edge carries are formed on
+the coefficients' magnitudes. The polarity of a coefficient says where the
+source sits with respect to the two detectors and how far apart they saw it,
+not what the transient is, so a description that keeps it teaches a model the
+antenna pattern rather than the morphology, and a shape compared with it
+measures the delay rather than the shape.
+
 This is a deliberately different architecture from a coherent multi-detector
 pipeline (e.g. Coherent WaveBurst). The coherent quantity here is formed on the
 two detectors' surviving coefficients rather than on a joint likelihood over
