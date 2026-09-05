@@ -140,3 +140,42 @@ def test_the_maximisation_is_over_the_admitted_arrival_time_differences():
         carried = np.any(profiles[0], axis=0)
         assert np.all(np.abs(absolute[carried]) <= tolerance + 1e-12)
         assert carried.any()
+
+
+def test_the_windows_are_placed_where_one_at_a_time_places_them():
+    """The vectorised padding is the grid a loop over events builds.
+
+    Windows differ in width, so the placement is a scatter with a different
+    destination per event. Reading it off index arithmetic rather than one
+    event at a time must move no bin: what follows is a comparison on absolute
+    time, where a bin is a delay.
+    """
+    from wdf.analysis.wavegram_match import flatten_windows
+
+    rng = np.random.default_rng(11)
+    half = np.array([1, 3, 5, 9, 2], dtype=np.int64)
+    windows = [rng.standard_normal((2, 2 * h + 1)) for h in half]
+    flat, offsets, widths = flatten_windows(windows)
+
+    for event, window in enumerate(windows):
+        np.testing.assert_array_equal(
+            flat[offsets[event]:offsets[event] + widths[event]].T, window)
+
+    events = np.array([0, 2, 3, 4])
+    reference, n_bands = 16, 2
+    expected = np.zeros((len(events), n_bands, 2 * reference + 1))
+    for position, event in enumerate(events):
+        start = reference - int(half[event])
+        expected[position, :, start:start + windows[event].shape[1]] = \
+            windows[event]
+
+    got = np.zeros_like(expected)
+    lengths = widths[events]
+    row_start = np.zeros(len(lengths), dtype=np.int64)
+    row_start[1:] = np.cumsum(lengths)[:-1]
+    within = np.arange(int(lengths.sum())) - np.repeat(row_start, lengths)
+    got[np.repeat(np.arange(len(events)), lengths), :,
+        np.repeat(reference - half[events], lengths) + within] = flat[
+            np.repeat(offsets[events], lengths) + within]
+
+    np.testing.assert_array_equal(got, expected)

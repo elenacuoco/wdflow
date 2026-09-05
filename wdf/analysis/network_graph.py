@@ -19,7 +19,8 @@ from wdf.analysis.detector_graph import (WAVEGRAM_TIME_BINS, flatten_clouds,
                                          tile_coherence_many)
 from wdf.analysis.pairs import neighbour_pairs, paired_dot
 from wdf.analysis.wavegram_match import (BIN_PER_TILE,
-                                         compare_on_pair_grids, render)
+                                         compare_on_pair_grids,
+                                         flatten_windows, render)
 from wdf.analysis.robust_events import (
     EPS,
     _numeric,
@@ -501,6 +502,10 @@ class TriggerGraphBuilder:
             profile_clouds=comparison_clouds,
             profile_bands=profile_bands,
             profile_windows=profile_windows,
+            # Laid end to end once. The comparison gathers one window per event
+            # of every pair set it forms, and a list of arrays of unequal width
+            # can only be gathered by looping over it.
+            profile_windows_flat=flatten_windows(profile_windows),
             profile_half=profile_half,
             profile_bin=profile_bin,
             profile_extent=profile_extent,
@@ -515,7 +520,8 @@ class TriggerGraphBuilder:
                    for label in clustered[ifo]["cluster_id"].astype(int)])
 
     def build_from_prepared(self, clustered: dict[str, pd.DataFrame],
-                            prepared: dict, with_neighbours: bool = True) -> TriggerGraph:
+                            prepared: dict, with_neighbours: bool = True,
+                            order=None) -> TriggerGraph:
         """The graph, from events whose node-side quantities are already known.
 
         Only the times are read from `clustered`: everything else comes from
@@ -528,13 +534,17 @@ class TriggerGraphBuilder:
         :param clustered: ``{ifo: event catalogue}``, at the times to use.
         :type prepared: dict
         :param prepared: what `prepare` returned for these events.
+        :param order: `event_order` of these events, when the caller has
+            already formed it; it is formed here otherwise.
         :return: TriggerGraph
         :raises ValueError: if the events are not the ones that were prepared.
         """
         ifos = prepared["ifos"]
-        order = [(ifo, int(label))
-                 for ifo in ifos
-                 for label in clustered[ifo]["cluster_id"].astype(int)]
+        # Built once. The check belongs here, where the arrays are indexed, and
+        # a caller that has already built the order for its own check passes it
+        # rather than making it a second time: it is one tuple per event, and a
+        # time slide asks for it at every displacement.
+        order = (self.event_order(clustered, ifos) if order is None else order)
         if order != prepared["order"]:
             raise ValueError(
                 "the events given are not the ones prepared: the node-side "
@@ -544,6 +554,12 @@ class TriggerGraphBuilder:
         X = prepared["node_features"]
         shapes, raw, clouds = prepared["shapes"], prepared["raw"], prepared["clouds"]
         profile_windows = prepared["profile_windows"]
+        # Formed here once for a preparation that predates it rather than
+        # refused, and formed once for the whole run either way.
+        profile_flat = prepared.get("profile_windows_flat")
+        if profile_flat is None:
+            profile_flat = flatten_windows(profile_windows)
+            prepared["profile_windows_flat"] = profile_flat
         profile_half = prepared["profile_half"]
         profile_bands = prepared["profile_bands"]
 
@@ -597,13 +613,18 @@ class TriggerGraphBuilder:
         profile_lags = np.zeros(0, dtype=float)
         for ifo_a, ifo_b in combinations(ifos, 2):
             idx_a, idx_b = idx_by_ifo[ifo_a], idx_by_ifo[ifo_b]
-            admissible = finder.candidate_edges(
+            # Taken as the array the enumeration forms. Naming the pairs one
+            # tuple at a time and reading them back is a Python loop over pairs
+            # in each direction, and every displacement of a time slide pays it
+            # twice.
+            admissible = finder.candidate_edge_array(
                 nodes_df.iloc[idx_a].reset_index(drop=True),
                 nodes_df.iloc[idx_b].reset_index(drop=True))
-            if not admissible:
+            if not len(admissible):
                 continue
-            local = np.array([(i, j, dt, f_overlap, t_overlap)
-                              for i, j, _, dt, f_overlap, t_overlap in admissible])
+            # i, j, dt, frequency overlap, time overlap: the cost the finder
+            # ranks its one-to-one assignment with is not read here.
+            local = admissible[:, [0, 1, 3, 4, 5]]
             i_sel = idx_a[local[:, 0].astype(int)]
             j_sel = idx_b[local[:, 1].astype(int)]
             # These fixed-size grids are compact node views anchored within
@@ -656,7 +677,8 @@ class TriggerGraphBuilder:
                 found, found_match, found_dt, found_measured = compare_on_pair_grids(
                     profile_windows, profile_half, profile_bin,
                     i_sel[matched], j_sel[matched], tolerance[matched],
-                    gps[i_sel[matched]] - gps[j_sel[matched]], profile_lags)
+                    gps[i_sel[matched]] - gps[j_sel[matched]], profile_lags,
+                    flat_windows=profile_flat)
                 profiles[matched] = found
                 edge_match[matched] = found_match
                 edge_dt[matched] = found_dt
@@ -667,13 +689,21 @@ class TriggerGraphBuilder:
             # copy of a map per pair before reducing it: at a few million pairs
             # that is tens of gigabytes held to produce one number each, which
             # is what makes this stage the memory wall of the run.
-            signed_similarity = paired_dot(shapes, shapes, i_sel, j_sel)
+            #
+            # The two matrices stay on the device between calls. They are node
+            # quantities, so they are the same objects for every pair set built
+            # from one preparation --- every displacement of a time slide among
+            # them --- while sending one of them costs more than reducing it.
+            # The home is the preparation's, so the copies live exactly as long
+            # as the arrays they were made from.
+            resident = prepared.setdefault("device_copies", {})
+            signed_similarity = paired_dot(shapes, shapes, i_sel, j_sel,
+                                           resident=resident)
             similarity = np.abs(signed_similarity)
-            signed_coherent = paired_dot(raw, raw, i_sel, j_sel)
+            signed_coherent = paired_dot(raw, raw, i_sel, j_sel,
+                                         resident=resident)
             coherent = np.abs(signed_coherent)
             overlap = np.sqrt(coherent)
-            present = (paired_dot(raw, raw, i_sel, i_sel)
-                       + paired_dot(raw, raw, j_sel, j_sel))
             # Taken once, where the comparison took it, and carried: a
             # second maximum over the part of the profile that was kept would
             # be a different quantity wearing the same name.
@@ -849,9 +879,11 @@ class WavegramCoincidenceFinder:
                 {ifo: self.coefficients[ifo] for ifo in ifos},
                 comparison=None if self.comparison is None
                 else {ifo: self.comparison[ifo] for ifo in ifos})
-        elif self.builder.event_order(events_by_ifo, ifos) != self._prepared["order"]:
+        order = self.builder.event_order(events_by_ifo, ifos)
+        if order != self._prepared["order"]:
             raise ValueError("prepare a finder for the set of events being scored")
-        graph = self.builder.build_from_prepared(events_by_ifo, self._prepared)
+        graph = self.builder.build_from_prepared(events_by_ifo, self._prepared,
+                                                 order=order)
         if not len(graph.cross_edges):
             return pd.DataFrame()
         # Scored where the graph is still in hand. A ranking absent from part

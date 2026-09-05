@@ -344,3 +344,24 @@ reduces the trials factor without being able to lose a candidate.
 ## 1.0.0 --- 2026-08-20
 
 First tagged release.
+
+### A time slide pays once for what does not change with it
+
+The node-side matrices stay on the device between reductions. `paired_dot`
+takes a mapping in which the caller keeps the device copies, and the graph
+builder now hands it one belonging to the preparation: the shapes and the raw
+maps are the same objects at every displacement, while sending one of them
+costs far more than reducing it.
+
+A coherent energy each event carries with itself was formed for every pair and
+never read; it is gone. The event order a prepared graph is checked against is
+built once per call rather than twice. The admitted pairs are taken as the
+array the enumeration forms, through `IndexedCoincidenceFinder`'s
+`candidate_edge_array`, instead of being named one tuple at a time and read
+back. The windows a pair is compared on are laid end to end once by
+`flatten_windows`, so placing them on a shared grid is one assignment rather
+than a loop over events. The correlation at a lag is reduced over the whole
+group and selected afterwards, which is what keeps a copy of a map per pair
+from being made at every lag.
+
+None of this changes a number the stage produces.
