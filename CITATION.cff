@@ -2,9 +2,10 @@ cff-version: 1.2.0
 title: "wdflow: the Wavelet Detection Filter pipeline"
 message: >-
   Use of this software in published work requires citation of the references
-  listed below: the method paper for the Wavelet Detection Filter, and the
-  papers describing the autoregressive time-domain whitening that the
-  conditioning stage implements.
+  listed below: the paper describing the pipeline in the form implemented here,
+  the original method paper for the Wavelet Detection Filter, and the papers
+  describing the autoregressive time-domain whitening that the conditioning
+  stage implements.
 type: software
 authors:
   - family-names: Cuoco
@@ -36,6 +37,21 @@ preferred-citation:
   doi: "10.23919/EUSIPCO.2018.8553393"
 
 references:
+  - type: article
+    status: in-preparation
+    title: >-
+      The Wavelet Detection Filter: a real-time un-modelled search for
+      gravitational wave transients, ranking coincidences with a graph neural
+      network
+    authors:
+      - family-names: Cuoco
+        given-names: Elena
+        orcid: "https://orcid.org/0000-0002-6528-3449"
+    year: 2026
+    number: "VIR-0605A-26"
+    institution:
+      name: "Virgo Collaboration"
+
   - type: article
     title: >-
       On-line power spectra identification and whitening for the noise in
