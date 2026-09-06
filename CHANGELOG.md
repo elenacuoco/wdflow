@@ -344,3 +344,73 @@ reduces the trials factor without being able to lose a candidate.
 ## 1.0.0 --- 2026-08-20
 
 First tagged release.
+
+### A time slide pays once for what does not change with it
+
+The node-side matrices stay on the device between reductions. `paired_dot`
+takes a mapping in which the caller keeps the device copies, and the graph
+builder now hands it one belonging to the preparation: the shapes and the raw
+maps are the same objects at every displacement, while sending one of them
+costs far more than reducing it.
+
+A coherent energy each event carries with itself was formed for every pair and
+never read; it is gone. The event order a prepared graph is checked against is
+built once per call rather than twice. The admitted pairs are taken as the
+array the enumeration forms, through `IndexedCoincidenceFinder`'s
+`candidate_edge_array`, instead of being named one tuple at a time and read
+back. The windows a pair is compared on are laid end to end once by
+`flatten_windows`, so placing them on a shared grid is one assignment rather
+than a loop over events. The correlation at a lag is reduced over the whole
+group and selected afterwards, which is what keeps a copy of a map per pair
+from being made at every lag.
+
+None of this changes a number the stage produces.
+
+### An injected waveform begins and ends at zero
+
+A series written into a frame that does not start and stop at zero leaves a
+step there, and a step is wideband: whitening, which amplifies where the noise
+is small, then gives the injection an edge it does not have, and a search can
+rank it on that edge rather than on the source. Three places did it.
+
+`band_limit` brings the ends of a band-limited pulse to zero. The band limit is
+what a detector would have done to the pulse, and it does not leave it inside
+the support it was generated on: a one-signed pulse becomes bipolar under a
+high pass and the tail of the bipolar one is longer than the array. Measured
+over the instrumental classes, the larger of a pulse's two end samples was a
+sixth of its peak in the median for the Gaussian class and a twentieth for the
+chirp like one; it is zero for all of them now, and what that removes is the
+signal-to-noise the step was carrying --- two per cent in the median for the
+Gaussian class.
+
+The detector floor is drawn from a stream of its own for each injection.
+Whether an injection's amplitude has to be raised to meet the floor, and how
+many draws that takes, depends on its own waveform; taken from the shared
+stream, a change to one waveform then moved the amplitude of every injection
+drawn after it. Two sets drawn from one seed and differing in one class now
+differ in that class alone.
+
+### A supernova waveform is written into the band a detector responds in
+
+`ccsn_polarisations` high-passes the catalogue's polarisations and brings their
+ends to zero. A supernova does not return to zero after the bounce: the strain
+settles on the memory, a permanent offset. Written into a frame that then
+stops, that offset is a step as large as the memory itself, and a step is
+wideband --- whitening, which amplifies where the noise is small, then makes
+the end of the injection the loudest feature of the span, and a search ranks
+the injection on the edge rather than on the source.
+
+Measured on the catalogue, the last sample of a waveform was a third of its
+peak in the median and nearly all of it at worst, and above a tenth in fifty of
+the sixty-two files; it is zero in all of them now.
+
+What that costs inside the band is measured on windowed spectra, since the
+memory's own step leaks across an unwindowed one and makes the loss look far
+larger than it is: the taper alone changes no band, and the high pass leaves a
+tenth of the amplitude between twelve and sixteen hertz, a hundredth between
+sixteen and twenty, and nothing above. A corner at five hertz would leave even
+those; the one in use is stated rather than tuned, and what it removes is
+stated with it. An injection scaled to a signal-to-noise ratio carries more of
+it in band than the same injection did before, so a recovered fraction quoted
+against that scale is not comparable with one measured on a set generated
+before this.

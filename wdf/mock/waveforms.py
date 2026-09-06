@@ -194,7 +194,8 @@ def ccsn_catalogue(directory):
     return found
 
 
-def ccsn_polarisations(path, sample_rate=2048):
+def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
+                       taper_seconds=0.02):
     """Plus and cross polarisations of one core-collapse supernova model.
 
     The file carries the time steps the simulation took, which are neither
@@ -218,6 +219,30 @@ def ccsn_polarisations(path, sample_rate=2048):
         bounce, then the two polarisations.
     :type sample_rate: int
     :param sample_rate: rate to return the series at, Hz.
+    :type high_pass_hz: float
+    :param high_pass_hz: edge of the high pass applied before the read-off,
+        Hz; zero or None leaves the series as the simulation wrote it. A
+        supernova does not return to zero after the bounce: the strain settles
+        on the memory, a permanent offset. Written into a frame that then
+        stops, that offset is a step as large as the memory itself, and a step
+        is wideband --- whitening, which amplifies where the noise is small,
+        then makes the end of the injection the loudest thing in it, and a
+        search ranks the injection on the edge rather than on the source. The
+        memory lies below the band any detector responds in. What removing it
+        costs inside the band is small and measured: at the default corner,
+        a tenth of the amplitude in the lowest band a search of this kind
+        looks in and nothing an octave above it. The filter is zero phase,
+        so the waveform is not moved in time. Reading the catalogue as it is
+        written, offsets and all, is what passing zero here is for; the
+        generators do not pass it, and inject what a detector could respond
+        to.
+    :type taper_seconds: float
+    :param taper_seconds: length of the cosine taper the end is brought to
+        zero over, seconds; zero or None leaves the ends as the filter left them.
+        The high pass removes the offset the waveform settles on, and leaves
+        its own edge response in its place; the taper is what makes the array
+        begin and end at zero, which is what stops the frame from taking a step
+        at either edge. It touches a hundredth of a waveform seconds long.
     :return: tuple -- ``(hp, hc, start_offset)``, the two polarisations as
         arrays on a uniform grid at `sample_rate`, and the time of their first
         sample relative to core bounce, seconds. The reference time of the
@@ -256,6 +281,29 @@ def ccsn_polarisations(path, sample_rate=2048):
         sos = butter(8, 0.45 * sample_rate / (0.5 * fine_rate),
                      btype="lowpass", output="sos")
         columns = [sosfiltfilt(sos, column) for column in columns]
+
+    if high_pass_hz:
+        # Above the memory and below anything a detector responds to, applied
+        # on the fine grid so the same filter serves whatever rate is asked
+        # for. Zero phase, so the bounce stays where the simulation put it.
+        sos = butter(4, float(high_pass_hz) / (0.5 * fine_rate),
+                     btype="highpass", output="sos")
+        columns = [sosfiltfilt(sos, column) for column in columns]
+
+    if taper_seconds:
+        # The end alone. What the high pass leaves of the memory is there, and
+        # nothing else: these files begin after the bounce, at the amplitude
+        # the emission already has, so a ramp at the start would take the
+        # ringdown of the bounce with it --- on a fifth of this catalogue that
+        # ringdown reaches most of the waveform's peak inside the first twenty
+        # milliseconds. The first sample is small enough to leave alone.
+        n_edge = min(int(round(float(taper_seconds) * fine_rate)),
+                     max(len(columns[0]) // 2, 1))
+        if n_edge > 1:
+            ramp = 0.5 * (1.0 - np.cos(np.pi * np.arange(n_edge) / n_edge))
+            window = np.ones(len(columns[0]))
+            window[-n_edge:] = ramp[::-1]
+            columns = [column * window for column in columns]
 
     coarse = np.arange(times[0], times[-1], 1.0 / sample_rate)
     hp, hc = (np.interp(coarse, fine, column) for column in columns)
