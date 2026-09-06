@@ -61,6 +61,8 @@ lose most. Neither is a bin the caller may choose for convenience.
 from __future__ import annotations
 
 import numpy as np
+
+from wdf.analysis.pairs import _paired_device
 from scipy.signal import correlation_lags, fftconvolve
 
 
@@ -69,6 +71,11 @@ from scipy.signal import correlation_lags, fftconvolve
 #: pair on the sky; one much finer costs displacements without resolving
 #: anything, since a tile's own duration is what limits the map's resolution.
 BIN_PER_TILE = 1.0
+
+# Pairs gathered at once. A gathered block is one map per pair, so the cap
+# is what keeps this stage's memory independent of how many pairs a slid
+# background produces.
+PROFILE_BLOCK = 20_000
 
 
 def render(cloud, bands, first, last, bin_seconds):
@@ -205,7 +212,7 @@ def correlation_profile(left, right, max_shift_s, bin_seconds):
 
 
 def correlation_profiles(left, right, i, j, max_shift_s, bin_seconds,
-                         offset_s=0.0):
+                         offset_s=0.0, gpu=None, block=PROFILE_BLOCK):
     """Profiles of many event pairs, on magnitudes, without pairwise matrices.
 
     :param left: maps with shape ``(n_events, n_bands, n_bins)``.
@@ -217,6 +224,13 @@ def correlation_profiles(left, right, i, j, max_shift_s, bin_seconds,
     :param offset_s: the anchor difference ``t_left - t_right`` of each edge,
         seconds, so that a map lag ``L`` places the pair at the absolute
         displacement ``offset_s + L``. Admission is tested on that sum.
+    :type gpu: bool | None
+    :param gpu: True to require a GPU for the reduction, False to stay in
+        numpy, None to use one when it is there. The two paths ask for the same
+        arithmetic and differ in the order the products are summed.
+    :type block: int
+    :param block: pairs gathered at once. Bounds the memory this stage holds,
+        which is one map per pair of the block, whatever the device.
     :return: tuple -- ``(profiles, lags, residual)``. `profiles` has shape
         ``(n_edges, n_bands, n_lags)`` and an edge's entries at the lags it
         does not admit, or at which the two maps overlap in nothing, are zero.
@@ -283,34 +297,116 @@ def correlation_profiles(left, right, i, j, max_shift_s, bin_seconds,
     order = np.argsort(anchor, kind="mergesort")
     sorted_anchor = anchor[order]
     breaks = np.flatnonzero(np.r_[True, sorted_anchor[1:] != sorted_anchor[:-1]])
-    for group in np.split(order, breaks[1:]):
-        whole = int(anchor[group[0]])
-        gathered_left = left[i[group]]
-        gathered_right = right[j[group]]
-        scale = denominator[group][:, None]
-        for position, step in enumerate(span):
-            shift = int(step) - whole
-            if abs(shift) >= n_bins:
-                continue
-            if shift >= 0:
-                cut_left, cut_right = slice(shift, None), slice(None, n_bins - shift)
+    device = _paired_device(gpu)
+    if device is not None:
+        import torch
+
+        # The maps go once and the pairs are gathered against them there. A map
+        # is a property of an event, so the two stores are the size of the run;
+        # a gathered block is one map per pair, which at a slid background's
+        # pair count is orders of magnitude more. Gathering on the host and
+        # sending the result would make the transfer, and not the arithmetic,
+        # what this stage costs.
+        maps = (torch.as_tensor(left, device=device, dtype=torch.float64),
+                torch.as_tensor(right, device=device, dtype=torch.float64))
+    for whole_group in np.split(order, breaks[1:]):
+        whole = int(anchor[whole_group[0]])
+        # A gathered block holds one map per pair of the block, and a map per
+        # pair over a whole slid background is what this stage cannot hold on
+        # any device. The block bounds it whatever the pair count is.
+        for start in range(0, len(whole_group), block):
+            group = whole_group[start:start + block]
+            scale = denominator[group][:, None]
+            if device is None:
+                _block_in_numpy(profiles, group, left[i[group]],
+                                right[j[group]], scale, span, whole, n_bins,
+                                residual, lags, max_shift_s)
             else:
-                cut_left, cut_right = slice(None, n_bins + shift), slice(-shift, None)
-            admitted = (np.abs(residual[group] + lags[position])
-                        <= max_shift_s[group])
-            if not admitted.any():
-                continue
-            # Reduced on the whole group and selected afterwards. Selecting
-            # first copies both gathered blocks at every lag, and a copy of a
-            # map per pair is what this stage cannot afford; the slice is a
-            # view, and the arithmetic it carries is a fraction of the copy it
-            # would take to narrow it.
-            overlap = np.einsum("gbt,gbt->gb",
-                                gathered_left[:, :, cut_left],
-                                gathered_right[:, :, cut_right])
-            profiles[group[admitted], :, position] = (overlap[admitted]
-                                                      / scale[admitted])
+                _block_on_device(profiles, group, maps, i[group], j[group],
+                                 scale, span, whole, n_bins, residual, lags,
+                                 max_shift_s, device)
     return profiles, lags, residual
+
+
+def _lag_cuts(shift, n_bins):
+    """The two slices one displacement reads, or None where the maps miss.
+
+    :type shift: int
+    :param shift: the displacement in bins the left map is read at.
+    :type n_bins: int
+    :param n_bins: the width of a map.
+    :return: tuple | None -- the ``(left, right)`` slices, or None where the
+        displacement carries the two maps past one another.
+    """
+    if abs(shift) >= n_bins:
+        return None
+    if shift >= 0:
+        return slice(shift, None), slice(None, n_bins - shift)
+    return slice(None, n_bins + shift), slice(-shift, None)
+
+
+def _block_in_numpy(profiles, group, gathered_left, gathered_right, scale,
+                    span, whole, n_bins, residual, lags, max_shift_s):
+    """One block's profile, reduced in numpy, one displacement at a time."""
+    for position, step in enumerate(span):
+        cuts = _lag_cuts(int(step) - whole, n_bins)
+        if cuts is None:
+            continue
+        admitted = np.abs(residual[group] + lags[position]) <= max_shift_s[group]
+        if not admitted.any():
+            continue
+        # Reduced on the whole block and selected afterwards. Selecting first
+        # copies both gathered blocks at every displacement, and a copy of a
+        # map per pair is what this stage cannot afford; the slice is a view,
+        # and the arithmetic it carries is a fraction of the copy it would take
+        # to narrow it.
+        overlap = np.einsum("gbt,gbt->gb",
+                            gathered_left[:, :, cuts[0]],
+                            gathered_right[:, :, cuts[1]])
+        profiles[group[admitted], :, position] = overlap[admitted] / scale[admitted]
+
+
+def _block_on_device(profiles, group, maps, i, j, scale,
+                     span, whole, n_bins, residual, lags, max_shift_s, device):
+    """The same reduction, with the block sent to the device once.
+
+    The numpy form walks the two gathered blocks once per displacement, and a
+    block is the largest thing this stage holds, so what the cost is
+    proportional to is the number of displacements. Here the two map stores are
+    already on the device, the block is gathered against them there, and every
+    displacement is taken against that copy: nothing the size of a pair set
+    crosses the bus, and what remains is a row-wise product, which is what a
+    device does well.
+
+    The arithmetic asked for is the one the numpy form asks for and the sums
+    are taken in double precision, so the two results differ only in the order
+    the products are added. They are not bit-identical and are not meant to be.
+    """
+    import torch
+
+    left, right = maps
+    tl = left.index_select(0, torch.as_tensor(i, device=device))
+    tr = right.index_select(0, torch.as_tensor(j, device=device))
+    ts = torch.as_tensor(scale, device=device, dtype=torch.float64)
+    # Admission is a property of the pair and the displacement and of nothing
+    # the reduction produces, so it is formed once for the block rather than
+    # once per displacement.
+    admits = torch.as_tensor(
+        np.abs(residual[group][:, None] + lags[None, :])
+        <= max_shift_s[group][:, None], device=device)
+    out = torch.zeros((len(group), tl.shape[1], len(span)),
+                      device=device, dtype=torch.float64)
+    for position, step in enumerate(span):
+        cuts = _lag_cuts(int(step) - whole, n_bins)
+        if cuts is None:
+            continue
+        here = admits[:, position]
+        if not bool(here.any()):
+            continue
+        overlap = (tl[:, :, cuts[0]] * tr[:, :, cuts[1]]).sum(dim=2) / ts
+        out[:, :, position] = torch.where(here[:, None], overlap,
+                                          out[:, :, position])
+    profiles[group] = out.cpu().numpy()
 
 
 def flatten_windows(windows):
