@@ -402,12 +402,15 @@ the injection on the edge rather than on the source.
 
 Measured on the catalogue, the last sample of a waveform was a third of its
 peak in the median and nearly all of it at worst, and above a tenth in fifty of
-the sixty-two files; it is zero in all of them now. What that removes is not
-below the band: read as a matched signal-to-noise ratio against a detector
-spectrum, the waveform loses two per cent in the median and a third at worst,
-and the figure is the same integrating from five hertz as from twenty. That is
-the point --- what goes is the step, which is wideband, and not an offset the
-band could not carry. An injection scaled to a stated signal-to-noise ratio
-therefore carries more of it in band than the same injection did before, and a
-recovered fraction quoted against that scale is not comparable with one
-measured on a set generated before this.
+the sixty-two files; it is zero in all of them now.
+
+What that costs inside the band is measured on windowed spectra, since the
+memory's own step leaks across an unwindowed one and makes the loss look far
+larger than it is: the taper alone changes no band, and the high pass leaves a
+tenth of the amplitude between twelve and sixteen hertz, a hundredth between
+sixteen and twenty, and nothing above. A corner at five hertz would leave even
+those; the one in use is stated rather than tuned, and what it removes is
+stated with it. An injection scaled to a signal-to-noise ratio carries more of
+it in band than the same injection did before, so a recovered fraction quoted
+against that scale is not comparable with one measured on a set generated
+before this.
