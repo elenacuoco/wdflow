@@ -194,7 +194,8 @@ def ccsn_catalogue(directory):
     return found
 
 
-def ccsn_polarisations(path, sample_rate=2048):
+def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
+                       taper_seconds=0.02):
     """Plus and cross polarisations of one core-collapse supernova model.
 
     The file carries the time steps the simulation took, which are neither
@@ -218,6 +219,26 @@ def ccsn_polarisations(path, sample_rate=2048):
         bounce, then the two polarisations.
     :type sample_rate: int
     :param sample_rate: rate to return the series at, Hz.
+    :type high_pass_hz: float
+    :param high_pass_hz: edge of the high pass applied before the read-off,
+        Hz; zero or None leaves the series as the simulation wrote it. A
+        supernova does not return to zero after the bounce: the strain settles
+        on the memory, a permanent offset. Written into a frame that then
+        stops, that offset is a step as large as the memory itself, and a step
+        is wideband --- whitening, which amplifies where the noise is small,
+        then makes the end of the injection the loudest thing in it, and a
+        search ranks the injection on the edge rather than on the source. The
+        memory lies below the band any detector responds in, so removing it
+        costs nothing that could have been observed. The filter is zero phase,
+        so the waveform is not moved in time.
+    :type taper_seconds: float
+    :param taper_seconds: length of the cosine taper brought to zero at each
+        end, seconds; zero or None leaves the ends as the filter left them.
+        The high pass removes the offset the waveform settles on, and leaves
+        its own edge response in its place; the taper is what makes the array
+        begin and end at zero, which is what stops the frame from taking a step
+        at either edge. It touches a hundredth of a waveform seconds long, and
+        the norm it costs is reported by the generator.
     :return: tuple -- ``(hp, hc, start_offset)``, the two polarisations as
         arrays on a uniform grid at `sample_rate`, and the time of their first
         sample relative to core bounce, seconds. The reference time of the
@@ -256,6 +277,29 @@ def ccsn_polarisations(path, sample_rate=2048):
         sos = butter(8, 0.45 * sample_rate / (0.5 * fine_rate),
                      btype="lowpass", output="sos")
         columns = [sosfiltfilt(sos, column) for column in columns]
+
+    if high_pass_hz:
+        # Above the memory and below anything a detector responds to, applied
+        # on the fine grid so the same filter serves whatever rate is asked
+        # for. Zero phase, so the bounce stays where the simulation put it.
+        sos = butter(4, float(high_pass_hz) / (0.5 * fine_rate),
+                     btype="highpass", output="sos")
+        columns = [sosfiltfilt(sos, column) for column in columns]
+
+    if taper_seconds:
+        # Applied last, so that whatever the filters leave at the ends is what
+        # is brought to zero. A supernova waveform begins before the bounce at
+        # an amplitude far below its peak and ends on what the high pass leaves
+        # of the memory, so neither end carries the emission this is meant to
+        # preserve.
+        n_edge = min(int(round(float(taper_seconds) * fine_rate)),
+                     max(len(columns[0]) // 2, 1))
+        if n_edge > 1:
+            ramp = 0.5 * (1.0 - np.cos(np.pi * np.arange(n_edge) / n_edge))
+            window = np.ones(len(columns[0]))
+            window[:n_edge] = ramp
+            window[-n_edge:] = ramp[::-1]
+            columns = [column * window for column in columns]
 
     coarse = np.arange(times[0], times[-1], 1.0 / sample_rate)
     hp, hc = (np.interp(coarse, fine, column) for column in columns)
