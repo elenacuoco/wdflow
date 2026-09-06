@@ -228,8 +228,10 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
         is wideband --- whitening, which amplifies where the noise is small,
         then makes the end of the injection the loudest thing in it, and a
         search ranks the injection on the edge rather than on the source. The
-        memory lies below the band any detector responds in, so removing it
-        costs nothing that could have been observed. The filter is zero phase,
+        memory lies below the band any detector responds in. What removing it
+        costs inside the band is small and measured: at the default corner,
+        a tenth of the amplitude in the lowest band a search of this kind
+        looks in and nothing an octave above it. The filter is zero phase,
         so the waveform is not moved in time. Reading the catalogue as it is
         written, offsets and all, is what passing zero here is for; the
         generators do not pass it, and inject what a detector could respond

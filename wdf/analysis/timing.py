@@ -43,11 +43,14 @@ def arrival_time_difference(first, second, fs, max_lag_s=MAX_LAG_S):
 
     Both series are placed on one absolute time grid before correlating, so
     the result is a difference of arrival times and not a sample offset; a
-    common error in placing the pair cancels. The returned uncertainty is the
-    one the pair itself declares: the half-width of the correlation peak
-    above half its maximum, floored at one sample. That width is a candidate
-    definition rather than an established one; coverage against known
-    injections is what judges it.
+    common error in placing the pair cancels. The lag is read at the vertex of
+    the parabola through the largest correlation sample and its two
+    neighbours, so the difference is not quantised to the sampling interval,
+    which on a two-detector baseline is a large fraction of the light travel
+    time. The returned uncertainty is the one the pair itself declares: the
+    half-width of the correlation peak above half its maximum, floored at one
+    sample. That width is a candidate definition rather than an established
+    one; coverage against known injections is what judges it.
 
     :type first: tuple
     :param first: ``(start, samples)`` of the first series. The start is on
@@ -126,7 +129,25 @@ def arrival_time_difference(first, second, fs, max_lag_s=MAX_LAG_S):
     while high < len(correlation) - 1 and above[high + 1]:
         high += 1
 
-    dt = float(lags[best]) / fs
+    # The correlation is sampled on the grid, so its maximum sample is not its
+    # maximum: taking the lag of that sample quantises every arrival-time
+    # difference to 1/fs, which on a two-detector baseline is a large fraction
+    # of the light travel time and is what the spread of the residuals would
+    # then be measuring. The peak of a band-limited correlation is smooth and
+    # locally quadratic, so the three samples about the largest one place its
+    # vertex. The offset is bounded by half a sample by construction: a larger
+    # one would mean a neighbour was the maximum.
+    offset = 0.0
+    if 0 < best < len(correlation) - 1:
+        left, peak, right = correlation[best - 1], correlation[best], correlation[best + 1]
+        curvature = left - 2.0 * peak + right
+        # Negative curvature is what makes the stationary point a maximum. A
+        # flat or upward triple is a plateau or a tie between two lags, where
+        # the parabola has no vertex to report and the sample lag stands.
+        if curvature < 0.0:
+            offset = float(np.clip(0.5 * (left - right) / curvature, -0.5, 0.5))
+
+    dt = (float(lags[best]) + offset) / fs
     sigma = max((high - low) / 2.0, 1.0) / fs
     return dt, sigma
 
