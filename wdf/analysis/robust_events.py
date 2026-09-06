@@ -609,6 +609,24 @@ class IndexedCoincidenceFinder:
         :param right: the other detector's events.
         :return: list of (i, j, cost, dt, frequency_overlap, time_overlap).
         """
+        rows = self.candidate_edge_array(left, right)
+        return [(int(r[0]), int(r[1]), float(r[2]), float(r[3]), float(r[4]),
+                 float(r[5])) for r in rows]
+
+    def candidate_edge_array(self, left, right):
+        """The same admitted pairs, as the array they are formed in.
+
+        `candidate_edges` names them one tuple at a time, which is what a
+        caller iterating over pairs wants and what a caller reducing over them
+        has to undo. The pairs are enumerated as columns and this returns them
+        so, unconverted.
+
+        :param left: one detector's events.
+        :param right: the other detector's events.
+        :return: numpy.ndarray -- ``(n_pairs, 6)``, the columns being
+            ``i, j, cost, dt, frequency_overlap, time_overlap``, ordered by
+            ``i`` and then ``j``.
+        """
         # The instant the pair is ranked on. `INSTANT_COLUMNS` is an order of
         # preference and not a requirement: the search itself produces the
         # centre of the tile carrying the event's largest coefficient, and a
@@ -696,11 +714,9 @@ class IndexedCoincidenceFinder:
             blocks.append(np.column_stack([i, j, cost, dt, overlap, time_overlap]))
 
         if not blocks:
-            return []
+            return np.zeros((0, 6))
         rows = np.concatenate(blocks)
-        rows = rows[np.lexsort((rows[:, 1], rows[:, 0]))]
-        return [(int(r[0]), int(r[1]), float(r[2]), float(r[3]), float(r[4]),
-                 float(r[5])) for r in rows]
+        return rows[np.lexsort((rows[:, 1], rows[:, 0]))]
 
     @staticmethod
     def _components(n_left, n_right, edges):

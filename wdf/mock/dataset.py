@@ -660,6 +660,17 @@ def draw_injections(
     weights /= weights.sum() if weights.sum() > 0.0 else 1.0
     extra_gaps = leftover * weights
 
+    # One stream per injection for the detector floor. Whether that floor is
+    # already met, and how many times a draw has to be repeated to meet it,
+    # depend on the waveform itself: on a catalogue waveform's own energies and
+    # on the sky the injection was given. Taken from the shared stream, an
+    # injection whose waveform changes therefore consumes a different number of
+    # random numbers and every injection after it reads its neighbour's --- a
+    # correction to one class then moves the amplitude of another, and two sets
+    # drawn from one seed are no longer comparable. Spawned here, each
+    # injection's redraws are its own and reach nobody else.
+    floor_streams = rng.spawn(n_requested)
+
     cursor = usable_start + extra_gaps[0]
     placed = []
 
@@ -684,8 +695,9 @@ def draw_injections(
         item["injection_id"] = len(placed)
         item["gps"] = float(gps)
         if item["category"] in ("cbc", "ccsn") and min_detector_snr is not None:
-            _enforce_detector_floor(rng, item, float(gps), detectors,
-                                    snr_range, float(min_detector_snr))
+            _enforce_detector_floor(floor_streams[index], item, float(gps),
+                                    detectors, snr_range,
+                                    float(min_detector_snr))
         item["gps_start"] = float(gps - support_before)
         item["gps_end"] = float(gps + support_after)
         placed.append(item)
@@ -711,8 +723,35 @@ def band_limit(
     low_frequency_cutoff=5.0,
     high_frequency_cutoff=None,
     order=8,
+    edge_fraction=0.05,
 ):
-    """Apply a zero-phase band limit to a generated glitch."""
+    """Apply a zero-phase band limit to a generated glitch.
+
+    The band limit is what a detector would have done to the pulse, and it does
+    not leave it inside the support it was generated on: a one-signed pulse
+    becomes bipolar under a high pass, and the tail of the bipolar one is
+    longer than the array. Written into a frame as it comes out, such a series
+    begins or ends on a step, and a step is wideband --- whitening then gives
+    the injection an edge it does not have. The ends are therefore brought to
+    zero over `edge_fraction` of the series, and the signal-to-noise that
+    removes is the part the step was carrying.
+
+    :param strain: the generated pulse, one detector's worth.
+    :type sample_rate: float
+    :param sample_rate: rate the pulse is on, Hz.
+    :type low_frequency_cutoff: float
+    :param low_frequency_cutoff: lower edge of the band, Hz; zero leaves it.
+    :type high_frequency_cutoff: float
+    :param high_frequency_cutoff: upper edge of the band, Hz; None leaves it
+        at Nyquist.
+    :type order: int
+    :param order: order of the Butterworth section.
+    :type edge_fraction: float
+    :param edge_fraction: share of the series each end is brought to zero
+        over; zero leaves the ends as the filter left them.
+    :return: numpy.ndarray -- the band-limited pulse, beginning and ending at
+        zero.
+    """
     from scipy.signal import butter, sosfiltfilt
 
     x = np.asarray(strain, dtype=float).reshape(-1)
@@ -750,7 +789,20 @@ def band_limit(
     sos = butter(order, wn, btype=btype, fs=sample_rate, output="sos")
     default_pad = 3 * (2 * len(sos) + 1)
     padlen = min(default_pad, x.size - 1)
-    return sosfiltfilt(sos, x, padlen=max(padlen, 0))
+    limited = sosfiltfilt(sos, x, padlen=max(padlen, 0))
+    return _to_zero_at_the_ends(limited, edge_fraction)
+
+
+def _to_zero_at_the_ends(series, fraction):
+    """Bring a series to zero over a share of its length at each end."""
+    n_edge = int(round(float(fraction) * series.size))
+    if n_edge < 2 or 2 * n_edge >= series.size:
+        return series
+    ramp = 0.5 * (1.0 - np.cos(np.pi * np.arange(n_edge) / n_edge))
+    window = np.ones(series.size)
+    window[:n_edge] = ramp
+    window[-n_edge:] = ramp[::-1]
+    return series * window
 
 
 def _add(
