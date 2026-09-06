@@ -366,6 +366,30 @@ from being made at every lag.
 
 None of this changes a number the stage produces.
 
+### An injected waveform begins and ends at zero
+
+A series written into a frame that does not start and stop at zero leaves a
+step there, and a step is wideband: whitening, which amplifies where the noise
+is small, then gives the injection an edge it does not have, and a search can
+rank it on that edge rather than on the source. Three places did it.
+
+`band_limit` brings the ends of a band-limited pulse to zero. The band limit is
+what a detector would have done to the pulse, and it does not leave it inside
+the support it was generated on: a one-signed pulse becomes bipolar under a
+high pass and the tail of the bipolar one is longer than the array. Measured
+over the instrumental classes, the larger of a pulse's two end samples was a
+sixth of its peak in the median for the Gaussian class and a twentieth for the
+chirp like one; it is zero for all of them now, and what that removes is the
+signal-to-noise the step was carrying --- two per cent in the median for the
+Gaussian class.
+
+The detector floor is drawn from a stream of its own for each injection.
+Whether an injection's amplitude has to be raised to meet the floor, and how
+many draws that takes, depends on its own waveform; taken from the shared
+stream, a change to one waveform then moved the amplitude of every injection
+drawn after it. Two sets drawn from one seed and differing in one class now
+differ in that class alone.
+
 ### A supernova waveform is written into the band a detector responds in
 
 `ccsn_polarisations` high-passes the catalogue's polarisations and brings their
@@ -378,7 +402,12 @@ the injection on the edge rather than on the source.
 
 Measured on the catalogue, the last sample of a waveform was a third of its
 peak in the median and nearly all of it at worst, and above a tenth in fifty of
-the sixty-two files; it is zero in all of them now. What that costs is the
-memory, which lies below the band: the norm between the low frequency cut and a
-kilohertz is unchanged to a tenth of a per cent in the median and by two and a
-half per cent at worst.
+the sixty-two files; it is zero in all of them now. What that removes is not
+below the band: read as a matched signal-to-noise ratio against a detector
+spectrum, the waveform loses two per cent in the median and a third at worst,
+and the figure is the same integrating from five hertz as from twenty. That is
+the point --- what goes is the step, which is wideband, and not an offset the
+band could not carry. An injection scaled to a stated signal-to-noise ratio
+therefore carries more of it in band than the same injection did before, and a
+recovered fraction quoted against that scale is not comparable with one
+measured on a set generated before this.
