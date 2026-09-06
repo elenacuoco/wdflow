@@ -501,10 +501,11 @@ class TriggerGraphBuilder:
             cloud_flat=flatten_clouds(clouds),
             profile_clouds=comparison_clouds,
             profile_bands=profile_bands,
-            profile_windows=profile_windows,
-            # Laid end to end once. The comparison gathers one window per event
-            # of every pair set it forms, and a list of arrays of unequal width
-            # can only be gathered by looping over it.
+            # Laid end to end once, and kept only so. The comparison gathers
+            # one window per event of every pair set it forms, and a list of
+            # arrays of unequal width can only be gathered by looping over it;
+            # keeping the list beside the store would hold the same maps twice,
+            # and at a run's event count that is gigabytes of duplicate.
             profile_windows_flat=flatten_windows(profile_windows),
             profile_half=profile_half,
             profile_bin=profile_bin,
@@ -553,12 +554,11 @@ class TriggerGraphBuilder:
 
         X = prepared["node_features"]
         shapes, raw, clouds = prepared["shapes"], prepared["raw"], prepared["clouds"]
-        profile_windows = prepared["profile_windows"]
-        # Formed here once for a preparation that predates it rather than
-        # refused, and formed once for the whole run either way.
+        # Formed here once for a preparation that predates the store rather
+        # than refused, and formed once for the whole run either way.
         profile_flat = prepared.get("profile_windows_flat")
         if profile_flat is None:
-            profile_flat = flatten_windows(profile_windows)
+            profile_flat = flatten_windows(prepared["profile_windows"])
             prepared["profile_windows_flat"] = profile_flat
         profile_half = prepared["profile_half"]
         profile_bands = prepared["profile_bands"]
@@ -675,7 +675,7 @@ class TriggerGraphBuilder:
             edge_measured = np.zeros(len(i_sel), dtype=bool)
             if self.match_wavegrams:
                 found, found_match, found_dt, found_measured = compare_on_pair_grids(
-                    profile_windows, profile_half, profile_bin,
+                    (), profile_half, profile_bin,
                     i_sel[matched], j_sel[matched], tolerance[matched],
                     gps[i_sel[matched]] - gps[j_sel[matched]], profile_lags,
                     flat_windows=profile_flat)
@@ -749,7 +749,7 @@ class TriggerGraphBuilder:
                        else np.zeros((0, 2), dtype=np.int64))
         cross_feats = (np.concatenate(cross_feats) if cross_feats
                        else np.zeros((0, N_EDGE_FEATURES), dtype=np.float32))
-        n_bands = profile_windows[0].shape[0] if profile_windows else 1
+        n_bands = profile_flat[0].shape[1] if profile_flat[0].size else 1
         cross_profiles = (np.concatenate(cross_profiles) if cross_profiles
                           else np.zeros((0, n_bands, len(profile_lags)), dtype=np.float32))
         cross_match = (np.concatenate(cross_match) if cross_match
