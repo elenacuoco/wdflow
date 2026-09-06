@@ -261,13 +261,14 @@ class TriggerGraphBuilder:
         """
         self.intra_ifo_window_s = intra_ifo_window_s
         self.coincidence = CoincidenceConfig() if coincidence is None else coincidence
-        # Whether the two renderings of a coincident pair are compared. The
-        # comparison is a morphological baseline and enters no ranking, and it
-        # costs a correlation per candidate, so a study that does not read it
-        # need not pay for it. With it off, `network_wavegram_match`,
-        # `network_correlation` and `coherent_statistic` are not measured, and
-        # `network_wavegram_matched` says so rather than a zero standing in for
-        # a measurement.
+        # Whether the two renderings of a coincident pair are compared. It
+        # costs one correlation profile per pair per displacement, and it is
+        # what `network_wavegram_match`, `network_correlation` and
+        # `coherent_statistic` are measured from --- the last two being edge
+        # features, so turning it off leaves the learned ranking two inputs
+        # that are identically zero wherever it is fitted and wherever it is
+        # then read. With it off `network_wavegram_matched` says the pair was
+        # not compared, rather than a zero standing in for a measurement.
         self.match_wavegrams = bool(match_wavegrams)
         self.ifos = ifos
         self.wavegram_time_bins = wavegram_time_bins
