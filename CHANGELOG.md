@@ -5,6 +5,19 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The wavegram comparison runs on the device the machine has
+
+`correlation_profiles` walks two gathered blocks of maps once per displacement,
+and a block is the largest object the network stage holds, so the cost of the
+comparison is proportional to the displacements searched. The two map stores
+are now sent to the device once and the pairs are gathered against them there,
+so nothing the size of a pair set crosses the bus and every displacement is
+taken against one copy. `gpu` selects the path --- a GPU when there is one by
+default, `False` to stay in numpy --- and `block` bounds the pairs gathered at
+once, so the memory held is independent of how many pairs a slid background
+produces. The two paths ask for the same arithmetic in double precision and
+differ in the order the products are summed.
+
 ### The shape of a wavegram is compared on magnitudes
 
 A coefficient carries the phase as well as the energy. Two detectors resolve one

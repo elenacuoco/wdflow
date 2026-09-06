@@ -179,3 +179,51 @@ def test_the_windows_are_placed_where_one_at_a_time_places_them():
             np.repeat(offsets[events], lengths) + within]
 
     np.testing.assert_array_equal(got, expected)
+
+
+def _random_case(seed, n_events=40, n_bands=6, n_bins=24, n_pairs=300):
+    """A pair set with the shape the network stage produces."""
+    rng = np.random.default_rng(seed)
+    maps = rng.standard_normal((n_events, n_bands, n_bins))
+    maps[rng.random(maps.shape) < 0.6] = 0.0
+    i = rng.integers(0, n_events, n_pairs)
+    j = rng.integers(0, n_events, n_pairs)
+    return (maps, i, j,
+            rng.uniform(0.0, 0.02, n_pairs),      # admitted shift, seconds
+            0.002,                                # bin
+            rng.uniform(-0.03, 0.03, n_pairs))    # anchor difference
+
+
+def test_the_device_reduction_asks_for_the_arithmetic_numpy_asks_for():
+    """The two paths differ in where they run and in nothing else.
+
+    A device is used when there is one, so the reduction that produced a
+    result depends on the machine. What the machine may not change is the
+    result, and the two paths are therefore held to each other here rather
+    than each to a value written down once.
+    """
+    maps, i, j, shift, binsec, offset = _random_case(11)
+    reference, lags, residual = correlation_profiles(
+        maps, maps, i, j, shift, binsec, offset_s=offset, gpu=False)
+    for device in (None, True):
+        try:
+            found, found_lags, found_residual = correlation_profiles(
+                maps, maps, i, j, shift, binsec, offset_s=offset, gpu=device)
+        except RuntimeError:
+            continue          # no GPU on this machine, and none was required
+        np.testing.assert_allclose(found_lags, lags, atol=1e-12)
+        np.testing.assert_allclose(found_residual, residual, atol=1e-12)
+        np.testing.assert_allclose(found, reference, rtol=1e-10, atol=1e-12)
+
+
+def test_the_block_is_a_bound_on_memory_and_not_on_what_is_measured():
+    """Gathering fewer pairs at a time changes nothing but the memory held."""
+    maps, i, j, shift, binsec, offset = _random_case(12)
+    whole, lags, _ = correlation_profiles(maps, maps, i, j, shift, binsec,
+                                          offset_s=offset, gpu=False)
+    for block in (7, 64, 100_000):
+        piecemeal, piece_lags, _ = correlation_profiles(
+            maps, maps, i, j, shift, binsec, offset_s=offset, gpu=False,
+            block=block)
+        np.testing.assert_allclose(piece_lags, lags, atol=1e-12)
+        np.testing.assert_allclose(piecemeal, whole, atol=1e-12)
