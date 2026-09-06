@@ -354,7 +354,9 @@ def compare_on_pair_grids(windows, half, bin_seconds, i, j, search, offset_s,
     are powers of two, which is the ladder the transform already works on.
 
     :param windows: one rendered map per event, shape ``(n_bands, 2h+1)`` with
-        the event's instant in the middle bin; widths may differ.
+        the event's instant in the middle bin; widths may differ. It is read
+        only to form `flat_windows`, so a caller that passes one may pass an
+        empty list here.
     :param half: the half-width `h` of each event's window, in bins.
     :type bin_seconds: float
     :param bin_seconds: width of a time bin, seconds.
@@ -375,7 +377,11 @@ def compare_on_pair_grids(windows, half, bin_seconds, i, j, search, offset_s,
         where it was found in seconds, or not-a-number where the pair was
         compared at no displacement at all, and `measured` says which.
     """
-    n_bands = windows[0].shape[0] if len(windows) else 1
+    flat, offsets, widths = (flatten_windows(windows) if flat_windows is None
+                             else flat_windows)
+    # From the store, which is the one representation kept: a caller that has
+    # laid the windows end to end has no reason to hold the list as well.
+    n_bands = flat.shape[1] if flat.size else 1
     i, j = np.asarray(i, dtype=np.int64), np.asarray(j, dtype=np.int64)
     search = np.asarray(search, dtype=float)
     offset_s = np.asarray(offset_s, dtype=float)
@@ -387,8 +393,6 @@ def compare_on_pair_grids(windows, half, bin_seconds, i, j, search, offset_s,
     if not len(i):
         return profiles, match, displacement, measured
     half = np.asarray(half, dtype=np.int64)
-    flat, offsets, widths = (flatten_windows(windows) if flat_windows is None
-                             else flat_windows)
     reach = np.ceil(search / bin_seconds).astype(np.int64)
     need = np.maximum(np.maximum(half[i], half[j]) + reach, 1)
     scale = np.ceil(np.log2(need)).astype(np.int64)
