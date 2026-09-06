@@ -230,15 +230,17 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
         search ranks the injection on the edge rather than on the source. The
         memory lies below the band any detector responds in, so removing it
         costs nothing that could have been observed. The filter is zero phase,
-        so the waveform is not moved in time.
+        so the waveform is not moved in time. Reading the catalogue as it is
+        written, offsets and all, is what passing zero here is for; the
+        generators do not pass it, and inject what a detector could respond
+        to.
     :type taper_seconds: float
-    :param taper_seconds: length of the cosine taper brought to zero at each
-        end, seconds; zero or None leaves the ends as the filter left them.
+    :param taper_seconds: length of the cosine taper the end is brought to
+        zero over, seconds; zero or None leaves the ends as the filter left them.
         The high pass removes the offset the waveform settles on, and leaves
         its own edge response in its place; the taper is what makes the array
         begin and end at zero, which is what stops the frame from taking a step
-        at either edge. It touches a hundredth of a waveform seconds long, and
-        the norm it costs is reported by the generator.
+        at either edge. It touches a hundredth of a waveform seconds long.
     :return: tuple -- ``(hp, hc, start_offset)``, the two polarisations as
         arrays on a uniform grid at `sample_rate`, and the time of their first
         sample relative to core bounce, seconds. The reference time of the
@@ -287,17 +289,17 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
         columns = [sosfiltfilt(sos, column) for column in columns]
 
     if taper_seconds:
-        # Applied last, so that whatever the filters leave at the ends is what
-        # is brought to zero. A supernova waveform begins before the bounce at
-        # an amplitude far below its peak and ends on what the high pass leaves
-        # of the memory, so neither end carries the emission this is meant to
-        # preserve.
+        # The end alone. What the high pass leaves of the memory is there, and
+        # nothing else: these files begin after the bounce, at the amplitude
+        # the emission already has, so a ramp at the start would take the
+        # ringdown of the bounce with it --- on a fifth of this catalogue that
+        # ringdown reaches most of the waveform's peak inside the first twenty
+        # milliseconds. The first sample is small enough to leave alone.
         n_edge = min(int(round(float(taper_seconds) * fine_rate)),
                      max(len(columns[0]) // 2, 1))
         if n_edge > 1:
             ramp = 0.5 * (1.0 - np.cos(np.pi * np.arange(n_edge) / n_edge))
             window = np.ones(len(columns[0]))
-            window[:n_edge] = ramp
             window[-n_edge:] = ramp[::-1]
             columns = [column * window for column in columns]
 
