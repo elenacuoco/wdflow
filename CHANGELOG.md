@@ -365,3 +365,20 @@ group and selected afterwards, which is what keeps a copy of a map per pair
 from being made at every lag.
 
 None of this changes a number the stage produces.
+
+### A supernova waveform is written into the band a detector responds in
+
+`ccsn_polarisations` high-passes the catalogue's polarisations and brings their
+ends to zero. A supernova does not return to zero after the bounce: the strain
+settles on the memory, a permanent offset. Written into a frame that then
+stops, that offset is a step as large as the memory itself, and a step is
+wideband --- whitening, which amplifies where the noise is small, then makes
+the end of the injection the loudest feature of the span, and a search ranks
+the injection on the edge rather than on the source.
+
+Measured on the catalogue, the last sample of a waveform was a third of its
+peak in the median and nearly all of it at worst, and above a tenth in fifty of
+the sixty-two files; it is zero in all of them now. What that costs is the
+memory, which lies below the band: the norm between the low frequency cut and a
+kilohertz is unchanged to a tenth of a per cent in the median and by two and a
+half per cent at worst.
