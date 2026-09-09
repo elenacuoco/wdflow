@@ -640,3 +640,79 @@ def test_the_wavegram_finder_scores_what_it_forms():
     # The scorer widens the table and changes nothing else in it.
     for column in plain.columns:
         assert column in scored
+
+
+def test_three_detectors_stack_their_profiles_on_one_lag_axis():
+    """Baselines of different length still form one graph.
+
+    The displacements a pair is compared over are its own tolerance's, so a
+    long baseline searches more lags than a short one and the three baselines
+    of a three-detector network do not produce profiles of equal width. They
+    are still rows of one array, and the column they are stacked into has to
+    mean one displacement whichever pair produced the row: the narrow axes are
+    padded out to the widest, symmetrically, because every axis is centred on
+    zero and the bin is shared. Concatenating them as they come is a shape
+    error, and stacking them without padding would read one baseline's lag as
+    another's.
+    """
+    import pandas as pd
+
+    from wdf.analysis.detectors import light_travel_time
+    from wdf.analysis.network_graph import TriggerGraphBuilder
+
+    ladder = np.array([[64.0, 128.0], [128.0, 256.0]])
+
+    class Rendered:
+        bin_seconds = 0.05
+        block_tiles = None
+        bands = ladder
+
+        def __init__(self, gps):
+            lo = np.array([gps - 0.002, gps])
+            self.tiles = (lo, lo + np.array([1.0 / 128, 1.0 / 256]),
+                          ladder[:, 0], ladder[:, 1],
+                          np.array([4.0, 9.0]), np.array([2.0, -3.0]))
+
+        def wavegram(self, n_time_bins):
+            return np.zeros((4, 8))
+
+    def events(times):
+        return pd.DataFrame({
+            "cluster_id": np.arange(len(times)),
+            "gpsPeak": times, "gpsStart": times - 0.05,
+            "duration": np.full(len(times), 0.1),
+            "tSpread": np.full(len(times), 0.002),
+            "freqMin": np.full(len(times), 64.0),
+            "freqMax": np.full(len(times), 256.0),
+            "EnWDF": np.full(len(times), 12.0),
+            "n_coeff": np.full(len(times), 512),
+        })
+
+    # H1-V1 is the longest of the three baselines and H1-L1 the shortest, so
+    # the widths this has to reconcile differ by a factor of about three.
+    assert (light_travel_time("H1", "V1")
+            > 2.0 * light_travel_time("H1", "L1"))
+
+    times = {"H1": np.array([100.0]), "L1": np.array([100.003]),
+             "V1": np.array([100.010])}
+    clustered = {ifo: events(t) for ifo, t in times.items()}
+    maps = {ifo: {int(k): Rendered(t) for k, t in enumerate(times[ifo])}
+            for ifo in times}
+
+    graph = TriggerGraphBuilder(ifos=["H1", "L1", "V1"]).build(
+        clustered, maps, comparison=maps)
+
+    # All three baselines are present, each as one edge.
+    table = graph.candidate_table()
+    assert set(table.ifos_involved) == {"H1,L1", "H1,V1", "L1,V1"}
+
+    # One row per edge and one column per lag of the shared axis.
+    assert graph.cross_edge_profiles.shape[0] == len(table)
+    assert graph.cross_edge_profiles.shape[2] == len(graph.cross_edge_lags)
+
+    # The axis is the widest baseline's, centred on zero and evenly spaced.
+    lags = np.asarray(graph.cross_edge_lags, dtype=float)
+    assert len(lags) % 2 == 1
+    assert lags[len(lags) // 2] == pytest.approx(0.0)
+    assert np.allclose(np.diff(lags), lags[1] - lags[0])
+    assert lags.max() > light_travel_time("H1", "V1")

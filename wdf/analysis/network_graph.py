@@ -611,6 +611,10 @@ class TriggerGraphBuilder:
         finder = IndexedCoincidenceFinder(self.coincidence)
         cross_edges, cross_feats, cross_profiles = [], [], []
         cross_match, cross_dt, cross_measured = [], [], []
+        # How many lags each baseline's profile carries on either side of zero.
+        # They differ: the range searched is the pair's own tolerance, and a
+        # long baseline admits displacements a short one does not.
+        cross_carry = []
         profile_lags = np.zeros(0, dtype=float)
         for ifo_a, ifo_b in combinations(ifos, 2):
             idx_a, idx_b = idx_by_ifo[ifo_a], idx_by_ifo[ifo_b]
@@ -711,6 +715,7 @@ class TriggerGraphBuilder:
             correlation = np.clip(edge_match, 0.0, 1.0)
             cross_edges.append(np.column_stack([i_sel, j_sel]))
             cross_profiles.append(profiles)
+            cross_carry.append(carry)
             cross_match.append(edge_match)
             cross_dt.append(edge_dt)
             cross_measured.append(edge_measured)
@@ -751,6 +756,22 @@ class TriggerGraphBuilder:
         cross_feats = (np.concatenate(cross_feats) if cross_feats
                        else np.zeros((0, N_EDGE_FEATURES), dtype=np.float32))
         n_bands = profile_flat[0].shape[1] if profile_flat[0].size else 1
+        if cross_profiles:
+            # One lag axis for every baseline, so that a column of the stacked
+            # profiles is one displacement whichever pair produced the row. The
+            # bin is the preparation's and is shared, and every axis is centred
+            # on zero, so the axes differ only in half-width and the narrow
+            # ones are padded out to the widest. The padding is zero because a
+            # displacement the geometry of that baseline forbids carries no
+            # agreement, which is what zero already means everywhere else in
+            # the profile; it is not a missing measurement.
+            widest = max(cross_carry)
+            cross_profiles = [
+                block if carry == widest else
+                np.pad(block, ((0, 0), (0, 0), (widest - carry, widest - carry)))
+                for block, carry in zip(cross_profiles, cross_carry)]
+            profile_lags = np.arange(-widest, widest + 1,
+                                     dtype=float) * profile_bin
         cross_profiles = (np.concatenate(cross_profiles) if cross_profiles
                           else np.zeros((0, n_bands, len(profile_lags)), dtype=np.float32))
         cross_match = (np.concatenate(cross_match) if cross_match
