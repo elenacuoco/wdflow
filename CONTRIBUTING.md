@@ -41,10 +41,14 @@ Every pull request runs three jobs, all of which must pass:
 | `Docs build check` | Sphinx with `-W`, so a documentation warning fails the build. |
 
 If you change trigger generation and the golden-output test fails, that is the
-test doing its job: it pins exact numerics on a fixed synthetic frame. Either
-the change was not meant to move them, or it was — in which case regenerate
-`tests/fixtures/golden_triggers.parquet`, and say in the pull request which columns
-moved and why.
+test doing its job: it pins exact numerics on a fixed synthetic frame, once per
+rule for the coefficients of a window: `tests/fixtures/golden_triggers.parquet`
+for the universal threshold, whose numbers are those of the method paper, and
+`tests/fixtures/golden_triggers_block.parquet` for the block rule, the worker's
+default. Either the change was not meant to move them, or it was — in which
+case regenerate the fixture of the rule that moved with
+`run_segment_process(outdir, rule=...)` from `tests/conftest.py`, and say in the
+pull request which columns moved and why.
 
 ## House style
 
