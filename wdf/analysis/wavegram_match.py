@@ -168,7 +168,18 @@ def render(cloud, bands, first, last, bin_seconds):
     difference = np.zeros((len(bands), n_bins + 1))
     np.add.at(difference, (row[inside], start), weight)
     np.add.at(difference, (row[inside], stop), -weight)
-    return np.cumsum(difference[:, :-1], axis=1)
+    rendered = np.cumsum(difference[:, :-1], axis=1)
+    # Adding a weight and subtracting it again along the sum does not return
+    # exactly to zero in floating point once other tiles have entered in
+    # between, and the round-off then trails behind a tile to the end of the
+    # grid. The cells no tile covers are known exactly from an integer count
+    # of the tiles over each cell, and the rendering is zero there by
+    # definition rather than by arithmetic.
+    coverage = np.zeros((len(bands), n_bins + 1), dtype=np.int64)
+    np.add.at(coverage, (row[inside], start), 1)
+    np.add.at(coverage, (row[inside], stop), -1)
+    rendered[np.cumsum(coverage[:, :-1], axis=1) == 0] = 0.0
+    return rendered
 
 
 def correlation_profile(left, right, max_shift_s, bin_seconds):
