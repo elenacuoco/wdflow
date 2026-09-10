@@ -24,7 +24,7 @@ class wdf(Observable):
     The main WDF class responsible for the communication with the p4TSA library regarding the application of WDF onto data
     """
 
-    def __init__(self, WdfParams: Parameters, wTh=WaveletThreshold.dohonojohnston):
+    def __init__(self, WdfParams: Parameters, wTh=WaveletThreshold.block):
         """
         The main WDF class responsible for the communication with the p4TSA library regarding the application of WDF onto data
 
@@ -32,7 +32,9 @@ class wdf(Observable):
         :param parameters: Set of WDF parameters
 
         :type wth: pytsa.WaveletThreshold
-        :param wavThresh: Type of wavelet thresholding function; default value = WaveletThreshold.dohonojohnston
+        :param wavThresh: the rule for the coefficients of a window; default `WaveletThreshold.block`,
+            contiguous coefficients of one level judged together (Cai 1999). `dohonojohnston` is the
+            universal threshold on each coefficient alone, which the method paper's runs used.
 
         """
         Observable.__init__(self)

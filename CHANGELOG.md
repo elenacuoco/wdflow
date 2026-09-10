@@ -5,6 +5,20 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The block rule is the default for the coefficients of a window
+
+The universal threshold judges each wavelet coefficient of a window alone
+against `sqrt(2 ln N) sigma`, and a chirp crossing the window, spread over
+neighbouring coefficients each at two or three sigma, leaves the trigger only
+its loudest few. p4TSA's `WaveletThreshold.block` (Cai 1999) judges contiguous
+coefficients of one level together, and is now the default of `wdf` and of
+`wdfUnitDSWorker.segmentProcess`; on the merger window of GW150914 it keeps
+the low-frequency part of the inspiral that the universal threshold dropped,
+and fires on fewer windows of noise at the same EnWDF threshold. The rule a
+search ran with is recorded beside its triggers as `waveletThreshold`. Pass
+`wavThresh=WaveletThreshold.dohonojohnston` for the runs of the method paper.
+Requires p4TSA with the block rule.
+
 ### The wavegram comparison runs on the device the machine has
 
 `correlation_profiles` walks two gathered blocks of maps once per displacement,

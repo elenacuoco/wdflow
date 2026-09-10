@@ -65,7 +65,7 @@ class wdfUnitDSWorker(object):
         self.par.resampling=parameters.sampling/parameters.ResamplingFactor
         self.par.len=parameters.len
            
-    def segmentProcess(self, segment, wavThresh=WaveletThreshold.dohonojohnston):
+    def segmentProcess(self, segment, wavThresh=WaveletThreshold.block):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
         warm-up read, then stream the rest of the segment through
@@ -75,8 +75,12 @@ class wdfUnitDSWorker(object):
         :type segment: tuple[float, float]
         :param segment: (gpsStart, gpsEnd) bounds of the segment to analyze.
         :type wavThresh: pytsa.tsa.WaveletThreshold.WaveletThresholding
-        :param wavThresh: wavelet-coefficient thresholding rule passed to WDF's C++
-            engine (default `dohonojohnston`, the Donoho-Johnstone universal threshold).
+        :param wavThresh: the rule for the coefficients of a window, passed to WDF's C++
+            engine. The default `block` judges contiguous coefficients of one level
+            together, so that a signal spread over neighbouring coefficients, each below
+            the universal threshold, survives as a block; `dohonojohnston` is that universal
+            threshold on each coefficient alone. The rule is recorded beside the triggers
+            as `waveletThreshold`.
         :return: None -- triggers are written to disk (Parquet, or CSV for older runs),
             not returned; a `ProcessEnded.check` marker file in the segment's output
             directory means a prior run already completed it and this call is a no-op.
@@ -272,6 +276,7 @@ class wdfUnitDSWorker(object):
                 par = Parameters()
                 par.copy(self.par)
                 par.window, par.overlap, par.Ncoeff = window, overlap, window
+                par.waveletThreshold = wavThresh.name
                 search = wdf(par, wavThresh)
                 savetrigger = SingleEventPrintTriggers(par)
                 parameterestimation = ParameterEstimation(par)
