@@ -94,8 +94,8 @@ def donoho_johnstone_threshold(sigma: float, n_coeff: int) -> float:
     """The universal wavelet-denoising threshold (Donoho & Johnstone, 1994):
     `sigma * sqrt(2 * ln(n_coeff))`. General (depends only on the noise scale
     and the number of coefficients, not on any assumption about the signal's
-    shape) -- the same principle WDF's own C++ thresholding already defaults
-    to (`WaveletThreshold.dohonojohnston`), reproduced here directly on `wt*`
+    shape) -- the rule WDF's C++ engine applies under
+    `WaveletThreshold.dohonojohnston`, reproduced here directly on `wt*`
     so it's inspectable/reusable from Python instead of only living inside
     opaque C++.
     """
