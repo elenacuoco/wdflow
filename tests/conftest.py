@@ -27,10 +27,14 @@ TEST_PARAMS = dict(
 )
 
 
-def run_segment_process(tmp_outdir, whitening_extra_size=None):
+def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None):
     """Runs the real wdfUnitDSWorker.segmentProcess over the small synthetic
     noise fixture and returns the resulting trigger DataFrame. Shared by the
     golden-output regression test and the len-equivalence test.
+
+    :param rule: the rule for the coefficients of a window, a
+        `pytsa.tsa.WaveletThreshold.WaveletThresholding`; None for the
+        worker's default.
     """
     from wdf.config.Parameters import Parameters
     from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
@@ -57,7 +61,10 @@ def run_segment_process(tmp_outdir, whitening_extra_size=None):
 
     worker = wdfUnitDSWorker(par)
     for segment in par.segments:
-        worker.segmentProcess(segment)
+        if rule is None:
+            worker.segmentProcess(segment)
+        else:
+            worker.segmentProcess(segment, wavThresh=rule)
 
     import pandas as pd
     parquets = glob.glob(os.path.join(par.outdir, par.run, "H1", "*", "*.parquet"))

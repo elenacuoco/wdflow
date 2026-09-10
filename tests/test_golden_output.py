@@ -14,6 +14,17 @@ from conftest import FIXTURES_DIR, run_segment_process
 
 GOLDEN = os.path.join(FIXTURES_DIR, "golden_triggers.parquet")
 
+
+def rules():
+    """The rules for the coefficients of a window, each with the fixture that
+    pins its output: the universal threshold, whose numbers are those of the
+    method paper, and the block rule, the worker's default."""
+    from pytsa.tsa import WaveletThreshold
+    return [
+        pytest.param(WaveletThreshold.dohonojohnston, GOLDEN, id="universal"),
+        pytest.param(WaveletThreshold.block, os.path.join(FIXTURES_DIR, "golden_triggers_block.parquet"), id="block"),
+    ]
+
 # What the search itself produces, straight from p4TSA. A change here is a
 # change to AR estimation, whitening or the trigger finder.
 SEARCH_COLUMNS = ["gps", "EnWDF", "sigma"]
@@ -38,9 +49,10 @@ ORTHONORMAL_WAVES = {
 }
 
 
-def test_segment_process_matches_golden_output(tmp_outdir):
-    golden = pd.read_parquet(GOLDEN)
-    result = run_segment_process(tmp_outdir)
+@pytest.mark.parametrize("rule, fixture", rules())
+def test_segment_process_matches_golden_output(tmp_outdir, rule, fixture):
+    golden = pd.read_parquet(fixture)
+    result = run_segment_process(tmp_outdir, rule=rule)
 
     assert len(result) == len(golden), (
         f"trigger count changed: {len(result)} vs golden {len(golden)}. "
@@ -57,7 +69,8 @@ def test_segment_process_matches_golden_output(tmp_outdir):
     assert (result["wave"].reset_index(drop=True) == golden["wave"].reset_index(drop=True)).all()
 
 
-def test_the_golden_coefficients_are_reproduced(tmp_outdir):
+@pytest.mark.parametrize("rule, fixture", rules())
+def test_the_golden_coefficients_are_reproduced(tmp_outdir, rule, fixture):
     """The coefficients are the record, to the precision they are stored in.
 
     Which coefficients survive is exact and is checked as such: an index is an
@@ -65,24 +78,31 @@ def test_the_golden_coefficients_are_reproduced(tmp_outdir):
     behaviour however small the amplitude that caused it.
 
     Their values are checked to one unit in the last place of `float32`, the
-    type they are stored as. The transform runs in double precision and is
-    rounded once on the way to disk, so two builds that contract a multiply-add
+    type they are stored as, on the scale of the trigger's largest
+    coefficient. The transform runs in double precision and is rounded once
+    on the way to disk, so two builds that contract a multiply-add
     differently, or sum a dot product in a different order, disagree in the
-    final bit of that rounding while computing the same quantity. Demanding bit
-    equality there would make this a test of the compiler rather than of the
-    pipeline; a real change moves many coefficients by far more than a bit.
+    final bit of that rounding while computing the same quantity. Demanding
+    bit equality there would make this a test of the compiler rather than of
+    the pipeline; a real change moves many coefficients by far more than a
+    bit. The scale is the trigger's and not each coefficient's own because a
+    rule that keeps blocks keeps the small coefficients of a block with the
+    large: a coefficient a thousand times below its neighbours carries a
+    thousand times less of the trigger, and a bit of its own rounding says
+    nothing about the pipeline.
     """
-    golden = pd.read_parquet(GOLDEN)
-    result = run_segment_process(tmp_outdir)
+    golden = pd.read_parquet(fixture)
+    result = run_segment_process(tmp_outdir, rule=rule)
+    ulp = float(np.finfo(np.float32).eps)
 
     for row, (index, value) in enumerate(zip(golden.wt_index, golden.wt_value)):
         assert np.array_equal(np.asarray(result.wt_index.iloc[row]), np.asarray(index))
+        expected = np.asarray(value, dtype=np.float64)
         np.testing.assert_allclose(
-            np.asarray(result.wt_value.iloc[row], dtype=np.float64),
-            np.asarray(value, dtype=np.float64),
-            rtol=float(np.finfo(np.float32).eps), atol=0.0,
+            np.asarray(result.wt_value.iloc[row], dtype=np.float64), expected,
+            rtol=ulp, atol=ulp * float(np.abs(expected).max()),
             err_msg=f"coefficients of trigger {row} differ by more than a "
-                    f"float32 rounding")
+                    f"float32 rounding of the trigger's largest coefficient")
 
 
 def test_no_biorthogonal_wave_wins_on_pure_noise(tmp_outdir):

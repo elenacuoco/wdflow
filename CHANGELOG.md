@@ -17,7 +17,10 @@ the low-frequency part of the inspiral that the universal threshold dropped,
 and fires on fewer windows of noise at the same EnWDF threshold. The rule a
 search ran with is recorded beside its triggers as `waveletThreshold`. Pass
 `wavThresh=WaveletThreshold.dohonojohnston` for the runs of the method paper.
-Requires p4TSA with the block rule.
+Requires p4TSA with the block rule. The golden-output test pins each rule's
+numbers on its own fixture: the universal threshold's are unchanged, and the
+block rule's, `golden_triggers_block.parquet`, hold 1638 triggers where the
+universal threshold emits 2843 on the same noise.
 
 ### The wavegram comparison runs on the device the machine has
 
