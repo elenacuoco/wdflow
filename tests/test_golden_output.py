@@ -14,6 +14,17 @@ from conftest import FIXTURES_DIR, run_segment_process
 
 GOLDEN = os.path.join(FIXTURES_DIR, "golden_triggers.parquet")
 
+
+def rules():
+    """The rules for the coefficients of a window, each with the fixture that
+    pins its output: the universal threshold, whose numbers are those of the
+    method paper, and the block rule, the worker's default."""
+    from pytsa.tsa import WaveletThreshold
+    return [
+        pytest.param(WaveletThreshold.dohonojohnston, GOLDEN, id="universal"),
+        pytest.param(WaveletThreshold.block, os.path.join(FIXTURES_DIR, "golden_triggers_block.parquet"), id="block"),
+    ]
+
 # What the search itself produces, straight from p4TSA. A change here is a
 # change to AR estimation, whitening or the trigger finder.
 SEARCH_COLUMNS = ["gps", "EnWDF", "sigma"]
@@ -38,9 +49,10 @@ ORTHONORMAL_WAVES = {
 }
 
 
-def test_segment_process_matches_golden_output(tmp_outdir):
-    golden = pd.read_parquet(GOLDEN)
-    result = run_segment_process(tmp_outdir)
+@pytest.mark.parametrize("rule, fixture", rules())
+def test_segment_process_matches_golden_output(tmp_outdir, rule, fixture):
+    golden = pd.read_parquet(fixture)
+    result = run_segment_process(tmp_outdir, rule=rule)
 
     assert len(result) == len(golden), (
         f"trigger count changed: {len(result)} vs golden {len(golden)}. "
@@ -57,7 +69,8 @@ def test_segment_process_matches_golden_output(tmp_outdir):
     assert (result["wave"].reset_index(drop=True) == golden["wave"].reset_index(drop=True)).all()
 
 
-def test_the_golden_coefficients_are_reproduced(tmp_outdir):
+@pytest.mark.parametrize("rule, fixture", rules())
+def test_the_golden_coefficients_are_reproduced(tmp_outdir, rule, fixture):
     """The coefficients are the record, to the precision they are stored in.
 
     Which coefficients survive is exact and is checked as such: an index is an
@@ -72,8 +85,8 @@ def test_the_golden_coefficients_are_reproduced(tmp_outdir):
     equality there would make this a test of the compiler rather than of the
     pipeline; a real change moves many coefficients by far more than a bit.
     """
-    golden = pd.read_parquet(GOLDEN)
-    result = run_segment_process(tmp_outdir)
+    golden = pd.read_parquet(fixture)
+    result = run_segment_process(tmp_outdir, rule=rule)
 
     for row, (index, value) in enumerate(zip(golden.wt_index, golden.wt_value)):
         assert np.array_equal(np.asarray(result.wt_index.iloc[row]), np.asarray(index))
