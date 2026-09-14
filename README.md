@@ -231,9 +231,10 @@ only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdf
 
 *The Wavelet Detection Filter:*
 
-- E. Cuoco, *The Wavelet Detection Filter: a real-time un-modelled search for
-  gravitational wave transients, ranking coincidences with a graph neural
-  network*, (2026), in preparation. VIR-0605A-26
+- E. Cuoco, *The Wavelet Detection Filter: A Real Time Unmodeled Pipeline for
+  Gravitational Wave Transients, Ranking Coincidences with a Graph Neural
+  Network*, arXiv:2609.12797 (2026).
+  [10.48550/arXiv.2609.12797](https://doi.org/10.48550/arXiv.2609.12797)
 
 *WDFX:*
 
@@ -254,8 +255,7 @@ only once CI is green. See [`CONTRIBUTING.md`](https://github.com/elenacuoco/wdf
   [10.1103/PhysRevD.64.122002](https://doi.org/10.1103/PhysRevD.64.122002)
 
 `CITATION.cff` in this repository carries the same list in machine-readable
-form, the pipeline paper marked `in-preparation`; GitHub's *Cite this
-repository* button reads it.
+form; GitHub's *Cite this repository* button reads it.
 
 ## Use of generative AI
 
