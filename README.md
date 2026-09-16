@@ -5,7 +5,7 @@
 
 A maintained, standalone package for the WDF (Wavelet Detection Filter) trigger-generation
 pipeline for transient time-series signals, built on the C++ core
-[p4TSA](https://github.com/elenacuoco/p4TSA) (exposed to Python as `pytsa`), plus the downstream
+[p4TSA](https://github.com/elenacuoco/p4TSA) (exposed to Python as `py4tsa`), plus the downstream
 trigger analysis that turns raw per-window triggers into candidate events.
 
 **It runs in real time**, at a latency that is fixed and known before the filter
@@ -19,11 +19,11 @@ what a transient is can be decided afterwards.
 ## Layout
 
 - `wdf.config`, `wdf.processes`, `wdf.observers`, `wdf.structures` -- trigger generation. Needs
-  the compiled `pytsa`/p4TSA core (`pip install -e ".[pipeline]"`).
+  the compiled `py4tsa`/p4TSA core (`pip install -e ".[pipeline]"`).
 - `wdf.analysis` -- clustering, multi-detector coincidence (classical + GNN), background/
   false-alarm-probability, ROC analysis, sky localisation, and the submission writer that
   puts the surviving candidates in a challenge's own columns. Operates on plain pandas
-  DataFrames / saved trigger files, no `pytsa` dependency, so it works standalone
+  DataFrames / saved trigger files, no `py4tsa` dependency, so it works standalone
   (`pip install -e .`, no extras needed).
 - `wdf.mock` -- the simulated two-detector data set: coloured Gaussian noise, compact-binary
   injections projected through the antenna responses, single-detector glitch morphologies, and
@@ -113,7 +113,7 @@ Changes from the legacy `wdf` package:
 
 - **The downstream analysis layer (formerly the separate `wdfLib` package) is merged in** as the
   `wdf.analysis` subpackage: clustering, multi-detector coincidence (classical + GNN),
-  background/false-alarm-probability, and ROC analysis. It has no `pytsa` dependency and operates
+  background/false-alarm-probability, and ROC analysis. It has no `py4tsa` dependency and operates
   on plain pandas DataFrames / saved trigger files, so it works standalone.
 
 Left behind deliberately (not used by `wdfUnitDSWorker`'s pipeline, not ported or audited):
@@ -128,14 +128,14 @@ ported), `structures.ClusteredEvent` (an empty data holder), `structures.segment
 no data set to download, no frame file to point at:
 
 1. `01_the_statistic_and_the_parameters` -- one window of whitened data, the transform,
-   thresholding, basis competition, and what the estimated parameters mean. Needs `pytsa`.
+   thresholding, basis competition, and what the estimated parameters mean. Needs `py4tsa`.
 2. `02_the_wavegram_and_long_signals` -- reading parameters off the time-frequency tiles, and
-   recovering a signal that spans several analysis windows. Needs `pytsa`.
+   recovering a signal that spans several analysis windows. Needs `py4tsa`.
 3. `03_coincidence_and_significance` -- coincidence, time-slide background, false-alarm
-   probability and ROC, using only `wdf.analysis`. **No `pytsa` required.**
+   probability and ROC, using only `wdf.analysis`. **No `py4tsa` required.**
 4. `04_reconstruction_and_phase` -- the event's own coefficients inverted and stitched across
    windows, compared against the waveform that was injected, and the phase read sample by
-   sample. Needs `pytsa`.
+   sample. Needs `py4tsa`.
 
 ## Install
 
@@ -179,24 +179,25 @@ pip install -e ".[all]"
 
 | Requirement | Needed for | Where it comes from |
 |-------------|------------|---------------------|
-| `pytsa` (p4TSA) | `wdf.processes`, `wdf.observers` — trigger generation, and any wavelet transform | built from [p4TSA](https://github.com/elenacuoco/p4TSA) |
+| `py4tsa` (p4TSA) | `wdf.processes`, `wdf.observers` — trigger generation, and any wavelet transform | built from [p4TSA](https://github.com/elenacuoco/p4TSA) |
 | a GWF backend for gwpy | reading frame files through gwpy | `pip install lalsuite`, or conda's `python-ldas-tools-framecpp` |
 
 ### The compiled core
 
-Trigger generation needs p4TSA, imported as `pytsa`. It is deliberately **not**
-declared as a dependency of any extra: p4TSA has no PyPI distribution — FrameL
-has no wheel — so the declaration could not resolve, and **`pip install pytsa`
-is a different project** (an unrelated Python decorator library). Build it from
-[p4TSA](https://github.com/elenacuoco/p4TSA) instead, with its conda recipe or
+Trigger generation needs p4TSA, imported as `py4tsa`. (The module was called
+`pytsa` until p4TSA renamed it, to stop colliding with an unrelated project of
+that name on PyPI — change any `import pytsa` you still have.) It is
+deliberately **not** declared as a dependency of any extra: p4TSA has no PyPI
+distribution — FrameL has no wheel — so the declaration could not resolve.
+Build it from [p4TSA](https://github.com/elenacuoco/p4TSA) instead, with its conda recipe or
 `pip install .` from a checkout. p4TSA in turn needs GSL, FFTW3, FrameL, the
 Boost.uBLAS headers and the Cereal headers, all on conda-forge.
 
-If `import pytsa` behaves oddly, check what you actually have:
+If `import py4tsa` behaves oddly, check what you actually have:
 
 ```bash
-pip show p4tsa
-python -c "import pytsa; print(pytsa.__file__)"   # must be a compiled .so, not a .py
+pip show py4tsa
+python -c "import py4tsa; print(py4tsa.__file__)"   # must be a compiled .so, not a .py
 ```
 
 ### The legacy `wdf` package must not be installed alongside
@@ -276,8 +277,8 @@ small synthetic frame (the legacy `wdf` package has none), plus the `wdf.analysi
 (synthetic trigger data, no WDF run required):
 
 ```bash
-pytest tests                    # needs pytsa for the golden fixture
-pytest tests/test_clustering.py tests/test_coincidence.py tests/test_significance.py   # no pytsa
+pytest tests                    # needs py4tsa for the golden fixture
+pytest tests/test_clustering.py tests/test_coincidence.py tests/test_significance.py   # no py4tsa
 ```
 
 `tests/test_gnn.py` needs the `gnn` extra and `tests/test_mock_dataset.py` needs `pycbc`; both are

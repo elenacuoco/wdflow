@@ -40,7 +40,7 @@ class ParameterEstimation(Observer, Observable):
     def update(self, event):
         """Builds one trigger record and passes it to the registered observers.
 
-        :type event: pytsa.tsa.EventFullFeatured
+        :type event: py4tsa.tsa.EventFullFeatured
         :param event: the window WDF triggered on.
         :return: None
         """

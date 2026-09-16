@@ -2,7 +2,7 @@
 in (time, frequency), with no assumption about the shape of whatever
 transient produced them.
 
-`pytsa.WaveletTransform` / GSL's `gsl_wavelet_transform` is a standard
+`py4tsa.WaveletTransform` / GSL's `gsl_wavelet_transform` is a standard
 pyramidal (Mallat) DWT in GSL's documented packed coefficient layout
 (confirmed against `p4TSA/src/WaveletTransform.cpp` and the GSL DWT manual):
 `wt[0]` is the single coarsest scaling coefficient; level `j = 0..J-1`
@@ -29,9 +29,9 @@ downstream learned model (e.g. a normalizing flow) trained to estimate
 parameters directly from them -- `wavelet_energy_snr` is a principled interim
 statistic, not a replacement for that.
 
-Kept free of wdf/pytsa imports, like the rest of wdfLib besides io.py --
+Kept free of wdf/py4tsa imports, like the rest of wdfLib besides io.py --
 operates on plain numpy arrays / already-materialized `wt*` DataFrame
-columns, so it works offline on saved trigger CSVs without a wdf/pytsa
+columns, so it works offline on saved trigger CSVs without a wdf/py4tsa
 install.
 """
 from __future__ import annotations

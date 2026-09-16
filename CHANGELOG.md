@@ -5,6 +5,16 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The compiled core is imported as `py4tsa`, not `pytsa`
+
+p4TSA renamed its Python module: the old name belongs to an unrelated project
+on PyPI, a decorator library, which owns that import namespace and would
+shadow the compiled core for anyone holding both. Every `from pytsa.tsa
+import ...` in `wdf.processes`, `wdf.observers` and `wdf.structures` is now
+`from py4tsa.tsa import ...`, and code of your own that imports the core
+directly has to follow. `wdf.analysis` is unaffected: it never needed the core
+to begin with. Requires p4TSA built from a revision that carries the rename.
+
 ### The block rule is the default for the coefficients of a window
 
 The universal threshold judges each wavelet coefficient of a window alone

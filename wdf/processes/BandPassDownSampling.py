@@ -19,9 +19,9 @@ import numpy as np
 from scipy.signal import cheby2, sosfilt, sosfiltfilt
 
 def SV_to_array(seqView):
-    """Copies a pytsa SeqView's single channel into a plain numpy array.
+    """Copies a py4tsa SeqView's single channel into a plain numpy array.
 
-    :type seqView: pytsa.tsa.SeqView_double_t
+    :type seqView: py4tsa.tsa.SeqView_double_t
     :param seqView: sequence view to read from (channel 0 only).
     :return: numpy.ndarray -- 1-D array of length `seqView.GetSize()`.
     """
@@ -173,9 +173,9 @@ class BandPassDownSampling(object):
         amplified by the whitening, which applies its largest gain exactly at
         the band edges where that residual lives.
 
-        :type data: pytsa.tsa.SeqView_double_t
+        :type data: py4tsa.tsa.SeqView_double_t
         :param data: input data chunk at the original sampling rate.
-        :return: pytsa.tsa.SeqView_double_t or None -- band-passed, decimated
+        :return: py4tsa.tsa.SeqView_double_t or None -- band-passed, decimated
             data at `self.resampling` Hz, or None while the future is filling.
         """
         y = SV_to_array(data)
@@ -215,7 +215,7 @@ class BandPassDownSampling(object):
         :param y_ds: decimated samples.
         :type start: float
         :param start: GPS time of the first sample.
-        :return: pytsa.tsa.SeqView_double_t
+        :return: py4tsa.tsa.SeqView_double_t
         """
         view = array2SeqView(start, self.resampling, len(y_ds))
         view.Fill(start, array=y_ds)
@@ -232,13 +232,13 @@ def read_conditioned(streaming, block, downsampling):
     depends on the filter's ringing and on the read size, neither of which the
     caller should have to know.
 
-    :type streaming: pytsa.tsa.FrameIChannel
+    :type streaming: py4tsa.tsa.FrameIChannel
     :param streaming: the frame reader.
-    :type block: pytsa.tsa.SeqView_double_t
+    :type block: py4tsa.tsa.SeqView_double_t
     :param block: scratch view the reader fills.
     :type downsampling: BandPassDownSampling
     :param downsampling: the conditioning front end.
-    :return: pytsa.tsa.SeqView_double_t -- one conditioned block, labelled with
+    :return: py4tsa.tsa.SeqView_double_t -- one conditioned block, labelled with
         the time of the samples it holds.
     """
     while True:

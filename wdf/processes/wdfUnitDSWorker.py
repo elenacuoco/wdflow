@@ -20,9 +20,9 @@ import time
 
 import numpy as np
 
-from pytsa.tsa import *
-from pytsa.tsa import WaveletThreshold
-from pytsa.tsa import SeqView_double_t as SV
+from py4tsa.tsa import *
+from py4tsa.tsa import WaveletThreshold
+from py4tsa.tsa import SeqView_double_t as SV
 
 
 from wdf.observers.ParameterEstimationObserver import ParameterEstimation 
@@ -74,7 +74,7 @@ class wdfUnitDSWorker(object):
 
         :type segment: tuple[float, float]
         :param segment: (gpsStart, gpsEnd) bounds of the segment to analyze.
-        :type wavThresh: pytsa.tsa.WaveletThreshold.WaveletThresholding
+        :type wavThresh: py4tsa.tsa.WaveletThreshold.WaveletThresholding
         :param wavThresh: the rule for the coefficients of a window, passed to WDF's C++
             engine. The default `block` judges contiguous coefficients of one level
             together, so that a signal spread over neighbouring coefficients, each below

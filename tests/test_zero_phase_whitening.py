@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from scipy.signal import lfilter, welch
 
-from pytsa.tsa import LatticeFilter
+from py4tsa.tsa import LatticeFilter
 from wdf.processes.zero_phase_whitening import (
     ZeroPhaseWhitening,
     levinson,

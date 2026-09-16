@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from scipy.signal import sosfiltfilt
 
 # The conditioning stage is built on the compiled core.
-pytest.importorskip("pytsa")
+pytest.importorskip("py4tsa")
 
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 settling_length)

@@ -11,7 +11,7 @@ parameter estimation, the writing and any diagnostics attach as observers.
 __author__ = "Elena Cuoco"
 __project__ = "wdf"
 
-from pytsa.tsa import WaveletThreshold, WDF2Classify, EventFullFeatured
+from py4tsa.tsa import WaveletThreshold, WDF2Classify, EventFullFeatured
 
 from wdf.observers.observable import Observable
 from wdf.config import Parameters
@@ -31,7 +31,7 @@ class wdf(Observable):
         :type parameters: WdfParam
         :param parameters: Set of WDF parameters
 
-        :type wth: pytsa.WaveletThreshold
+        :type wth: py4tsa.WaveletThreshold
         :param wavThresh: the rule for the coefficients of a window; default `WaveletThreshold.block`,
             contiguous coefficients of one level judged together (Cai 1999). `dohonojohnston` is the
             universal threshold on each coefficient alone, which the method paper's runs used.
@@ -53,8 +53,8 @@ class wdf(Observable):
         """
         This methods sets sets the data for the p4TSA wdf2classify class for further search of triggers
 
-        :type data: pytsa.SeqViewDouble
-        :param data: An pytsa.SeqViewDouble object storing data to be processed
+        :type data: py4tsa.SeqViewDouble
+        :param data: An py4tsa.SeqViewDouble object storing data to be processed
 
         """
        
@@ -62,7 +62,7 @@ class wdf(Observable):
 
     def FindEvents(self):
         """
-        This method calls wdf2classify function from pytsa to search for triggers in the data
+        This method calls wdf2classify function from py4tsa to search for triggers in the data
 
         :return: trigger
         """
@@ -72,7 +72,7 @@ class wdf(Observable):
 
     def Process(self):
         """
-        This method calls wdf2classify function from pytsa to search for triggers in the data
+        This method calls wdf2classify function from py4tsa to search for triggers in the data
         If the triggers are found, they are stored in tosend_triggers variable that is later on used for further processing
 
         """

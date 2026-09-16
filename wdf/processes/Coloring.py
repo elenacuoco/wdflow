@@ -13,7 +13,7 @@ and not against a design curve.
 __author__ = "Elena Cuoco"
 __project__ = "wdf"
 
-from pytsa.tsa import ARMAFilter, ArBurgEstimator
+from py4tsa.tsa import ARMAFilter, ArBurgEstimator
 from wdf.processes.ar_lv_io import load_ar_burg
 
 
@@ -52,7 +52,7 @@ class Coloring(object):
     def Process(self, dataw, datac):
         """Recolors one chunk of whitened data.
 
-        :param dataw: pytsa.SeqViewDouble, whitened input
-        :param datac: pytsa.SeqViewDouble, recolored output
+        :param dataw: py4tsa.SeqViewDouble, whitened input
+        :param datac: py4tsa.SeqViewDouble, recolored output
         """
         self.ARMAflt(dataw, datac)

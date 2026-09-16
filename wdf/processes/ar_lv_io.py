@@ -34,7 +34,7 @@ def save_ar_burg(h5path: str, ade) -> None:
 
     :type h5path: str
     :param h5path: output file path.
-    :type ade: pytsa.tsa.ArBurgEstimator
+    :type ade: py4tsa.tsa.ArBurgEstimator
     :param ade: the estimator to persist.
     """
     order = ade.GetArOrder()
@@ -49,7 +49,7 @@ def load_ar_burg(h5path: str, ade) -> None:
 
     :type h5path: str
     :param h5path: input file path.
-    :type ade: pytsa.tsa.ArBurgEstimator
+    :type ade: py4tsa.tsa.ArBurgEstimator
     :param ade: the estimator to populate (mutated in place).
     """
     with h5py.File(h5path, "r") as fh:
@@ -66,7 +66,7 @@ def save_lattice_view(h5path: str, lv) -> None:
 
     :type h5path: str
     :param h5path: output file path.
-    :type lv: pytsa.tsa.LatticeView
+    :type lv: py4tsa.tsa.LatticeView
     :param lv: the lattice view to persist.
     """
     order = lv.GetOrder()
@@ -89,7 +89,7 @@ def load_lattice_view(h5path: str, lv) -> None:
 
     :type h5path: str
     :param h5path: input file path.
-    :type lv: pytsa.tsa.LatticeView
+    :type lv: py4tsa.tsa.LatticeView
     :param lv: the lattice view to populate (mutated in place).
     """
     with h5py.File(h5path, "r") as fh:

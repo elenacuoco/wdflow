@@ -25,11 +25,10 @@ classifiers = [
 
 [project.optional-dependencies]
 # `wdf.processes`/`wdf.observers` (trigger generation) need p4TSA's compiled
-# core, imported as `pytsa`. It is deliberately NOT listed here: p4TSA has no
-# PyPI distribution (FrameL has no wheel), and the unrelated `pytsa` project on
-# PyPI is a Python decorator library, so a declared dependency would either fail
-# to resolve or resolve to the wrong package. Build it from
-# https://github.com/elenacuoco/p4TSA -- see README.
+# core, imported as `py4tsa` (called `pytsa` until p4TSA renamed it away from
+# an unrelated project of that name on PyPI). It is deliberately NOT listed
+# here: p4TSA has no PyPI distribution yet, because FrameL has no wheel there.
+# Build it from https://github.com/elenacuoco/p4TSA -- see README.
 # `wdf.analysis` (downstream analysis) needs none of this and works standalone
 # on already-saved trigger files.
 pipeline = ["coloredlogs"]

@@ -35,7 +35,7 @@ def inverse_transform(coefficients, wave):
         trigger.
     :return: numpy.ndarray -- the reconstructed samples.
     """
-    from pytsa.tsa import WaveletTransform
+    from py4tsa.tsa import WaveletTransform
     from wdf.structures.array2SeqView import array2SeqView
 
     coefficients = np.asarray(coefficients, dtype=float).reshape(-1)

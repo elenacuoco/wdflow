@@ -34,7 +34,7 @@ def forward(samples):
     :param samples: the window's samples.
     :return: numpy.ndarray -- the coefficients, in the packet ordering.
     """
-    from pytsa.tsa import WaveletTransform
+    from py4tsa.tsa import WaveletTransform
 
     from wdf.structures.array2SeqView import array2SeqView
 

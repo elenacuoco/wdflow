@@ -135,7 +135,7 @@ class ClusterCoefficients:
             # Single precision: the coefficients carry seven significant
             # digits, far more than anything read off them needs, and a full
             # segment holds hundreds of thousands of these rows. The
-            # reconstruction converts back to double, where pytsa wants it.
+            # reconstruction converts back to double, where py4tsa wants it.
             coefficients=coefficient_matrix(ordered),
             waves=tuple(ordered["wave"].astype(str)) if "wave" in ordered else (),
             sigma=(ordered["sigma"].to_numpy(dtype=float) if "sigma" in ordered

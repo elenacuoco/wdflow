@@ -2,9 +2,8 @@
 #
 # The core is built from source rather than installed from an index: p4TSA has
 # no PyPI distribution, because the frame-file library it reads GWF with has no
-# wheel there, and the unrelated `pytsa` package on PyPI is a decorator library
-# that would resolve in its place. So the image starts from conda-forge, which
-# does carry framel, and compiles the core against it.
+# wheel there. So the image starts from conda-forge, which does carry framel,
+# and compiles the core against it.
 #
 #   docker build -t wdflow .
 #   docker run --rm -it -p 8888:8888 -v "$PWD:/work" wdflow
@@ -23,7 +22,7 @@ LABEL org.opencontainers.image.version="1.2.0"
 
 # Which p4TSA to build. A tag or a commit, not a branch: an image that builds a
 # different core depending on the day is not reproducible.
-ARG P4TSA_REF=v2.2.0
+ARG P4TSA_REF=v3.1.0
 ARG WITH_TORCH=0
 
 USER root
@@ -55,10 +54,10 @@ COPY --chown=$MAMBA_USER:$MAMBA_USER . /src/wdflow
 RUN pip install --no-deps /src/wdflow
 
 # Fail the build rather than ship an image whose core does not import: a broken
-# pytsa is invisible until the first run otherwise, and `wdf.analysis` works
+# py4tsa is invisible until the first run otherwise, and `wdf.analysis` works
 # without it, so an ordinary import proves nothing.
-RUN python -c "import pytsa.tsa, wdf.analysis, wdf.processes.wdfUnitDSWorker; \
-print('pytsa and wdf import')"
+RUN python -c "import py4tsa.tsa, wdf.analysis, wdf.processes.wdfUnitDSWorker; \
+print('py4tsa and wdf import')"
 
 WORKDIR /work
 EXPOSE 8888

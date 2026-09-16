@@ -4,18 +4,18 @@
 
 """
 __author__ = "Elena Cuoco"
-__project__ = "pytsa"
+__project__ = "py4tsa"
 
-from pytsa.tsa import DoubleWhitening
-from pytsa.tsa import SeqView_double_t as SV
-from pytsa.tsa import LatticeView
+from py4tsa.tsa import DoubleWhitening
+from py4tsa.tsa import SeqView_double_t as SV
+from py4tsa.tsa import LatticeView
 from wdf.processes.ar_lv_io import load_lattice_view
 
 class DWhitening(object):
     
     def __init__(self, LV, OutputSize, ExtraSize):
         """
-        :type LV: pytsa.tsa.LatticeView-like
+        :type LV: py4tsa.tsa.LatticeView-like
         :param LV: AR lattice-filter coefficients (from `Whitening.ParametersEstimate`/
             `ParametersLoad`) used to build this instance's own `LatticeView`.
         :type OutputSize: int
@@ -46,9 +46,9 @@ class DWhitening(object):
         """Synchronous double-whitening: blocks until `OutputSize` whitened
         samples are available, writing them into `dataw`.
 
-        :type data: pytsa.tsa.SeqView_double_t
+        :type data: py4tsa.tsa.SeqView_double_t
         :param data: input (downsampled, band-passed) data chunk to feed the filter.
-        :type dataw: pytsa.tsa.SeqView_double_t
+        :type dataw: py4tsa.tsa.SeqView_double_t
         :param dataw: output sequence view, filled in place with the whitened samples.
         :return: None
         """
@@ -61,9 +61,9 @@ class DWhitening(object):
         `OutputSize` block -- prints a message and leaves `dataw` untouched if
         the filter isn't ready yet, rather than raising.
 
-        :type data: pytsa.tsa.SeqView_double_t
+        :type data: py4tsa.tsa.SeqView_double_t
         :param data: input data chunk to feed the filter.
-        :type dataw: pytsa.tsa.SeqView_double_t
+        :type dataw: py4tsa.tsa.SeqView_double_t
         :param dataw: output sequence view, filled in place if output is ready.
         :return: None
         """
@@ -78,7 +78,7 @@ class DWhitening(object):
     def Input(self,data):
         """Feeds one data chunk into the lattice filter without reading output.
 
-        :type data: pytsa.tsa.SeqView_double_t
+        :type data: py4tsa.tsa.SeqView_double_t
         :param data: input data chunk.
         :return: None
         """
@@ -88,7 +88,7 @@ class DWhitening(object):
     def Output(self,data):
         """Reads whatever whitened output is currently available, if any.
 
-        :type data: pytsa.tsa.SeqView_double_t
+        :type data: py4tsa.tsa.SeqView_double_t
         :param data: output sequence view, filled in place; left untouched (with a
             printed message) if no output is available yet.
         :return: None
@@ -103,7 +103,7 @@ class DWhitening(object):
         """Re-initializes the underlying `DoubleWhitening` filter state with a
         (possibly updated) set of lattice-view coefficients.
 
-        :type LV: pytsa.tsa.LatticeView-like
+        :type LV: py4tsa.tsa.LatticeView-like
         :param LV: AR lattice-filter coefficients.
         :return: None
         """
