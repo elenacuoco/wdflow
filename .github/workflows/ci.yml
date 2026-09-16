@@ -47,10 +47,9 @@ jobs:
             --ignore=tests/test_gnn.py \
             --ignore=tests/test_mock_dataset.py
 
-  # The full suite, with p4TSA built from source. p4TSA has no PyPI
-  # distribution (FrameL has no wheel) and the `py4tsa` name on PyPI belongs to
-  # an unrelated project, so it is built here from its own repository with the
-  # dependency set its conda recipe declares.
+  # The full suite, with p4TSA built from source: it has no PyPI distribution,
+  # because FrameL has no wheel there. So it is built here from its own
+  # repository, with the dependency set its conda recipe declares.
   pipeline:
     name: Full suite (p4TSA built from source)
     runs-on: ubuntu-latest

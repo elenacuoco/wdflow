@@ -1,0 +1,65 @@
+name: tutorials
+
+# Executes the notebooks, which nothing else does: the docs render them from
+# their committed outputs, so a tutorial can call an API that no longer exists
+# and stay green for months. It runs weekly rather than per push because it
+# needs p4TSA compiled, and a notebook breaks when the library moves under it
+# rather than when someone edits the notebook.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  run:
+    name: Execute the tutorials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check out p4TSA
+        uses: actions/checkout@v5
+        with:
+          repository: elenacuoco/p4TSA
+          path: p4TSA
+
+      - name: Set up build environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          micromamba-version: latest
+          environment-name: wdflow-tutorials
+          init-shell: bash
+          create-args: >-
+            -c conda-forge
+            python=3.11
+            pip
+            cxx-compiler
+            cmake>=3.15
+            make
+            scikit-build-core>=0.10
+            pybind11>=2.12
+            numpy
+            scipy
+            gsl
+            fftw
+            framel
+            libboost-headers
+            cereal
+
+      - name: Build and install p4TSA
+        shell: bash -el {0}
+        working-directory: p4TSA
+        run: pip install . --no-build-isolation -v
+
+      - name: Install wdflow
+        shell: bash -el {0}
+        run: pip install -e ".[pipeline,tutorials,mock]"
+
+      # No --allow-errors and no --inplace: a cell that raises fails the run,
+      # which is the point, and the committed outputs are left alone.
+      - name: Execute every notebook
+        shell: bash -el {0}
+        env:
+          MPLBACKEND: Agg
+        run: jupyter execute --timeout=900 tutorials/*.ipynb
