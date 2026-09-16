@@ -543,7 +543,7 @@
     <div class="repos">
       <article class="repo">
         <h3>p4TSA</h3>
-        <p>The C++ core: spectral estimation, time-domain whitening, the wavelet transform and the detection filter itself. Exposed to Python as a single compiled module, <code>pytsa</code>.</p>
+        <p>The C++ core: spectral estimation, time-domain whitening, the wavelet transform and the detection filter itself. Exposed to Python as a single compiled module, <code>py4tsa</code>.</p>
         <p class="links">
           <a href="https://github.com/elenacuoco/p4TSA">source</a>
           <a href="https://p4tsa.readthedocs.io">documentation</a>
@@ -551,7 +551,7 @@
       </article>
       <article class="repo">
         <h3>wdflow</h3>
-        <p>The pipeline. Trigger generation on top of <code>pytsa</code>, and the analysis layer — clustering on the wavegram, reconstruction across windows, multi-detector coincidence, background and false-alarm probability — which runs on saved trigger files without the compiled core.</p>
+        <p>The pipeline. Trigger generation on top of <code>py4tsa</code>, and the analysis layer — clustering on the wavegram, reconstruction across windows, multi-detector coincidence, background and false-alarm probability — which runs on saved trigger files without the compiled core.</p>
         <p class="links">
           <a href="https://github.com/elenacuoco/wdflow">source</a>
           <a href="https://wdflow.readthedocs.io">documentation</a>
@@ -585,12 +585,12 @@
         <pre>git clone https://github.com/elenacuoco/wdflow
 cd wdflow
 pip install -e ".[all]"</pre>
-        <p>Trigger generation additionally needs p4TSA, built from its own source. It is not on PyPI, and the <code>pytsa</code> package that is on PyPI is an unrelated project, so install it from the repository:</p>
+        <p>Trigger generation additionally needs p4TSA, built from its own source, since it is not on PyPI. Its Python module is <code>py4tsa</code> — formerly <code>pytsa</code>, renamed because that name on PyPI belongs to an unrelated project. Install it from the repository:</p>
         <pre><span class="c"># from a p4TSA checkout</span>
 pip install .
 
 <span class="c"># confirm you got the compiled module</span>
-python -c "import pytsa; print(pytsa.__file__)"</pre>
+python -c "import py4tsa; print(py4tsa.__file__)"</pre>
       </div>
       <div class="prose">
         <p class="label">Dependencies</p>
@@ -626,13 +626,13 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
         <span class="n">Notebook 1</span>
         <h3>The statistic and the parameters</h3>
         <p>One window of whitened data: the transform, Parseval, thresholding, the competition between the ten bases, and what each estimated parameter means — including why the three signal-to-noise quantities are ordered as they are.</p>
-        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/01_the_statistic_and_the_parameters.ipynb">open notebook</a> <span class="dep">requires pytsa</span></p>
+        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/01_the_statistic_and_the_parameters.ipynb">open notebook</a> <span class="dep">requires py4tsa</span></p>
       </li>
       <li>
         <span class="n">Notebook 2</span>
         <h3>The wavegram and long signals</h3>
         <p>Reading the peak frequency off the time–frequency tiles and comparing it with the periodogram, then recovering a transient that spans several analysis windows by percolation and stitched reconstruction.</p>
-        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/02_the_wavegram_and_long_signals.ipynb">open notebook</a> <span class="dep">requires pytsa</span></p>
+        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/02_the_wavegram_and_long_signals.ipynb">open notebook</a> <span class="dep">requires py4tsa</span></p>
       </li>
       <li>
         <span class="n">Notebook 3</span>
@@ -644,7 +644,7 @@ python -c "import pytsa; print(pytsa.__file__)"</pre>
         <span class="n">Notebook 4</span>
         <h3>Reconstruction across blocks, and the phase</h3>
         <p>A chirp longer than the analysis window, reassembled from the coefficients of every block it touched. Why the weight that joins two blocks has to vanish at their edges, and why the case for it is made on the phase and not on the amplitude &mdash; an average agrees while a phase walks.</p>
-        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/04_reconstruction_and_phase.ipynb">open notebook</a> <span class="dep">requires pytsa</span></p>
+        <p class="links"><a href="https://github.com/elenacuoco/wdflow/blob/master/tutorials/04_reconstruction_and_phase.ipynb">open notebook</a> <span class="dep">requires py4tsa</span></p>
       </li>
     </ol>
   </section>

@@ -21,14 +21,14 @@ extensions = [
 ]
 
 # The tutorials are committed with their outputs, and executing them here would
-# need pytsa, which Read the Docs does not build.
+# need py4tsa, which Read the Docs does not build.
 nb_execution_mode = "off"
 
-# wdf.processes/wdf.observers need the compiled p4TSA/pytsa core, and
+# wdf.processes/wdf.observers need the compiled p4TSA/py4tsa core, and
 # wdf.analysis.gnn imports torch/torch_geometric at module level; RTD's build
 # environment doesn't need any of these actually installed to document the
 # API -- autodoc just needs the imports to not fail.
-autodoc_mock_imports = ["pytsa", "torch", "torch_geometric", "pycbc", "gwpy"]
+autodoc_mock_imports = ["py4tsa", "torch", "torch_geometric", "pycbc", "gwpy"]
 
 autodoc_default_options = {
     "members": True,

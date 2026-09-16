@@ -20,7 +20,7 @@ __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 __status__ = "Development"
 
-from pytsa.tsa import SeqView_double_t as SV
+from py4tsa.tsa import SeqView_double_t as SV
 import logging
 import numpy as np
 

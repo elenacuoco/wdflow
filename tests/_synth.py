@@ -12,8 +12,8 @@ def forward(samples, wave):
     # Imported here rather than at module scope so that the generators below,
     # which fabricate trigger tables and need nothing compiled, stay usable
     # without it. A caller that does need the transform is skipped, not failed.
-    pytest.importorskip("pytsa")
-    from pytsa.tsa import WaveletTransform
+    pytest.importorskip("py4tsa")
+    from py4tsa.tsa import WaveletTransform
     from wdf.structures.array2SeqView import array2SeqView
 
     view = array2SeqView(0.0, 1.0, len(samples))

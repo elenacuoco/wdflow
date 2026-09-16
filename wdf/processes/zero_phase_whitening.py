@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pytsa.tsa import DoubleWhitening, LatticeView
+from py4tsa.tsa import DoubleWhitening, LatticeView
 
 DEFAULT_SQRT_ORDER = 256
 DEFAULT_GRID = 1 << 15
@@ -116,7 +116,7 @@ def sqrt_lattice_view(ar, order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID):
     :param order: order of the fitted square-root model.
     :type grid: int
     :param grid: FFT length the response is evaluated on.
-    :return: pytsa.tsa.LatticeView -- reflection coefficients of the
+    :return: py4tsa.tsa.LatticeView -- reflection coefficients of the
         square-root filter.
     """
     _, error, reflection = sqrt_ar_polynomial(ar, order=order, grid=grid)
@@ -194,9 +194,9 @@ class ZeroPhaseWhitening(object):
     def Process(self, data, dataw):
         """Whiten one chunk, blocking until a full output block is available.
 
-        :type data: pytsa.tsa.SeqView_double_t
+        :type data: py4tsa.tsa.SeqView_double_t
         :param data: input chunk, band-passed and decimated.
-        :type dataw: pytsa.tsa.SeqView_double_t
+        :type dataw: py4tsa.tsa.SeqView_double_t
         :param dataw: output sequence view, filled in place.
         :return: None
         """
@@ -205,7 +205,7 @@ class ZeroPhaseWhitening(object):
     def Input(self, data):
         """Feed one chunk in without reading output.
 
-        :type data: pytsa.tsa.SeqView_double_t
+        :type data: py4tsa.tsa.SeqView_double_t
         :param data: input chunk.
         :return: None
         """
@@ -214,7 +214,7 @@ class ZeroPhaseWhitening(object):
     def Output(self, dataw):
         """Read whatever output is available.
 
-        :type dataw: pytsa.tsa.SeqView_double_t
+        :type dataw: py4tsa.tsa.SeqView_double_t
         :param dataw: output sequence view, filled in place.
         :return: None
         """

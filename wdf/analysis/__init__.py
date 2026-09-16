@@ -2,7 +2,7 @@
 GNN), background/false-alarm-probability and ROC analysis for WDF triggers.
 
 Operates on plain pandas DataFrames / saved trigger files -- no dependency on
-`wdf`'s own trigger-generation modules or on pytsa, so it works standalone.
+`wdf`'s own trigger-generation modules or on py4tsa, so it works standalone.
 """
 from wdf.analysis.clustering import (
     TriggerClusterer,

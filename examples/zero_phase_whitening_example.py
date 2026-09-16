@@ -14,7 +14,7 @@ import sys
 import numpy as np
 from scipy.signal import welch
 
-from pytsa.tsa import FrameIChannel, SeqView_double_t as SV
+from py4tsa.tsa import FrameIChannel, SeqView_double_t as SV
 from wdf.config.Parameters import Parameters
 from wdf.processes.BandPassDownSampling import BandPassDownSampling, SV_to_array
 from wdf.processes.Whitening import Whitening

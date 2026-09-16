@@ -19,7 +19,7 @@ def rules():
     """The rules for the coefficients of a window, each with the fixture that
     pins its output: the universal threshold, whose numbers are those of the
     method paper, and the block rule, the worker's default."""
-    from pytsa.tsa import WaveletThreshold
+    from py4tsa.tsa import WaveletThreshold
     return [
         pytest.param(WaveletThreshold.dohonojohnston, GOLDEN, id="universal"),
         pytest.param(WaveletThreshold.block, os.path.join(FIXTURES_DIR, "golden_triggers_block.parquet"), id="block"),

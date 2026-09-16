@@ -3,7 +3,7 @@ plain pandas DataFrame schema the rest of wdfLib operates on.
 
 Keeping this the only module that touches WDF-specific formats/types is what
 lets clustering.py / coincidence.py / significance.py / roc.py / gnn.py stay
-usable offline on already-saved trigger files, without a wdf/pytsa install.
+usable offline on already-saved trigger files, without a wdf/py4tsa install.
 """
 from __future__ import annotations
 

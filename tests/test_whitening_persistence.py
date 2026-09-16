@@ -10,7 +10,7 @@ import os
 import numpy as np
 import pytest
 
-pytest.importorskip("pytsa")
+pytest.importorskip("py4tsa")
 
 from wdf.structures.array2SeqView import array2SeqView
 from wdf.processes.Whitening import Whitening

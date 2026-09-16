@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-pytest.importorskip("pytsa")
+pytest.importorskip("py4tsa")
 
-from pytsa.tsa import WaveletTransform
+from py4tsa.tsa import WaveletTransform
 from wdf.analysis.coefficients import from_dense
 from wdf.analysis.metaparameters import META_FEATURES, meta_features
 from wdf.analysis.wavelets import (

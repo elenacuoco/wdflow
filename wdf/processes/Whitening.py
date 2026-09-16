@@ -11,21 +11,21 @@ square-root filter that removes the same colour without moving the transient in
 time, which is what the reconstruction needs.
 """
 __author__ = "Elena Cuoco"
-__project__ = "pytsa"
+__project__ = "py4tsa"
 
-from pytsa.tsa import ArBurgEstimator,LatticeView,LatticeFilter
+from py4tsa.tsa import ArBurgEstimator,LatticeView,LatticeFilter
 from wdf.processes.ar_lv_io import save_ar_burg, load_ar_burg, save_lattice_view, load_lattice_view
 
 
 class Whitening(object):
 
     """
-    This class is responsible for the communiction with whitening functions from pytsa
+    This class is responsible for the communiction with whitening functions from py4tsa
     """
 
     def __init__(self, ARorder):
         """
-        This class is responsible for the communiction with whitening functions from pytsa
+        This class is responsible for the communiction with whitening functions from py4tsa
 
         :type ARorder: int
         :param ARorder: The order for AutoRegressive filter
@@ -37,9 +37,9 @@ class Whitening(object):
 
     def ParametersEstimate(self, data):
         """
-        This method estimates parameters of data by calling proper methods from pytsa
+        This method estimates parameters of data by calling proper methods from py4tsa
 
-        :type data: pytsa.SeqViewDouble
+        :type data: py4tsa.SeqViewDouble
         :param data: The Sequence View object containing the data to be processed
         """
         self.ADE(data)
@@ -56,10 +56,10 @@ class Whitening(object):
 
     def Process(self, data, dataw):
         """
-        This method whitens the data by calling proper function from pytsa
+        This method whitens the data by calling proper function from py4tsa
 
-        :param data: pytsa.SeqViewDouble
-        :param dataw: pytsa.SeqViewDouble
+        :param data: py4tsa.SeqViewDouble
+        :param dataw: py4tsa.SeqViewDouble
         """
         self.LF(data, dataw)
         return 

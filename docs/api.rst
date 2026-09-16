@@ -2,10 +2,10 @@ API reference
 =============
 
 ``wdflow`` has two layers: trigger generation (``wdf.config``, ``wdf.processes``,
-``wdf.observers``, ``wdf.structures`` -- needs the compiled ``pytsa``/p4TSA core) and downstream
+``wdf.observers``, ``wdf.structures`` -- needs the compiled ``py4tsa``/p4TSA core) and downstream
 trigger analysis (``wdf.analysis`` -- clustering, multi-detector coincidence,
 background/false-alarm-probability, and ROC analysis; works standalone on already-saved trigger
-files, no ``pytsa`` required). Each module below is documented from its own docstrings.
+files, no ``py4tsa`` required). Each module below is documented from its own docstrings.
 
 Trigger generation
 -------------------

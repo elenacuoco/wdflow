@@ -35,7 +35,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       # test_golden_output, test_reconstruction and test_zero_phase_whitening
-      # drive the real trigger generation and so need pytsa; test_gnn needs
+      # drive the real trigger generation and so need py4tsa; test_gnn needs
       # torch_geometric and test_mock_dataset needs pycbc. The `pipeline` job
       # below covers the first three.
       - name: Run the tests that need no compiled core
@@ -48,7 +48,7 @@ jobs:
             --ignore=tests/test_mock_dataset.py
 
   # The full suite, with p4TSA built from source. p4TSA has no PyPI
-  # distribution (FrameL has no wheel) and the `pytsa` name on PyPI belongs to
+  # distribution (FrameL has no wheel) and the `py4tsa` name on PyPI belongs to
   # an unrelated project, so it is built here from its own repository with the
   # dependency set its conda recipe declares.
   pipeline:
@@ -98,7 +98,7 @@ jobs:
 
       - name: Import smoke test
         shell: bash -el {0}
-        run: python -c "import pytsa, wdf; print(pytsa.__file__); print(wdf.__file__)"
+        run: python -c "import py4tsa, wdf; print(py4tsa.__file__); print(wdf.__file__)"
 
       # test_gnn needs torch_geometric and test_mock_dataset needs pycbc;
       # both are heavy for a gate that already covers the pipeline end to end.

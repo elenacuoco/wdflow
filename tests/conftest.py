@@ -33,12 +33,12 @@ def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None):
     golden-output regression test and the len-equivalence test.
 
     :param rule: the rule for the coefficients of a window, a
-        `pytsa.tsa.WaveletThreshold.WaveletThresholding`; None for the
+        `py4tsa.tsa.WaveletThreshold.WaveletThresholding`; None for the
         worker's default.
     """
     from wdf.config.Parameters import Parameters
     from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
-    from pytsa.tsa import FrameIChannel, SeqView_double_t as SV
+    from py4tsa.tsa import FrameIChannel, SeqView_double_t as SV
 
     cfg = dict(TEST_PARAMS)
     cfg.update(file=NOISE_GWF, segments=[[GPS0, GPS0 + 90.0]], outdir=tmp_outdir, dir=tmp_outdir,

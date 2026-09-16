@@ -16,7 +16,7 @@ that is exactly the pair the graph builder is given.
 
 The triggers are what the search wrote, with their surviving coefficients and
 the noise scale of the block they came from, so the store is self-contained: a
-reader needs neither the frames nor `pytsa`.
+reader needs neither the frames nor `py4tsa`.
 """
 from __future__ import annotations
 
