@@ -11,7 +11,7 @@ dependencies:
   - pip
 
   # Building p4TSA
-  - cmake>=3.15
+  - cmake>=3.28
   - make
   - cxx-compiler
   - scikit-build-core>=0.10

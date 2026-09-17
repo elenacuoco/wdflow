@@ -752,7 +752,9 @@ def band_limit(
     :return: numpy.ndarray -- the band-limited pulse, beginning and ending at
         zero.
     """
-    from scipy.signal import butter, sosfiltfilt
+    from scipy.signal import butter
+
+    from wdf.filtering import sosfiltfilt
 
     x = np.asarray(strain, dtype=float).reshape(-1)
     if x.size < 3:

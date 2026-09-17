@@ -251,7 +251,9 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
     :raises ValueError: if the file does not hold at least three columns, or
         holds fewer than two rows, or its time column does not increase.
     """
-    from scipy.signal import butter, sosfiltfilt
+    from scipy.signal import butter
+
+    from wdf.filtering import sosfiltfilt
 
     table = np.loadtxt(path)
     if table.ndim != 2 or table.shape[1] < 3 or table.shape[0] < 2:

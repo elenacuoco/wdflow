@@ -3,7 +3,7 @@ anti-alias that stops what would otherwise fold back into the analysed band."""
 import numpy as np
 import pytest
 from types import SimpleNamespace
-from scipy.signal import sosfiltfilt
+from wdf.filtering import sosfiltfilt
 
 # The conditioning stage is built on the compiled core.
 pytest.importorskip("py4tsa")
