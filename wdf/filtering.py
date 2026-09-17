@@ -10,8 +10,7 @@ from scipy.signal import sosfilt
 def sosfilt_zi(sos):
     """Initial conditions for `sos` at the steady state of a unit step.
 
-    The computation scipy's own `sosfilt_zi` did up to 1.17; 1.18 rewrote it,
-    moving the filtered data in their last bits.
+    The computation scipy's own `sosfilt_zi` does up to 1.17.
 
     :type sos: numpy.ndarray
     :param sos: second-order sections, shape (n_sections, 6).

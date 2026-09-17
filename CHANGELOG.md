@@ -5,24 +5,19 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
-### The triggers no longer depend on the installed scipy
+### The triggers do not depend on the installed scipy
 
-scipy 1.18 rewrote how `sosfiltfilt` computes its initial conditions, moving
-the band-passed data by a few parts in 1e10 -- enough to shift the triggers a
-golden reference pins. The zero-phase filtering now lives in `wdf.filtering`,
-which does that computation itself and matches scipy 1.17 bit for bit, so the
-triggers are what they were on every scipy version and the references are
+The zero-phase filtering lives in `wdf.filtering`, which reproduces scipy
+1.17's `sosfiltfilt` bit for bit and so gives the same conditioned data under
+any scipy, 1.18 included. The triggers and the golden references are
 unchanged. The mock data generators use the same function.
 
 ### The compiled core is imported as `py4tsa`, not `pytsa`
 
-p4TSA renamed its Python module: the old name belongs to an unrelated project
-on PyPI, a decorator library, which owns that import namespace and would
-shadow the compiled core for anyone holding both. Every `from pytsa.tsa
-import ...` in `wdf.processes`, `wdf.observers` and `wdf.structures` is now
-`from py4tsa.tsa import ...`, and code of your own that imports the core
-directly has to follow. `wdf.analysis` is unaffected: it never needed the core
-to begin with. Requires p4TSA built from a revision that carries the rename.
+Every `from pytsa.tsa import ...` in `wdf.processes`, `wdf.observers` and
+`wdf.structures` is now `from py4tsa.tsa import ...`; code that imports the
+core directly has to follow. `wdf.analysis` is unaffected. Requires p4TSA
+3.1.0 or later.
 
 ### The block rule is the default for the coefficients of a window
 

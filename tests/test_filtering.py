@@ -1,8 +1,7 @@
 """wdf.filtering against reference arrays, bit for bit.
 
-The references come from scipy 1.17, the version the golden outputs were made
-with; see fixtures/make_sosfiltfilt_reference.py. A failure here means the
-conditioned data, and so the triggers, have moved.
+The references are written with scipy 1.17 -- see
+fixtures/make_sosfiltfilt_reference.py.
 """
 import os
 
