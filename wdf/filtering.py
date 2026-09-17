@@ -1,7 +1,7 @@
-"""Zero-phase filtering whose output does not depend on the scipy version.
+"""Zero-phase filtering, with the same result on every scipy version.
 
-Kept apart from `wdf.processes` so that `wdf.mock` can use it without the
-compiled core.
+Apart from `wdf.processes` so that `wdf.mock` can use it without the compiled
+core.
 """
 import numpy as np
 from scipy.signal import sosfilt
@@ -10,12 +10,8 @@ from scipy.signal import sosfilt
 def sosfilt_zi(sos):
     """Initial conditions for `sos` at the steady state of a unit step.
 
-    scipy's own `sosfilt_zi` gave these until 1.17; 1.18 rewrote the solver
-    underneath it, and the zero-phase filtering below moved in its last bits --
-    a few parts in 1e10, but enough to shift every trigger a golden reference
-    pins, and to do so according to which scipy happens to be installed. This
-    is the computation scipy used up to 1.17, done here so the conditioned data
-    no longer depend on the scipy version. `sosfilt` itself did not change.
+    The computation scipy's own `sosfilt_zi` did up to 1.17; 1.18 rewrote it,
+    moving the filtered data in their last bits.
 
     :type sos: numpy.ndarray
     :param sos: second-order sections, shape (n_sections, 6).
@@ -33,18 +29,16 @@ def sosfilt_zi(sos):
         companion[1, 0] = 1
         zi[k, ...] = scale * np.linalg.solve(np.eye(2) - companion.T,
                                              bn[1:] - an[1:] * bn[0])
-        # b.sum()/a.sum() is the section's gain at DC, the level its step
-        # response settles to, which the next section starts from.
+        # The section's gain at DC: where its step response settles, and so
+        # where the next section starts from.
         scale *= np.sum(b) / np.sum(a)
     return zi
 
 
 def sosfiltfilt(sos, x, padlen=None):
-    """Zero-phase filtering of a 1-D array, as scipy's `sosfiltfilt` does it.
-
-    Same padding (odd extension, by default three times the filter's tap count
-    at each end), same initial conditions, same forward-backward passes; only
-    the initial conditions come from `sosfilt_zi` above instead of scipy's.
+    """Zero-phase filtering of a 1-D array, as scipy's `sosfiltfilt` does it:
+    odd extension at both ends, then a forward and a backward pass, with the
+    initial conditions from `sosfilt_zi` above.
 
     :type sos: numpy.ndarray
     :param sos: second-order sections, shape (n_sections, 6).

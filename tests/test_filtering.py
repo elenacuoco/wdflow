@@ -1,11 +1,8 @@
-"""wdf.filtering reproduces scipy 1.17's zero-phase filtering exactly.
+"""wdf.filtering against reference arrays, bit for bit.
 
-scipy 1.18 changed how sosfiltfilt computes its initial conditions, and the
-conditioned data moved by a few parts in 1e10 -- enough to shift the golden
-triggers, and to make them depend on which scipy is installed. wdf.filtering
-does that computation itself. These tests hold it to the numbers scipy 1.17
-gave, bit for bit, whatever scipy is present now: if they fail, the triggers
-the pipeline emits have changed.
+The references come from scipy 1.17, the version the golden outputs were made
+with; see fixtures/make_sosfiltfilt_reference.py. A failure here means the
+conditioned data, and so the triggers, have moved.
 """
 import os
 
@@ -26,13 +23,13 @@ def ref():
 
 
 @pytest.mark.parametrize("name", FILTERS)
-def test_the_initial_conditions_are_scipy_117s(ref, name):
+def test_the_initial_conditions_match(ref, name):
     assert np.array_equal(sosfilt_zi(ref[f"{name}_sos"]), ref[f"{name}_zi"])
 
 
 @pytest.mark.parametrize("name", FILTERS)
 @pytest.mark.parametrize("padlen, key", [(None, "y"), (0, "y_pad0"), (50, "y_pad50")])
-def test_the_filtered_data_are_scipy_117s(ref, name, padlen, key):
+def test_the_filtered_data_match(ref, name, padlen, key):
     y = sosfiltfilt(ref[f"{name}_sos"], ref["x"], padlen=padlen)
     assert np.array_equal(y, ref[f"{name}_{key}"])
 
