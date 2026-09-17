@@ -184,14 +184,13 @@ pip install -e ".[all]"
 
 ### The compiled core
 
-Trigger generation needs p4TSA, imported as `py4tsa`. (The module was called
-`pytsa` until p4TSA renamed it, to stop colliding with an unrelated project of
-that name on PyPI — change any `import pytsa` you still have.) It is
-deliberately **not** declared as a dependency of any extra: p4TSA has no PyPI
-distribution — FrameL has no wheel — so the declaration could not resolve.
-Build it from [p4TSA](https://github.com/elenacuoco/p4TSA) instead, with its conda recipe or
-`pip install .` from a checkout. p4TSA in turn needs GSL, FFTW3, FrameL, the
-Boost.uBLAS headers and the Cereal headers, all on conda-forge.
+Trigger generation needs p4TSA, imported as `py4tsa`. The module used to be
+called `pytsa`, a name that on PyPI belongs to an unrelated project, so change
+any `import pytsa` to `import py4tsa`. It is not declared as a dependency of
+any extra: install it from [p4TSA](https://github.com/elenacuoco/p4TSA), with
+its conda recipe or `pip install .` from a checkout. p4TSA in turn needs GSL,
+FFTW3, FrameL, the Boost.uBLAS headers and the Cereal headers, all on
+conda-forge.
 
 If `import py4tsa` behaves oddly, check what you actually have:
 
