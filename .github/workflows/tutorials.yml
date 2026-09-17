@@ -1,10 +1,8 @@
 name: tutorials
 
-# Executes the notebooks, which nothing else does: the docs render them from
-# their committed outputs, so a tutorial can call an API that no longer exists
-# and stay green for months. It runs weekly rather than per push because it
-# needs p4TSA compiled, and a notebook breaks when the library moves under it
-# rather than when someone edits the notebook.
+# Executes the notebooks: the docs render them from their committed outputs,
+# so nothing else runs them. Weekly rather than per push -- it needs the
+# compiled core, and what breaks a notebook is usually a change elsewhere.
 
 on:
   schedule:
@@ -56,8 +54,8 @@ jobs:
         shell: bash -el {0}
         run: pip install -e ".[pipeline,tutorials,mock]"
 
-      # No --allow-errors and no --inplace: a cell that raises fails the run,
-      # which is the point, and the committed outputs are left alone.
+      # No --allow-errors, so a cell that raises fails the run; no --inplace,
+      # so the committed outputs are left alone.
       - name: Execute every notebook
         shell: bash -el {0}
         env:
