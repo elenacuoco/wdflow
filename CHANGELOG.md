@@ -5,6 +5,17 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The triggers no longer depend on the installed scipy
+
+scipy 1.18 rewrote how `sosfiltfilt` computes its initial conditions, and the
+band-passed data moved by a few parts in 1e10: enough to shift the triggers a
+golden reference pins, so that a fresh install on Python 3.12 or later, which
+gets scipy 1.18, failed the golden-output test that the CI, on Python 3.11 and
+scipy 1.17, still passed. The zero-phase filtering now lives in
+`wdf.filtering` and computes those conditions itself, the way scipy did up to
+1.17, bit for bit. The triggers are what they were, on every scipy; the
+references are unchanged. The mock data generators use the same function.
+
 ### The compiled core is imported as `py4tsa`, not `pytsa`
 
 p4TSA renamed its Python module: the old name belongs to an unrelated project

@@ -16,7 +16,10 @@ __project__ = "wdf"
 import logging
 from wdf.structures.array2SeqView import *
 import numpy as np
-from scipy.signal import cheby2, sosfilt, sosfiltfilt
+from scipy.signal import cheby2, sosfilt
+
+from wdf.filtering import sosfiltfilt
+
 
 def SV_to_array(seqView):
     """Copies a py4tsa SeqView's single channel into a plain numpy array.

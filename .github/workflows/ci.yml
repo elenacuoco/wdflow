@@ -50,6 +50,10 @@ jobs:
   # The full suite, with p4TSA built from source: it has no PyPI distribution,
   # because FrameL has no wheel there. So it is built here from its own
   # repository, with the dependency set its conda recipe declares.
+  #
+  # Python 3.12, not older: the newest scipy needs it, and the golden outputs
+  # have to hold against the scipy a fresh install gets. On 3.11 this job was
+  # handed scipy 1.17 and missed that 1.18 had moved the triggers.
   pipeline:
     name: Full suite (p4TSA built from source)
     runs-on: ubuntu-latest
@@ -70,10 +74,10 @@ jobs:
           init-shell: bash
           create-args: >-
             -c conda-forge
-            python=3.11
+            python=3.12
             pip
             cxx-compiler
-            cmake>=3.15
+            cmake>=3.28
             make
             scikit-build-core>=0.10
             pybind11>=2.12
