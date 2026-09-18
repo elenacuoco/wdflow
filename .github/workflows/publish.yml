@@ -1,0 +1,74 @@
+name: publish
+
+# Builds the sdist and the wheel and puts them on PyPI. wdflow is pure Python,
+# so one wheel serves every platform; the compiled core it depends on,
+# py4tsa, publishes its own from p4TSA.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to PyPI when the build passes"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  # The wheel installed where it will be used, with the compiled core from the
+  # index, and the suite run against it.
+  verify:
+    name: Install the wheel and run the suite
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install it
+        run: |
+          pip install "$(ls dist/*.whl)[pipeline]" pytest
+          python -c "import py4tsa, wdf.analysis, wdf.processes.wdfUnitDSWorker"
+
+      - name: Run the suite against the installed package
+        run: |
+          pytest tests -q \
+            --ignore=tests/test_gnn.py \
+            --ignore=tests/test_mock_dataset.py
+
+  # An upload cannot be taken back, so the `pypi` environment holds the run
+  # for a human whatever triggered it.
+  publish:
+    name: Publish
+    needs: [build, verify]
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write          # trusted publishing; no token is stored here
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
