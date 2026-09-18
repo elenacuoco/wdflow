@@ -581,16 +581,13 @@
       <div class="prose">
         <p class="label">Getting started</p>
         <h2>Installation</h2>
-        <p>The analysis layer — clustering, coincidence, background, ROC — runs on saved trigger files and needs nothing compiled. <code>wdflow</code> is not on an index, so it installs from a checkout, and everything it depends on comes from PyPI:</p>
-        <pre>git clone https://github.com/elenacuoco/wdflow
-cd wdflow
-pip install -e ".[all]"</pre>
-        <p>Trigger generation additionally needs p4TSA, whose Python module is <code>py4tsa</code> — it used to be called <code>pytsa</code>, a name that on PyPI belongs to an unrelated project. The <code>pipeline</code> group installs it from PyPI; <code>all</code> includes it:</p>
-        <pre>pip install -e ".[pipeline]"
-
-<span class="c"># confirm you got the compiled module</span>
+        <p>The analysis layer — clustering, coincidence, background, ROC — runs on saved trigger files and needs nothing compiled, so it installs on its own; the <code>pipeline</code> group adds trigger generation:</p>
+        <pre>pip install "wdflow[pipeline]"   <span class="c"># trigger generation and analysis</span>
+pip install wdflow               <span class="c"># the analysis layer alone</span></pre>
+        <p>The core that trigger generation runs on is p4TSA, whose Python module is <code>py4tsa</code> — it used to be called <code>pytsa</code>, a name that on PyPI belongs to an unrelated project. Its wheels are for Linux x86_64, Python 3.10 to 3.14, with GSL, FFTW3 and FrameL inside:</p>
+        <pre><span class="c"># confirm you got the compiled module</span>
 python -c "import py4tsa; print(py4tsa.__file__)"</pre>
-        <p>Its wheels are for Linux x86_64, Python 3.10 to 3.13, with GSL, FFTW3 and FrameL inside. Elsewhere pip builds it from source, which needs those libraries plus the Boost.uBLAS and Cereal headers, all on conda-forge.</p>
+        <p>Elsewhere pip builds it from source, which needs those libraries plus the Boost.uBLAS and Cereal headers, all on conda-forge.</p>
       </div>
       <div class="prose">
         <p class="label">Dependencies</p>
