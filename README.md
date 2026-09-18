@@ -1,5 +1,6 @@
 # wdflow
 
+[![PyPI](https://img.shields.io/pypi/v/wdflow.svg)](https://pypi.org/project/wdflow/)
 [![Documentation](https://readthedocs.org/projects/wdflow/badge/?version=latest)](https://wdflow.readthedocs.io/en/latest/)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22025594-blue.svg)](https://doi.org/10.5281/zenodo.22025594)
 
@@ -141,8 +142,14 @@ no data set to download, no frame file to point at:
 
 ### Requirements
 
-Python 3.10 or newer. `wdflow` is not on an index: it installs from a checkout
-of this repository, and everything it depends on comes from PyPI.
+Python 3.10 or newer.
+
+```bash
+pip install "wdflow[pipeline]"      # trigger generation and the analysis layer
+pip install wdflow                  # the analysis layer alone
+```
+
+From a checkout, for working on it:
 
 ```bash
 git clone https://github.com/elenacuoco/wdflow
@@ -161,7 +168,7 @@ pip install -e ".[all]"
 | `scikit-learn >= 1.2` | DBSCAN, in `TriggerClusterer` |
 | `matplotlib >= 3.7` | the report figures |
 
-**Optional groups**, each installed with `pip install -e ".[name]"`:
+**Optional groups**, each installed with `pip install "wdflow[name]"`:
 
 | Group | Packages | Needed for |
 |-------|----------|------------|
@@ -187,7 +194,7 @@ as `py4tsa`, which the `pipeline` group installs from PyPI. The module used to
 be called `pytsa`, a name that on PyPI belongs to an unrelated project, so
 change any `import pytsa` to `import py4tsa`.
 
-The wheels are for Linux x86_64, CPython 3.10 to 3.13, and carry GSL, FFTW3
+The wheels are for Linux x86_64, CPython 3.10 to 3.14, and carry GSL, FFTW3
 and FrameL inside them. Elsewhere pip builds p4TSA from source, which needs
 GSL, FFTW3, FrameL, the Boost.uBLAS headers and the Cereal headers, all on
 conda-forge.
