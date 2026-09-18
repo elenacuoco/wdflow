@@ -1,8 +1,8 @@
 name: tutorials
 
 # Executes the notebooks: the docs render them from their committed outputs,
-# so nothing else runs them. Weekly rather than per push -- it needs the
-# compiled core, and what breaks a notebook is usually a change elsewhere.
+# so nothing else runs them. Weekly rather than per push: what breaks a
+# notebook is usually a change elsewhere.
 
 on:
   schedule:
@@ -16,48 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check out p4TSA
-        uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
-          repository: elenacuoco/p4TSA
-          path: p4TSA
-
-      - name: Set up build environment
-        uses: mamba-org/setup-micromamba@v3
-        with:
-          micromamba-version: latest
-          environment-name: wdflow-tutorials
-          init-shell: bash
-          create-args: >-
-            -c conda-forge
-            python=3.12
-            pip
-            cxx-compiler
-            cmake>=3.28
-            make
-            scikit-build-core>=0.10
-            pybind11>=2.12
-            numpy
-            scipy
-            gsl
-            fftw
-            framel
-            libboost-headers
-            cereal
-
-      - name: Build and install p4TSA
-        shell: bash -el {0}
-        working-directory: p4TSA
-        run: pip install . --no-build-isolation -v
+          python-version: "3.12"
+          cache: pip
 
       - name: Install wdflow
-        shell: bash -el {0}
         run: pip install -e ".[pipeline,tutorials,mock]"
 
       # No --allow-errors, so a cell that raises fails the run; no --inplace,
       # so the committed outputs are left alone.
       - name: Execute every notebook
-        shell: bash -el {0}
         env:
           MPLBACKEND: Agg
         run: jupyter execute --timeout=900 tutorials/*.ipynb

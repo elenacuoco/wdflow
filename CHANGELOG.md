@@ -5,6 +5,19 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The compiled core comes from PyPI
+
+`pip install "wdflow[pipeline]"` installs `py4tsa` along with the rest: p4TSA
+publishes manylinux wheels, with GSL, FFTW3 and FrameL inside them, so nothing
+has to be built or fetched by hand for trigger generation. `wdf.analysis` is
+unchanged and still installs on its own.
+
+The CI job that built p4TSA from source through conda is now a plain pip
+install, and is named `Full suite`; a repository with the old name among its
+required status checks has to be updated. The Docker image drops conda for
+`python:3.12-slim`, and `docker/environment.yml` with it. The conda recipe
+requires `py4tsa >= 3.2`.
+
 ### The triggers do not depend on the installed scipy
 
 The zero-phase filtering lives in `wdf.filtering`, which reproduces scipy

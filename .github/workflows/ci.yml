@@ -12,10 +12,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The analysis layer works on saved trigger files and needs nothing compiled,
-  # so most of the suite runs in seconds on a plain pip install. Keeping it a
-  # separate job means a contributor touching wdf.analysis gets an answer
-  # without waiting for a C++ build.
+  # The analysis layer works on saved trigger files and needs nothing compiled:
+  # this job installs without the `pipeline` group, so it also checks that
+  # wdf.analysis still runs without py4tsa.
   analysis:
     name: Analysis layer (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -47,65 +46,29 @@ jobs:
             --ignore=tests/test_gnn.py \
             --ignore=tests/test_mock_dataset.py
 
-  # The full suite, with p4TSA built from source: it has no PyPI distribution,
-  # because FrameL has no wheel there. So it is built here from its own
-  # repository, with the dependency set its conda recipe declares.
-  #
-  # Python 3.12, so that the newest scipy is what the golden outputs are held
-  # against: older Pythons pin older scipy.
+  # The full suite, trigger generation included, with the compiled core from
+  # PyPI. Python 3.12, so that the newest scipy is what the golden outputs are
+  # held against: older Pythons pin older scipy.
   pipeline:
-    name: Full suite (p4TSA built from source)
+    name: Full suite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check out p4TSA
-        uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
-          repository: elenacuoco/p4TSA
-          path: p4TSA
+          python-version: "3.12"
+          cache: pip
 
-      - name: Set up build environment
-        uses: mamba-org/setup-micromamba@v3
-        with:
-          micromamba-version: latest
-          environment-name: wdflow-ci
-          init-shell: bash
-          create-args: >-
-            -c conda-forge
-            python=3.12
-            pip
-            cxx-compiler
-            cmake>=3.28
-            make
-            scikit-build-core>=0.10
-            pybind11>=2.12
-            numpy
-            scipy
-            gsl
-            fftw
-            framel
-            libboost-headers
-            cereal
-            pytest
-
-      - name: Build and install p4TSA
-        shell: bash -el {0}
-        working-directory: p4TSA
-        run: pip install . --no-build-isolation -v
-
-      - name: Install wdflow
-        shell: bash -el {0}
-        run: pip install -e ".[dev]"
+      - name: Install
+        run: pip install -e ".[pipeline,dev]"
 
       - name: Import smoke test
-        shell: bash -el {0}
         run: python -c "import py4tsa, wdf; print(py4tsa.__file__); print(wdf.__file__)"
 
       # test_gnn needs torch_geometric and test_mock_dataset needs pycbc;
       # both are heavy for a gate that already covers the pipeline end to end.
       - name: Run the full suite
-        shell: bash -el {0}
         run: |
           pytest tests -v \
             --ignore=tests/test_gnn.py \

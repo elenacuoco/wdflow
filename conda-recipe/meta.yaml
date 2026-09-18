@@ -21,7 +21,7 @@ requirements:
 
   run:
     - python >=3.10
-    - p4tsa
+    - py4tsa >=3.2
     - coloredlogs
     - numpy
     - scipy

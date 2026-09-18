@@ -142,8 +142,7 @@ no data set to download, no frame file to point at:
 ### Requirements
 
 Python 3.10 or newer. `wdflow` is not on an index: it installs from a checkout
-of this repository, and everything it depends on except the compiled core comes
-from PyPI.
+of this repository, and everything it depends on comes from PyPI.
 
 ```bash
 git clone https://github.com/elenacuoco/wdflow
@@ -168,28 +167,29 @@ pip install -e ".[all]"
 |-------|----------|------------|
 | `gnn` | `torch >= 2.1`, `torch_geometric >= 2.5` | `wdf.analysis.gnn` — the learned cross-detector coincidence |
 | `data` | `gwpy >= 3.0` | fetching public strain, e.g. from GWOSC |
-| `pipeline` | `coloredlogs` | trigger-generation logging |
+| `pipeline` | `py4tsa >= 3.2`, `coloredlogs` | `wdf.processes`, `wdf.observers` — trigger generation, and any wavelet transform |
 | `mock` | `pycbc` | `wdf.mock` — generating the simulated data sets: CBC injections, glitch morphologies, catalogue waveforms |
 | `tutorials` | `jupyter`, `nbclient`, `ipykernel` | running `tutorials/` |
 | `docs` | `sphinx >= 7`, `sphinx-rtd-theme >= 2`, `myst-nb >= 1` | building the documentation |
 | `dev` | `pytest >= 7` | the test suite |
 | `all` | all of the above | |
 
-**Not from an index:**
+**Not in any group:**
 
 | Requirement | Needed for | Where it comes from |
 |-------------|------------|---------------------|
-| `py4tsa` (p4TSA) | `wdf.processes`, `wdf.observers` — trigger generation, and any wavelet transform | built from [p4TSA](https://github.com/elenacuoco/p4TSA) |
 | a GWF backend for gwpy | reading frame files through gwpy | `pip install lalsuite`, or conda's `python-ldas-tools-framecpp` |
 
 ### The compiled core
 
-Trigger generation needs p4TSA, imported as `py4tsa`. The module used to be
-called `pytsa`, a name that on PyPI belongs to an unrelated project, so change
-any `import pytsa` to `import py4tsa`. It is not declared as a dependency of
-any extra: install it from [p4TSA](https://github.com/elenacuoco/p4TSA), with
-its conda recipe or `pip install .` from a checkout. p4TSA in turn needs GSL,
-FFTW3, FrameL, the Boost.uBLAS headers and the Cereal headers, all on
+Trigger generation needs [p4TSA](https://github.com/elenacuoco/p4TSA), imported
+as `py4tsa`, which the `pipeline` group installs from PyPI. The module used to
+be called `pytsa`, a name that on PyPI belongs to an unrelated project, so
+change any `import pytsa` to `import py4tsa`.
+
+The wheels are for Linux x86_64, CPython 3.10 to 3.13, and carry GSL, FFTW3
+and FrameL inside them. Elsewhere pip builds p4TSA from source, which needs
+GSL, FFTW3, FrameL, the Boost.uBLAS headers and the Cereal headers, all on
 conda-forge.
 
 If `import py4tsa` behaves oddly, check what you actually have:

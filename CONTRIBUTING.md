@@ -25,10 +25,10 @@ pytest tests \
   --ignore=tests/test_mock_dataset.py
 ```
 
-The three ignored pipeline tests drive real trigger generation and need
-[p4TSA](https://github.com/elenacuoco/p4TSA) built from source; CI runs them for
-you. `test_gnn.py` needs the `gnn` extra and `test_mock_dataset.py` needs
-`pycbc`.
+The three ignored pipeline tests drive real trigger generation and need the
+compiled core, `py4tsa`; `pip install -e ".[pipeline,dev]"` brings it in and
+lets them run. `test_gnn.py` needs the `gnn` extra and `test_mock_dataset.py`
+needs `pycbc`.
 
 ## What CI checks
 
@@ -37,7 +37,7 @@ Every pull request runs three jobs, all of which must pass:
 | Job | What it does |
 |-----|--------------|
 | `Analysis layer (Python 3.10 / 3.11 / 3.12)` | The analysis suite on a plain pip install, on every supported Python. |
-| `Full suite (p4TSA built from source)` | Builds the C++ core and runs trigger generation end to end, including the golden-output regression. |
+| `Full suite` | Installs the compiled core from PyPI and runs trigger generation end to end, including the golden-output regression. |
 | `Docs build check` | Sphinx with `-W`, so a documentation warning fails the build. |
 
 If you change trigger generation and the golden-output test fails, that is the
@@ -71,7 +71,7 @@ require a pull request before merging, and require these status checks to pass:
 Analysis layer (Python 3.10)
 Analysis layer (Python 3.11)
 Analysis layer (Python 3.12)
-Full suite (p4TSA built from source)
+Full suite
 Docs build check
 ```
 
@@ -88,7 +88,7 @@ gh api -X PUT repos/elenacuoco/wdflow/branches/master/protection \
   -F 'required_status_checks[contexts][]=Analysis layer (Python 3.10)' \
   -F 'required_status_checks[contexts][]=Analysis layer (Python 3.11)' \
   -F 'required_status_checks[contexts][]=Analysis layer (Python 3.12)' \
-  -F 'required_status_checks[contexts][]=Full suite (p4TSA built from source)' \
+  -F 'required_status_checks[contexts][]=Full suite' \
   -F 'required_status_checks[contexts][]=Docs build check' \
   -F enforce_admins=true \
   -F restrictions=
