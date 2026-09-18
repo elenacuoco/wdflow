@@ -1,9 +1,4 @@
-# wdflow, with p4TSA's compiled core built in.
-#
-# The core is built from source rather than installed from an index: p4TSA has
-# no PyPI distribution, because the frame-file library it reads GWF with has no
-# wheel there. So the image starts from conda-forge, which does carry framel,
-# and compiles the core against it.
+# wdflow with its compiled core, gwpy, pycbc and JupyterLab.
 #
 #   docker build -t wdflow .
 #   docker run --rm -it -p 8888:8888 -v "$PWD:/work" wdflow
@@ -12,7 +7,7 @@
 # doubles the image:
 #
 #   docker build -t wdflow --build-arg WITH_TORCH=1 .
-FROM mambaorg/micromamba:1.5.8
+FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="wdflow"
 LABEL org.opencontainers.image.description="WDF: un-modelled transient search in the wavelet domain"
@@ -20,45 +15,30 @@ LABEL org.opencontainers.image.source="https://github.com/elenacuoco/wdflow"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
 LABEL org.opencontainers.image.version="1.2.0"
 
-# Which p4TSA to build. A tag or a commit, not a branch: an image that builds a
-# different core depending on the day is not reproducible.
-ARG P4TSA_REF=v3.1.0
 ARG WITH_TORCH=0
 
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-USER $MAMBA_USER
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-COPY --chown=$MAMBA_USER:$MAMBA_USER docker/environment.yml /tmp/environment.yml
-RUN micromamba install -y -n base -f /tmp/environment.yml \
-    && micromamba clean --all --yes
+RUN useradd --create-home --uid 1000 wdf
 
-# Every RUN below needs the environment on the path.
-ARG MAMBA_DOCKERFILE_ACTIVATE=1
-
+# The CPU build of torch: the default one from PyPI carries CUDA, which an
+# image without a GPU never uses.
 RUN if [ "$WITH_TORCH" = "1" ]; then \
-        micromamba install -y -n base -c conda-forge \
-            "pytorch>=2.1" pytorch-cpu "torch-geometric>=2.5" \
-        && micromamba clean --all --yes ; \
+        pip install "torch>=2.1" --index-url https://download.pytorch.org/whl/cpu \
+        && pip install "torch_geometric>=2.5" ; \
     fi
 
-# The compiled core. Its own build isolation is off so that it builds against
-# the conda environment's gsl, fftw and framel rather than fetching its own.
-RUN git clone --depth 1 --branch "$P4TSA_REF" \
-        https://github.com/elenacuoco/p4TSA.git /tmp/p4TSA \
-    && pip install --no-build-isolation -v /tmp/p4TSA \
-    && rm -rf /tmp/p4TSA
+COPY . /src/wdflow
+RUN pip install "/src/wdflow[pipeline,data,mock,tutorials]" jupyterlab \
+    && rm -rf /src/wdflow
 
-COPY --chown=$MAMBA_USER:$MAMBA_USER . /src/wdflow
-RUN pip install --no-deps /src/wdflow
-
-# Fail the build rather than ship an image whose core does not import: a broken
-# py4tsa is invisible until the first run otherwise, and `wdf.analysis` works
-# without it, so an ordinary import proves nothing.
+# Fail the build rather than ship an image whose core does not import:
+# `wdf.analysis` works without it, so an ordinary import proves nothing.
 RUN python -c "import py4tsa.tsa, wdf.analysis, wdf.processes.wdfUnitDSWorker; \
 print('py4tsa and wdf import')"
 
+USER wdf
 WORKDIR /work
 EXPOSE 8888
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", \

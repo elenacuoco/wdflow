@@ -24,17 +24,15 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# `wdf.processes`/`wdf.observers` need p4TSA's compiled core, imported as
-# `py4tsa`, which is installed from https://github.com/elenacuoco/p4TSA rather
-# than declared here -- see README. `wdf.analysis` needs none of it.
-pipeline = ["coloredlogs"]
+# `wdf.processes`/`wdf.observers` need p4TSA's compiled core, `py4tsa`;
+# `wdf.analysis` needs none of it, so it is an extra rather than a dependency.
+pipeline = ["py4tsa>=3.2", "coloredlogs"]
 gnn = ["torch>=2.1", "torch_geometric>=2.5"]
 data = ["gwpy>=3.0"]
 dev = ["pytest>=7"]
 tutorials = ["jupyter", "nbclient", "ipykernel"]
 mock = ["pycbc"]
 docs = ["sphinx>=7", "sphinx-rtd-theme>=2", "myst-nb>=1"]
-# Everything except the compiled core, which cannot come from an index.
 all = ["wdflow[pipeline,gnn,data,dev,tutorials,mock,docs]"]
 
 [project.urls]

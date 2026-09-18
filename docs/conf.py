@@ -21,7 +21,7 @@ extensions = [
 ]
 
 # The tutorials are committed with their outputs, and executing them here would
-# need py4tsa, which Read the Docs does not build.
+# need py4tsa, which the docs build does not install.
 nb_execution_mode = "off"
 
 # wdf.processes/wdf.observers need the compiled p4TSA/py4tsa core, and
