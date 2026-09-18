@@ -1,0 +1,10 @@
+.git
+.github
+docs
+site
+tests
+tutorials
+examples
+conda-recipe
+**/__pycache__
+**/*.pyc

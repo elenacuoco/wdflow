@@ -13,7 +13,7 @@ LABEL org.opencontainers.image.title="wdflow"
 LABEL org.opencontainers.image.description="WDF: un-modelled transient search in the wavelet domain"
 LABEL org.opencontainers.image.source="https://github.com/elenacuoco/wdflow"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
-LABEL org.opencontainers.image.version="1.2.0"
+LABEL org.opencontainers.image.version="1.3.0"
 
 ARG WITH_TORCH=0
 
@@ -29,7 +29,10 @@ RUN if [ "$WITH_TORCH" = "1" ]; then \
         && pip install "torch_geometric>=2.5" ; \
     fi
 
-COPY . /src/wdflow
+# Only what the build reads, so the image carries no repository and no test
+# fixtures.
+COPY pyproject.toml README.md LICENSE /src/wdflow/
+COPY wdf /src/wdflow/wdf
 RUN pip install "/src/wdflow[pipeline,data,mock,tutorials]" jupyterlab \
     && rm -rf /src/wdflow
 

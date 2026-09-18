@@ -1,0 +1,41 @@
+name: docker
+
+# Builds the image and runs it. Nothing else does, so a Dockerfile that has
+# stopped working stays that way until someone needs the image.
+
+on:
+  push:
+    branches: [master]
+    paths: ["Dockerfile", ".dockerignore", "pyproject.toml"]
+  pull_request:
+    branches: [master]
+    paths: ["Dockerfile", ".dockerignore", "pyproject.toml"]
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build the image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The Dockerfile's own import check runs during the build, so a build
+      # that finishes is already a working core.
+      - name: Build
+        run: docker build -t wdflow:ci .
+
+      - name: Run it
+        run: |
+          docker run --rm wdflow:ci python -c "
+          import py4tsa.tsa, wdf.analysis, wdf.processes.wdfUnitDSWorker
+          import gwpy, pycbc
+          print('ok')"
+          docker run --rm wdflow:ci jupyter lab --version
+
+      - name: Size, and what is in it
+        run: |
+          docker image inspect wdflow:ci --format '{{.Size}}' \
+            | awk '{printf "image: %.2f GB\n", $1/1e9}'
+          docker run --rm wdflow:ci pip list
