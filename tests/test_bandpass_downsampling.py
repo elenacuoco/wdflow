@@ -189,6 +189,40 @@ def test_band_edges_that_cross_are_refused():
         BandPassDownSampling(parameters(low_cut=2000.0))
 
 
+def test_a_block_that_does_not_decimate_whole_is_refused():
+    """The decimation restarts at each block's first sample, so a block that
+    does not hold a whole number of decimated samples moves the phase of
+    everything after it. The stream carries no sign of it, so it is refused."""
+    filt = BandPassDownSampling(parameters())
+    samples = noise(6 * SAMPLING)
+    odd = SAMPLING + 1
+    with pytest.raises(ValueError, match="decimation phase"):
+        for first in range(0, len(samples) - odd + 1, odd):
+            filt.Process(_Block(samples[first:first + odd], first / SAMPLING))
+
+
+def test_the_phase_is_the_same_whatever_the_block_length():
+    """Two readings of one stretch, in blocks of different lengths: the joins
+    and the decimation phase are the only things that differ between them, so
+    the samples they emit for the same instants must agree to rounding."""
+    samples = noise(40 * SAMPLING, seed=5)
+    long_blocks, long_starts = stream(BandPassDownSampling(parameters()),
+                                      samples, block=4 * SAMPLING)
+    short_blocks, short_starts = stream(BandPassDownSampling(parameters()),
+                                        samples, block=3 * SAMPLING)
+    long_stream = np.concatenate(long_blocks)
+    short_stream = np.concatenate(short_blocks)
+
+    # Both start where their own first emitted block starts; align on time.
+    shift = int(round((short_starts[0] - long_starts[0]) * RESAMPLING))
+    n = min(len(long_stream) - max(shift, 0), len(short_stream) + min(shift, 0))
+    left = long_stream[max(shift, 0):max(shift, 0) + n]
+    right = short_stream[max(-shift, 0):max(-shift, 0) + n]
+
+    assert n > 10 * RESAMPLING
+    assert np.max(np.abs(left - right)) < 1e-6 * np.std(left)
+
+
 def test_the_estimation_branch_returns_the_block_it_was_given():
     """The autoregressive fit is handed one complete stretch and needs it back
     immediately; there is nothing to wait for."""

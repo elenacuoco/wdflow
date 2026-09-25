@@ -194,6 +194,21 @@ class BandPassDownSampling(object):
             return None
 
         block, block_start = self.pending.pop(0)
+        # The decimation below starts at this block's own first sample, so the
+        # phase it picks is the phase of the stream only while every block
+        # holds a whole number of decimated samples. A single block that does
+        # not shifts every sample after it by one sample of the input, which is
+        # a step at that join -- amplified by the whitening, whose gain at the
+        # band edges is large, into something indistinguishable from a burst --
+        # and a permanent timing bias thereafter. Nothing in the reader
+        # enforces it, so it is checked here rather than assumed.
+        if len(block) % self.ResamplingFactor:
+            raise ValueError(
+                f"a block of {len(block)} samples cannot be decimated by "
+                f"{self.ResamplingFactor} without moving the decimation phase "
+                f"of everything that follows it; read blocks whose length is a "
+                f"multiple of {self.ResamplingFactor} samples "
+                f"({self.ResamplingFactor / self.sampling:.6g} s)")
         lookahead = np.concatenate([s for s, _ in self.pending])[:self.padlen]
 
         joined = np.concatenate([self.history, block, lookahead])
