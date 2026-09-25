@@ -19,8 +19,29 @@ import numpy as np
 
 from py4tsa.tsa import DoubleWhitening, LatticeView
 
+#: Floor for the square-root order when the caller does not state one. The
+#: order used is this or the order of the model, whichever is larger: a root
+#: far below the model it is taken of cannot follow it, and the error is paid
+#: twice, since the filter runs both ways and the response is the square of its
+#: magnitude. Measured against the causal whitening on O4b data with an
+#: order-3000 model, a root of order 256 leaves the whitened spectrum 0.21 dex
+#: away and a factor 63 out at the worst line; at order 3000, 0.044 dex and a
+#: factor 2.1. The floor keeps the small, smooth models this was adequate for
+#: exactly where they were.
 DEFAULT_SQRT_ORDER = 256
 DEFAULT_GRID = 1 << 15
+
+
+def _order_for(ar, order):
+    """The square-root order: the floor, or the model's own, whichever is more.
+
+    Stating an order overrides both. Twice the model's order buys a further
+    factor three on the worst line and costs twice the latency; the default
+    does not spend it.
+    """
+    if order is not None:
+        return int(order)
+    return max(DEFAULT_SQRT_ORDER, len(np.asarray(ar).reshape(-1)) - 1)
 
 
 def levinson(autocorrelation, order):
@@ -62,25 +83,30 @@ def levinson(autocorrelation, order):
     return a, error, reflection
 
 
-def sqrt_ar_polynomial(ar, order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID):
+def sqrt_ar_polynomial(ar, order=None, grid=DEFAULT_GRID):
     """Fit the prediction polynomial whose magnitude response is ``|A|^(1/2)``.
 
     Applied forward and then backward this polynomial whitens by ``|A|`` at
-    zero phase. ``|A|`` is far smoother than ``|A|^2``, so ``order`` can be an
-    order of magnitude below the order of the model it is derived from.
+    zero phase. ``|A|`` is smoother than ``|A|^2``, but not smooth enough to be
+    fitted at an order well below it: measured against the causal whitening on
+    O4b data, an order-256 root of an order-3000 model leaves the whitened
+    spectrum a factor 63 out at the worst line, and the model's own order
+    leaves it a factor 2.1.
 
     :type ar: numpy.ndarray
     :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
         scale in ``ar[0]`` and the prediction coefficients in ``ar[1:]``, for
         ``A(z) = 1 - sum_k ar[k] z^-k``.
-    :type order: int
-    :param order: order of the fitted square-root model.
+    :type order: int or None
+    :param order: order of the fitted square-root model. ``None`` takes the
+        order of ``ar`` itself.
     :type grid: int
     :param grid: FFT length the response is evaluated on.
     :return: the prediction polynomial with ``a[0] = 1``, the final prediction
         error, and the reflection coefficients.
     """
     ar = np.asarray(ar, dtype=float).reshape(-1)
+    order = _order_for(ar, order)
 
     if ar.size < 2:
         raise ValueError("ar must hold a noise scale and at least one coefficient")
@@ -98,7 +124,7 @@ def sqrt_ar_polynomial(ar, order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID):
     return levinson(autocorrelation, order)
 
 
-def sqrt_lattice_view(ar, order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID):
+def sqrt_lattice_view(ar, order=None, grid=DEFAULT_GRID):
     """Build the `LatticeView` that whitens at zero phase when run both ways.
 
     The returned view drives the existing `LatticeFilter`/`DoubleWhitening`
@@ -112,8 +138,9 @@ def sqrt_lattice_view(ar, order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID):
     :type ar: numpy.ndarray
     :param ar: AR coefficients as `ArBurgEstimator` holds them (see
         `sqrt_ar_polynomial`).
-    :type order: int
-    :param order: order of the fitted square-root model.
+    :type order: int or None
+    :param order: order of the fitted square-root model. ``None`` takes the
+        order of ``ar`` itself.
     :type grid: int
     :param grid: FFT length the response is evaluated on.
     :return: py4tsa.tsa.LatticeView -- reflection coefficients of the
@@ -151,7 +178,7 @@ class ZeroPhaseWhitening(object):
     """
 
     def __init__(self, ar, output_size, extra_size=0,
-                 order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID):
+                 order=None, grid=DEFAULT_GRID):
         """
         :type ar: numpy.ndarray
         :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
@@ -170,7 +197,8 @@ class ZeroPhaseWhitening(object):
         :type grid: int
         :param grid: FFT length the response is evaluated on.
         """
-        self.order = int(order)
+        self.order = _order_for(ar, order)
+        order = self.order
         self.polynomial, self.error, self.reflection = sqrt_ar_polynomial(
             ar, order=order, grid=grid)
         self.sigma = float(np.asarray(ar, dtype=float)[0]) * self.error

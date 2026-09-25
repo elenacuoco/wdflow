@@ -151,8 +151,12 @@ class wdfUnitDSWorker(object):
 
             # Coefficients of the square-root model the zero-phase whitening
             # runs in both directions (see wdf.processes.zero_phase_whitening).
-            sqrt_order = int(getattr(self.par, "SqrtWhiteningOrder",
-                                     DEFAULT_SQRT_ORDER))
+            # Unset means the model's own order: a lower one costs accuracy
+            # twice over, since the response is the square of the filter's
+            # magnitude.
+            sqrt_order = getattr(self.par, "SqrtWhiteningOrder", None)
+            sqrt_order = (max(DEFAULT_SQRT_ORDER, self.par.ARorder)
+                          if sqrt_order is None else int(sqrt_order))
             self.par.SqrtWhiteningOrder = sqrt_order
             ar = np.array([whiten.ADE.GetAR(j)
                            for j in range(self.par.ARorder + 1)])

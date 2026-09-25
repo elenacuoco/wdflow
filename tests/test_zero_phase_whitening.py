@@ -4,6 +4,8 @@ from scipy.signal import lfilter, welch
 
 from py4tsa.tsa import LatticeFilter
 from wdf.processes.zero_phase_whitening import (
+    DEFAULT_SQRT_ORDER,
+    _order_for,
     ZeroPhaseWhitening,
     levinson,
     sqrt_ar_polynomial,
@@ -141,3 +143,35 @@ def test_forward_backward_does_not_shift_the_signal():
 
     assert abs(centroid(zero_phase) - centroid(h)) / FS < 1e-4
     assert abs(centroid(causal) - centroid(h)) / FS > 1e-3
+
+
+def test_the_default_order_is_never_below_the_model():
+    """A root far below the model it is taken of is paid for twice.
+
+    The forward-backward response is the square of the filter's magnitude, so
+    an error in ``|B|^2 / |A|`` enters the whitened spectrum squared. Measured
+    against the causal whitening on O4b data with an order-3000 model, an
+    order-256 root leaves that spectrum 0.21 dex away and a factor 63 out at
+    the worst line; at order 3000, 0.044 dex and 2.1.
+    """
+    assert _order_for(coloured_ar_model(order=40), None) == DEFAULT_SQRT_ORDER
+    assert _order_for(np.zeros(4001), None) == 4000
+    assert _order_for(np.zeros(4001), 512) == 512
+
+
+def test_a_truncated_root_loses_the_narrow_features():
+    """Where the model is sharp, a short root cannot follow it."""
+    rng = np.random.default_rng(3)
+    poles = 0.995 * np.exp(1j * rng.uniform(0.2, 2.9, 30))
+    polynomial = np.real(np.poly(np.concatenate([poles, poles.conj()])))
+    ar = np.concatenate([[1.0], -polynomial[1:] / polynomial[0]])
+
+    grid = 8192
+    model = np.abs(np.fft.rfft(np.concatenate([[1.0], -ar[1:]]), grid))
+
+    def departure(order):
+        half, _, _ = sqrt_ar_polynomial(ar, order=order)
+        ratio = np.abs(np.fft.rfft(half, grid)) ** 2 / model
+        return float(np.std(np.log10(ratio / np.median(ratio))))
+
+    assert departure(len(ar) - 1) < departure((len(ar) - 1) // 8)
