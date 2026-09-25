@@ -65,6 +65,31 @@ class wdfUnitDSWorker(object):
         self.par.resampling=parameters.sampling/parameters.ResamplingFactor
         self.par.len=parameters.len
            
+    def _learn_stretch(self, gpsStart, gpsEnd):
+        """The conditioned stretch a noise model is fitted on.
+
+        `AREstimationOffset` seconds into the segment, `learn` seconds long,
+        conditioned by the estimation front end -- the same stretch whichever
+        way the filter is then fitted, so that the two are comparable.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :return: py4tsa.tsa.SeqView_double_t -- the conditioned stretch.
+        """
+        offset = getattr(self.par, "AREstimationOffset",
+                         DEFAULT_AR_ESTIMATION_OFFSET_S)
+        if gpsEnd - gpsStart >= self.learn + offset:
+            gpsE = gpsStart + offset
+        else:
+            gpsE = gpsEnd - self.learn
+
+        stream = FrameIChannel(self.par.file, self.par.channel, self.learn, gpsE)
+        raw = SV()
+        stream.GetData(raw)
+        return BandPassDownSampling(self.par, estimation=True).Process(raw)
+
     def segmentProcess(self, segment, wavThresh=WaveletThreshold.block):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
@@ -126,24 +151,10 @@ class wdfUnitDSWorker(object):
                  
             else:
                 logging.info("Start AR parameter estimation")
-                offset = getattr(self.par, "AREstimationOffset",
-                                 DEFAULT_AR_ESTIMATION_OFFSET_S)
-                if gpsEnd - gpsStart >= self.learn + offset:
-                    gpsE = gpsStart + offset
-                else:
-                    gpsE = gpsEnd - self.learn
-                
-                strLearn = FrameIChannel(
-                    self.par.file, self.par.channel, self.learn, gpsE) 
-                Learn = SV()
-                Learn_DS = SV()
-                ds = BandPassDownSampling(self.par,estimation=True)
-                strLearn.GetData(Learn)
-                Learn_DS=ds.Process(Learn)
+                Learn_DS = self._learn_stretch(gpsStart, gpsEnd)
                 whiten.ParametersEstimate(Learn_DS)
                 whiten.ParametersSave(self.par.ARfile, self.par.LVfile)
-                
-                del Learn, ds, strLearn, Learn_DS
+                del Learn_DS
                 
             # sigma for the noise
             self.par.sigma = whiten.GetSigma()
@@ -156,6 +167,21 @@ class wdfUnitDSWorker(object):
             self.par.SqrtWhiteningOrder = sqrt_order
             ar = np.array([whiten.ADE.GetAR(j)
                            for j in range(self.par.ARorder + 1)])
+
+            # Which fit the whitening filter comes from. "burg" is the
+            # historical path and the default: the autoregressive model above,
+            # then its square root. "spectrum" fits the same filter straight to
+            # the measured spectrum of the same stretch, which is one fit
+            # instead of two and weighs its error in decibels across the band
+            # rather than in absolute power -- Burg has no incentive to fit an
+            # octave 60 dB below the one that carries the power, and on O4b
+            # strain it leaves the whitened spectrum a factor 2.9 low below
+            # 32 Hz. The autoregressive model is estimated and saved either
+            # way, so a run can be read back and compared against the other.
+            model = str(getattr(self.par, "WhiteningModel", "burg")).lower()
+            if model not in ("burg", "spectrum"):
+                raise ValueError(
+                    f"WhiteningModel is {model!r}; expected 'burg' or 'spectrum'")
             
             # update the self.parameters to be saved in local json file
             self.par.ID = ID
@@ -175,8 +201,20 @@ class wdfUnitDSWorker(object):
             data_ds = SV()
             dataw = SV()
             Noutdata = int(self.par.resampling)
-            whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order)
+            if model == "spectrum":
+                learn = self._learn_stretch(gpsStart, gpsEnd)
+                whitening = ZeroPhaseWhitening.from_spectrum(
+                    np.array([learn.GetY(0, i) for i in range(learn.GetSize())]),
+                    self.par.resampling, Noutdata, 0, order=sqrt_order,
+                    band=(self.par.LowFrequencyCut, 0.5 * self.par.resampling))
+                del learn
+                # The scale the search thresholds on is the scale of the stream
+                # it is given, and that stream is this filter's output.
+                self.par.sigma = whitening.sigma
+            else:
+                whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order)
             self.par.sigmaWhitened = whitening.sigma
+            logging.info("Whitening model: %s" % model)
             logging.info("Zero-phase whitening, square-root order %s, "
                          "latency %s samples" % (sqrt_order, whitening.latency))
             for i in range(100):
