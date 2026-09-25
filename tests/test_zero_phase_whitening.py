@@ -9,6 +9,7 @@ from wdf.processes.zero_phase_whitening import (
     ZeroPhaseWhitening,
     levinson,
     sqrt_ar_polynomial,
+    sqrt_polynomial_from_spectrum,
     sqrt_lattice_view,
 )
 from wdf.structures.array2SeqView import array2SeqView
@@ -175,3 +176,71 @@ def test_a_truncated_root_loses_the_narrow_features():
         return float(np.std(np.log10(ratio / np.median(ratio))))
 
     assert departure(len(ar) - 1) < departure((len(ar) - 1) // 8)
+
+def test_the_spectrum_is_held_flat_outside_the_band():
+    """What is outside the band is not fitted, it is held at the edge."""
+    from wdf.processes.zero_phase_whitening import held_outside
+
+    freq = np.linspace(0.0, 1024.0, 513)
+    psd = 1.0 + freq                      # rising, so the edges are distinct
+    held = held_outside(freq, psd, (100.0, 800.0))
+
+    inside = (freq >= 100.0) & (freq < 800.0)
+    assert np.allclose(held[inside], psd[inside])
+    assert np.all(held[freq < 100.0] == held[inside][0])
+    assert len(np.unique(held[freq >= 800.0])) == 1
+
+
+def test_the_spectral_fit_whitens_what_it_was_measured_on():
+    """The filter fitted to a measured spectrum flattens that spectrum.
+
+    Coloured noise, its own spectrum measured, the filter fitted to it and run
+    both ways: the result sits at the white level of a stream of standard
+    deviation `sigma`, which for a one-sided density is sigma sqrt(2/fs).
+    """
+    from scipy.signal import lfilter, welch
+    from wdf.processes.zero_phase_whitening import _both_ways
+
+    rng = np.random.default_rng(11)
+    coloured = lfilter([1.0], [1.0, -0.9, 0.2], rng.standard_normal(200000))
+    whitening = ZeroPhaseWhitening.from_spectrum(
+        coloured, FS, 2048, 0, order=256, grid=1 << 14, band=(8.0, FS / 2))
+
+    whitened = _both_ways(whitening.polynomial, coloured)[1000:-1000]
+    freq, power = welch(whitened, fs=FS, nperseg=8192)
+    white = np.sqrt(power) / (whitening.sigma * np.sqrt(2.0 / FS))
+    band = (freq >= 16.0) & (freq <= 0.45 * FS)
+
+    assert 0.9 < np.median(white[band]) < 1.1
+    assert np.std(np.log10(white[band])) < 0.05
+
+
+def test_the_two_fits_agree_where_the_model_is_a_good_one():
+    """Burg and the spectrum are two ways to the same filter.
+
+    On noise an autoregressive model describes well, the filter fitted to the
+    model and the filter fitted to the measured spectrum have the same
+    response to within the scatter of the spectral estimate. Where the model is
+    a poor one they part company, which is the reason the second path exists.
+    """
+    from scipy.signal import lfilter, welch
+
+    rng = np.random.default_rng(3)
+    coloured = lfilter([1.0], [1.0, -0.7], rng.standard_normal(200000))
+
+    order, grid, bins = 64, 1 << 14, 4096
+    ar = np.concatenate([[1.0], [0.7], np.zeros(order - 1)])
+    from_model, _, _ = sqrt_ar_polynomial(ar, order=order, grid=grid)
+
+    freq, psd = welch(coloured, fs=FS, nperseg=8192, average="median")
+    from_spectrum, _, _ = sqrt_polynomial_from_spectrum(
+        freq, psd, order, grid=grid, band=(8.0, FS / 2))
+
+    axis = np.fft.rfftfreq(bins, 1.0 / FS)
+    inband = (axis >= 32.0) & (axis <= 0.45 * FS)
+    ratio = (np.abs(np.fft.rfft(np.asarray(from_spectrum), bins))
+             / np.abs(np.fft.rfft(np.asarray(from_model), bins)))
+    ratio = ratio[inband] / np.median(ratio[inband])
+
+    assert np.std(np.log10(ratio)) < 0.05
+
