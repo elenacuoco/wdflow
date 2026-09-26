@@ -37,6 +37,8 @@ from wdf.analysis.ridge import (
     RIDGE_FEATURES,
     event_ridge,
     event_ridge_features,
+    ridge_members,
+    ridge_track,
 )
 from wdf.analysis.skymap import credible_area, localise, sky_grid
 from wdf.analysis.modes import (
@@ -103,6 +105,8 @@ __all__ = [
     "unclaimed_candidates",
     "event_ridge",
     "event_ridge_features",
+    "ridge_members",
+    "ridge_track",
     "RIDGE_FEATURES",
     "localise",
     "credible_area",

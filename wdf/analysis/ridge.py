@@ -93,17 +93,114 @@ def event_ridge(t_lo, t_hi, f_lo, f_hi, energy, n_bins: int = 32):
     return time, frequency, loudness
 
 
-def ridge_features(time, log_frequency, energy) -> dict:
+
+def ridge_track(time, log_frequency, bin_centres=None):
+    """The ridge's frequency in every bin, with the gaps filled in.
+
+    `event_ridge` leaves a bin no tile fell in as `nan`, which is the
+    measurement. A track, though, is one frequency per instant, and the
+    consumers that ask where the event is at a given time need a value in every
+    bin. This fills the holes by a straight line in log frequency between the
+    occupied bins on either side, and holds the nearest occupied value beyond
+    the first and the last of them.
+
+    Linear interpolation between neighbours and a hold outside them is the only
+    rule that reads the same forwards and backwards in time: reversing the bins
+    reverses the result. It carries no preferred sweep direction, no slope
+    prior and no smoothing length, so nothing about the shape of the source
+    enters here --- that stays with the descriptors.
+
+    Which bins were measured and which were filled is returned beside the
+    track, because a filled bin is not evidence and no statistic may count it
+    as one.
+
+    :param time: the ridge's times, as `event_ridge` returns them; unused for
+        the interpolation, which runs on `bin_centres`.
+    :param log_frequency: the ridge's frequencies, in nats of log frequency,
+        `nan` in the bins no tile fell in.
+    :param bin_centres: the time each bin stands for, or None to interpolate
+        against the bin index. The bins of `event_ridge` are uniform in time,
+        so the two give the same track; pass the centres when the track is to
+        be read at absolute times.
+    :return: tuple -- `(track, measured)`, one entry per bin. `track` is the
+        gap-filled log frequency, `nan` only when no bin at all was occupied;
+        `measured` is True where a tile was actually found and False where the
+        value was filled in.
+    """
+    log_frequency = np.asarray(log_frequency, dtype=float).reshape(-1)
+    n = log_frequency.size
+    measured = np.isfinite(log_frequency)
+    x = (np.arange(n, dtype=float) if bin_centres is None
+         else np.asarray(bin_centres, dtype=float).reshape(-1))
+    if not measured.any() or x.size != n:
+        return np.full(n, np.nan), measured
+    track = np.interp(x, x[measured], log_frequency[measured])
+    return track, measured
+
+
+def ridge_members(t_lo, t_hi, f_lo, f_hi, track, times) -> np.ndarray:
+    """The tiles the track passes through.
+
+    A tile is a member when the track's frequency at the centre of its time
+    support falls inside that tile's own band. The band is the corridor: there
+    is no width to choose and no tolerance to tune, so the selection is fixed
+    by the tiling the search already uses and by nothing else.
+
+    The coarsest band starts at zero frequency, which has no logarithm; its
+    lower edge is read as half its upper edge, the convention
+    `wavelets.tile_frequency` owns and `pixel_graph.cluster_events` already
+    applies to the same edge.
+
+    The mask is over the tiles in the order they were given, which is what
+    `wdf.analysis.pixel_graph.cluster_events` takes as `labels` once it is cast
+    to an integer label per tile.
+
+    :param t_lo: start of each tile, seconds.
+    :param t_hi: end of each tile, seconds.
+    :param f_lo: lower band edge of each tile, Hz.
+    :param f_hi: upper band edge of each tile, Hz.
+    :param track: log frequency per bin, as `ridge_track` returns it.
+    :param times: the time each bin stands for, seconds.
+    :return: numpy.ndarray -- boolean, one entry per tile.
+    """
+    t_lo = np.asarray(t_lo, dtype=float).reshape(-1)
+    t_hi = np.asarray(t_hi, dtype=float).reshape(-1)
+    f_lo = np.asarray(f_lo, dtype=float).reshape(-1)
+    f_hi = np.asarray(f_hi, dtype=float).reshape(-1)
+    track = np.asarray(track, dtype=float).reshape(-1)
+    times = np.asarray(times, dtype=float).reshape(-1)
+
+    here = np.isfinite(track) & np.isfinite(times)
+    if t_lo.size == 0 or not here.any():
+        return np.zeros(t_lo.size, dtype=bool)
+
+    order = np.argsort(times[here], kind="mergesort")
+    abscissa, ordinate = times[here][order], track[here][order]
+    at = np.interp(0.5 * (t_lo + t_hi), abscissa, ordinate)
+
+    band_lo = np.where(f_lo > 0.0, f_lo, 0.5 * f_hi)
+    low = np.log(np.maximum(band_lo, EPS))
+    high = np.log(np.maximum(f_hi, EPS))
+    return (at >= low) & (at <= high)
+
+
+def ridge_features(time, log_frequency, energy, measured=None) -> dict:
     """How much of a track the ridge is, and how it moves.
 
     :param time: the ridge's times, as `event_ridge` returns them.
     :param log_frequency: its frequencies, in nats of log frequency.
     :param energy: the energy of the tile chosen in each bin.
+    :param measured: boolean per bin saying which bins hold a tile that was
+        actually found, as `ridge_track` returns beside a gap-filled track, or
+        None when every finite bin is a measurement. A filled bin carries no
+        evidence, so it is never counted in the occupancy; passing a track
+        without its mask would report an occupancy of one for any event.
     :return: dict -- the entries of `RIDGE_FEATURES`:
 
         `ridge_occupancy`
-            fraction of the bins that hold a tile at all. A track is continuous
-            in time; a scatter of tiles is not.
+            fraction of the bins that hold a tile at all, counted on the
+            measured bins alone. A track is continuous in time; a scatter of
+            tiles is not.
         `ridge_slope`
             octaves per second, from an energy-weighted straight-line fit in
             log frequency. Signed, so its magnitude is the sweep rate and its
@@ -129,7 +226,10 @@ def ridge_features(time, log_frequency, energy) -> dict:
 
     out = {name: float("nan") for name in RIDGE_FEATURES}
     here = np.isfinite(time) & np.isfinite(log_frequency) & np.isfinite(energy)
-    out["ridge_occupancy"] = float(here.mean()) if here.size else float("nan")
+    occupied = here if measured is None else (
+        here & np.asarray(measured, dtype=bool).reshape(-1))
+    out["ridge_occupancy"] = (float(occupied.mean()) if occupied.size
+                              else float("nan"))
     if here.sum() < 2:
         return out
 

@@ -53,9 +53,13 @@ def pixel_cloud(triggers: pd.DataFrame) -> pd.DataFrame:
     :type triggers: pandas.DataFrame
     :param triggers: triggers carrying `gps`, `n_coeff`, `fs` and the
         coefficient columns. Several analysis window lengths may be present.
-    :return: pandas.DataFrame -- one row per tile, with `SCALE_PIXEL_COLUMNS`.
+    :return: pandas.DataFrame -- one row per tile, with `SCALE_PIXEL_COLUMNS`,
+        and a `stride` column beside them where the triggers declared one.
         `scale` is the window length the tile was found at, in samples; times
-        are absolute GPS.
+        are absolute GPS. The stride is carried through because it is a
+        property of the run that the tiles themselves do not record, and the
+        grouping in `wdf.analysis.pixel_graph` needs it to know how far apart
+        two detections of one transient are.
     """
     if triggers.empty or "wt_index" not in triggers:
         return pd.DataFrame(columns=SCALE_PIXEL_COLUMNS)
@@ -87,10 +91,15 @@ def pixel_cloud(triggers: pd.DataFrame) -> pd.DataFrame:
             f_hi=f_hi_of[index],
             energy=value ** 2,
             sigma=np.repeat(group["sigma"].to_numpy(dtype=float), counts),
+            **(dict(stride=np.repeat(group["stride"].to_numpy(dtype=float),
+                                     counts)) if "stride" in group else {}),
         )))
     if not frames:
         return pd.DataFrame(columns=SCALE_PIXEL_COLUMNS)
-    return pd.concat(frames, ignore_index=True)[SCALE_PIXEL_COLUMNS]
+    cloud = pd.concat(frames, ignore_index=True)
+    columns = SCALE_PIXEL_COLUMNS + [name for name in ("stride",)
+                                     if name in cloud]
+    return cloud[columns]
 
 
 def normalised_energy(pixels: pd.DataFrame) -> np.ndarray:

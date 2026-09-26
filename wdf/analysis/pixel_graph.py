@@ -17,6 +17,16 @@ which edges survive: keeping every admissible edge is the deterministic
 clustering, and scoring them is the learned one -- both start from the same
 graph, which is what makes them comparable.
 
+Which pairs are admissible is a statement about the analysis and never about
+the source. The two allowances are the stride the search advanced by and the
+step of the dyadic ladder it tiled frequency with; both are ours, both are
+symmetric in time and in direction, and neither prefers a rising frequency, a
+slope or a monotone sweep. A burst that jumps to a high band and comes back is
+admitted exactly as a chirp is. Whether the tiles so admitted *are* a track is
+said afterwards, by the descriptors in `wdf.analysis.ridge`, which is where
+morphology belongs: a prior about shape in the admission would make the
+injections a description of the search instead of a check on it.
+
 Only the pairs inside the tolerance are ever formed, by searching a sorted time
 axis. A dense adjacency matrix asks the same question in O(n^2) memory, which a
 segment's pixel cloud exhausts.
@@ -54,12 +64,40 @@ class PixelGraphConfig:
     :param time_tolerance: largest gap between two tiles' time spans, as a
         fraction of their mean width. Zero joins only tiles that touch or
         overlap; one allows a gap as wide as the tiles themselves.
+    :param stride_tolerance: largest gap between two tiles' time spans, in
+        strides of the search. The stride is `(window - overlap) / sampling`,
+        how far the analysis advanced between consecutive windows, and it is
+        the distance at which one transient is detected again: at window 512,
+        overlap 32 and 2048 Hz it is 0.234 s, while the tiles themselves are
+        0.002 to 0.031 s wide. A tolerance expressed in tile widths therefore
+        cannot reach from one detection of a transient to the next whatever
+        value it is given, which is why this second allowance exists. It is
+        read from the cloud rather than passed in: `pixel_cloud` carries the
+        `stride` the run declared onto every tile, and `cloud_strides` reads
+        it back. Where the cloud declares none --- a trigger file read without
+        its configuration --- the stride is unknown and this allowance
+        contributes nothing, leaving `time_tolerance` alone to decide, which
+        is the behaviour there was before it. The default of zero reproduces
+        exactly that width-based rule.
+    :param band_tolerance: how many empty steps of the dyadic ladder may
+        separate two tiles' bands, in either direction. A step is one band of
+        the ladder the cloud's own edges define, the finest the search
+        resolved. Zero admits only bands that overlap or touch, which is the
+        rule this generalises; one admits bands with a single empty band
+        between them, and so on. The allowance is symmetric --- upward and
+        downward are the same number of steps --- so no sweep direction,
+        slope or monotonicity is assumed: whether a group of tiles is a track
+        is said afterwards, by `ridge_slope`, `ridge_scatter` and
+        `ridge_monotonicity`. The default of zero leaves the present rule
+        untouched.
     :param minimum_significance: tiles below this are not nodes at all. Reading
         it from the calibrated significance rather than from a raw amplitude is
         what lets one threshold serve every window length and every band.
     """
 
     time_tolerance: float = 1.0
+    stride_tolerance: float = 0.0
+    band_tolerance: int = 0
     minimum_significance: float = 0.0
 
 
@@ -110,6 +148,39 @@ class PixelGraph:
             shape=(n, n))
         _, labels = connected_components(adjacency, directed=False)
         return labels.astype(np.int64)
+
+
+def cloud_strides(pixels: pd.DataFrame) -> dict:
+    """How far the search advanced between windows, per window length.
+
+    The stride is a property of the run, `(window - overlap) / sampling`, which
+    the configuration beside the trigger file declares and which
+    `wdf.analysis.scale.pixel_cloud` carries onto every tile. It is read from
+    there and never inferred from how far apart the tiles landed: that would
+    measure the transients instead of the search, and a stretch where only
+    every third window fired would report three times the truth. A cloud that
+    declares no stride has none here, and the allowance that rests on it then
+    grants nothing.
+
+    :type pixels: pandas.DataFrame
+    :param pixels: a pixel cloud, as `wdf.analysis.scale.pixel_cloud` returns.
+    :return: dict -- ``{scale: stride}`` in seconds, holding only the window
+        lengths whose stride the cloud declares.
+    """
+    if pixels.empty or "stride" not in pixels:
+        return {}
+    scale = pixels["scale"].to_numpy(dtype=float)
+    declared = pixels["stride"].to_numpy(dtype=float)
+    usable = np.isfinite(declared) & (declared > 0.0)
+    strides = {}
+    for length in np.unique(scale[usable]):
+        here = declared[usable & (scale == length)]
+        if not np.allclose(here, here[0], rtol=1e-9, atol=0.0):
+            raise ValueError(
+                f"windows of {int(length)} samples declare more than one "
+                f"stride: {np.unique(here).tolist()}")
+        strides[float(length)] = float(here[0])
+    return strides
 
 
 def build_pixel_graph(pixels: pd.DataFrame,
@@ -175,15 +246,33 @@ def build_pixel_graph(pixels: pd.DataFrame,
     scale = nodes["scale"].to_numpy(dtype=float)
     width = t_hi - t_lo
 
+    # The admission rests on the geometry of the analysis and on nothing else:
+    # the stride the search advanced by, and the ladder it tiled frequency
+    # with. Both are ours. Neither says anything about the source, so a burst
+    # that jumps an octave and comes back is admitted exactly as a sweep is.
+    strides = cloud_strides(nodes) if config.stride_tolerance > 0.0 else {}
+    stride = np.array([strides.get(float(value), 0.0) for value in scale])
+    # The ladder the cloud itself resolved: every band edge present, so a step
+    # is one band and a gap is a whole number of them.
+    ladder = np.unique(np.concatenate([f_lo, f_hi]))
+
     # The widest tile plus its own tolerance is how far apart two tiles' starts
     # can be and still touch, which bounds the search along the time axis.
-    reach = float((width * (1.0 + config.time_tolerance)).max())
+    reach = float((width * (1.0 + config.time_tolerance)).max()
+                  + config.stride_tolerance * (stride.max() if stride.size else 0.0))
 
     edges, features = [], []
     for left, right in neighbour_pairs(t_lo, reach):
         gap = np.maximum(t_lo[right] - t_hi[left], t_lo[left] - t_hi[right])
-        allowed = config.time_tolerance * 0.5 * (width[left] + width[right])
-        band = (f_lo[left] <= f_hi[right]) & (f_lo[right] <= f_hi[left])
+        allowed = np.maximum(
+            config.time_tolerance * 0.5 * (width[left] + width[right]),
+            config.stride_tolerance * np.maximum(stride[left], stride[right]))
+        # Empty steps of the ladder between the two bands: zero where they
+        # overlap or touch, which is the rule a tolerance of zero keeps.
+        below = np.minimum(f_hi[left], f_hi[right])
+        above = np.maximum(f_lo[left], f_lo[right])
+        steps = (np.searchsorted(ladder, above) - np.searchsorted(ladder, below))
+        band = steps <= int(config.band_tolerance)
         join = (gap <= allowed) & band
         if not join.any():
             continue
