@@ -389,3 +389,11 @@ def test_by_default_the_search_starts_at_the_first_whole_octave_of_the_band(low_
     the first one wholly inside the pass band is where the search is read from,
     and the one below it lies partly in the band-pass's transition."""
     assert BandPassDownSampling(parameters(low_cut)).search_low_frequency == expected
+
+
+def test_a_gentle_band_pass_is_read_from_the_lower_side_of_its_centre():
+    """A low-order band-pass is flat only around its centre; the start of the
+    band the search reads is on the rising side of it, not past its top."""
+    gentle = SimpleNamespace(sampling=SAMPLING, resampling=SAMPLING // 4,
+                             ResamplingFactor=4, LowFrequencyCut=10.0, FilterOrder=4)
+    assert BandPassDownSampling(gentle).search_low_frequency == 64.0

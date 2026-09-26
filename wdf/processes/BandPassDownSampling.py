@@ -277,7 +277,19 @@ class BandPassDownSampling(object):
         """
         if self.search_low is not None:
             return self.search_low
-        low, high = self.low_freq_hp, self.cutoff_frequency
+        # The band-pass is the image of a low-pass prototype, whose response is
+        # monotonic in its pass band, centred on the geometric mean of the
+        # pre-warped edges: below that centre the response only rises, so the
+        # edge where it reaches the bound is found by bisection.
+        warp = np.pi / self.sampling
+        centre = np.arctan(np.sqrt(np.tan(warp * self.low_freq_hp)
+                                   * np.tan(warp * self.cutoff_frequency))) / warp
+        _, response = sosfreqz(self.bandpass_sos, worN=[centre], fs=self.sampling)
+        if np.abs(response[0]) ** 4 < 1.0 - PASS_BAND_LOSS:
+            raise ValueError(
+                f"the band-pass keeps less than {1.0 - PASS_BAND_LOSS:g} of the "
+                f"power everywhere; it has no band the search can be read in")
+        low, high = self.low_freq_hp, centre
         for _ in range(60):
             middle = 0.5 * (low + high)
             _, response = sosfreqz(self.bandpass_sos, worN=[middle], fs=self.sampling)
