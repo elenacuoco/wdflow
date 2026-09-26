@@ -132,7 +132,11 @@ class ReleaseConfig:
         the calibration may hold.
     :param wavegram_time_bins: columns of an event's compact map.
     :param coincidence: when two events of two detectors may be one signal.
-    :param slides: how the accidental background is drawn, per stretch.
+    :param slides: how the accidental background is drawn, per stretch. The
+        step between displacements must exceed the extent almost every event
+        has, or two lags pair the same clusters twice; a search run at a low
+        first threshold assembles longer events than one at a single high
+        threshold, and the step is stated accordingly.
     :param match_wavegrams: whether every admitted pair's two renderings are
         compared at the displacements its tolerance allows, which is what
         `coherent_statistic` and `network_correlation` are measured from. It
@@ -166,7 +170,8 @@ class ReleaseConfig:
     calibration_min_count: int = 200
     wavegram_time_bins: int = 64
     coincidence: CoincidenceConfig = field(default_factory=CoincidenceConfig)
-    slides: FARConfig = field(default_factory=lambda: FARConfig(n_slides=100))
+    slides: FARConfig = field(default_factory=lambda: FARConfig(
+        n_slides=100, min_shift_s=10.0))
     match_wavegrams: bool = False
     ranking: tuple = ("network_min_significance", "network_min_enwdf_timed",
                       "network_morphology")
