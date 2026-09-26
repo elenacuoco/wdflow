@@ -9,7 +9,7 @@ from wdf.filtering import sosfiltfilt
 # The conditioning stage is built on the compiled core.
 pytest.importorskip("py4tsa")
 
-from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
+from wdf.processes.BandPassDownSampling import (BandPassDownSampling, read_conditioned,
                                                 settling_length)
 
 SAMPLING, FACTOR = 16384, 8
@@ -397,3 +397,51 @@ def test_a_gentle_band_pass_is_read_from_the_lower_side_of_its_centre():
     gentle = SimpleNamespace(sampling=SAMPLING, resampling=SAMPLING // 4,
                              ResamplingFactor=4, LowFrequencyCut=10.0, FilterOrder=4)
     assert BandPassDownSampling(gentle).search_low_frequency == 64.0
+
+
+# ------------------------------------------------------------------- the reads
+
+class _Reader:
+    """Hands out consecutive stretches of a stream, as `FrameIChannel` does,
+    of a length that can be changed between reads."""
+
+    def __init__(self, samples, seconds=1.0):
+        self.samples, self.at, self.size = samples, 0, int(seconds * SAMPLING)
+
+    def GetData(self, slot):
+        slot.block = _Block(self.samples[self.at:self.at + self.size], self.at / SAMPLING)
+        self.at += self.size
+
+
+class _Slot:
+    """The view the reader fills."""
+
+    def GetSize(self):
+        return self.block.GetSize()
+
+    def GetStart(self):
+        return self.block.GetStart()
+
+    def GetY(self, channel, i):
+        return self.block.GetY(channel, i)
+
+
+def test_the_front_end_holds_no_more_than_its_settling_and_one_read():
+    """Short reads while warming up, long reads after: the blocks whose future
+    is already in are emitted without reading more, so what the front end holds
+    does not grow with the number of short blocks it was left with. Emitting
+    one block per read kept that number of blocks, each a long one, and cut
+    the end of every segment by as much."""
+    filt = BandPassDownSampling(parameters(low_cut=2.0))
+    reader, slot = _Reader(noise(SAMPLING * 600)), _Slot()
+    for _ in range(20):
+        read_conditioned(reader, slot, filt)
+    reader.size = 30 * SAMPLING
+    held = []
+    for _ in range(12):
+        block = read_conditioned(reader, slot, filt)
+        held.append(filt.latency_s)
+
+    assert filt.padlen > 10 * SAMPLING
+    assert max(held) <= filt.padlen / SAMPLING + 30.0 + 1.0
+    assert block.GetStart() + block.GetSize() / RESAMPLING >= reader.at / SAMPLING - held[-1] - 1e-9

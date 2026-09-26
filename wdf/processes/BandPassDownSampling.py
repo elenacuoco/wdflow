@@ -353,7 +353,25 @@ class BandPassDownSampling(object):
             return self._decimated_view(y_ds, data.GetStart())
 
         self.pending.append((y, start))
-        if sum(len(s) for s, _ in self.pending[1:]) < self.padlen:
+        return self.emit()
+
+    def emit(self):
+        """The oldest block held, band-passed and decimated, if its future is in.
+
+        A block is held until `padlen` samples of the data that follow it have
+        been read. After reads longer than the blocks held -- the worker reads
+        one second at a time while it warms up and whole blocks after -- the
+        future of several held blocks is already in, and each is emitted by a
+        call of its own without anything more being read; `read_conditioned`
+        asks for them before it reads. Emitting one block per read instead would
+        keep as many blocks held as the short reads left, each now a long one,
+        and the front end would hold far more than it needs.
+
+        :return: py4tsa.tsa.SeqView_double_t or None -- the block, or None
+            while its future is still to be read.
+        :raises ValueError: if the block does not decimate whole.
+        """
+        if not self.pending or sum(len(s) for s, _ in self.pending[1:]) < self.padlen:
             return None
 
         block, block_start = self.pending.pop(0)
@@ -447,7 +465,9 @@ def read_conditioned(streaming, block, downsampling):
     returns None for the first few reads and a caller that assumes one block
     per read will hand None to whatever it feeds. How many reads it takes
     depends on the filter's ringing and on the read size, neither of which the
-    caller should have to know.
+    caller should have to know. A block whose future has already been read is
+    returned without reading, so the front end holds no more than its settling
+    and one read, whatever the sizes of the reads before.
 
     :type streaming: py4tsa.tsa.FrameIChannel
     :param streaming: the frame reader.
@@ -456,10 +476,13 @@ def read_conditioned(streaming, block, downsampling):
     :type downsampling: BandPassDownSampling
     :param downsampling: the conditioning front end.
     :return: py4tsa.tsa.SeqView_double_t -- one conditioned block, labelled with
-        the time of the samples it holds.
+        the time of the samples it holds. `block` holds the last read, which
+        can be later than the block returned.
     """
     while True:
-        streaming.GetData(block)
-        conditioned = downsampling.Process(block)
+        conditioned = downsampling.emit()
+        if conditioned is None:
+            streaming.GetData(block)
+            conditioned = downsampling.Process(block)
         if conditioned is not None:
             return conditioned

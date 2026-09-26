@@ -48,8 +48,11 @@ lengthens the discarded stretch instead of corrupting the emitted one.
 The settling stretch does not have to fit inside a single read. `Process`
 buffers what it has read and emits a block only once `padlen` samples of real
 future data have arrived, returning `None` meanwhile, however many reads that
-takes. The cost is therefore latency rather than a constraint on the filter, and
-it is stated in `latency_s` and carried by the timestamps.
+takes; a block whose future is already in is emitted without reading more
+(`emit`, which `read_conditioned` asks first), so what the front end holds is
+its settling and one read, whatever the sizes of the reads before. The cost is
+therefore latency rather than a constraint on the filter, and it is stated in
+`latency_s` and carried by the timestamps.
 
 ## What is discarded, in order
 
