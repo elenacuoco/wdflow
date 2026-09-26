@@ -206,3 +206,21 @@ def test_an_unknown_statistic_is_refused():
     with pytest.raises(KeyError, match="network_enwdf"):
         unclaimed_candidates(_unclaimed_input([1.0]), pd.DataFrame(dict(gps=[])),
                              statistic="network_enwdf")
+
+
+def test_the_ceiling_is_the_kerr_limit_ringdown_of_the_remnant():
+    from wdf.analysis.injections import binary_frequency_ceiling
+
+    # A 62 solar-mass remnant at z = 0.09: the Kerr-limit ringdown near 480 Hz.
+    assert binary_frequency_ceiling(62.0, 0.09) == pytest.approx(
+        32311.0 / 67.58, rel=1e-3)
+    assert binary_frequency_ceiling([10.0, 20.0], 0.0).tolist() == pytest.approx(
+        [3231.1, 1615.55])
+
+
+def test_a_candidate_whose_energy_lies_above_the_ceiling_cannot_hold_the_signal():
+    from wdf.analysis.injections import band_can_hold
+
+    candidates = pd.DataFrame(dict(freqQ05=[40.0, 600.0, np.nan],
+                                   freqQ95=[300.0, 900.0, 200.0]))
+    assert band_can_hold(candidates, 20.0, 480.0).tolist() == [True, False, False]

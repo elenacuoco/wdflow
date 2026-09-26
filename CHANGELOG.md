@@ -31,6 +31,12 @@ the raw energy it rises with the event's extent
 beside it. Released pairs carry the lag their reconstructions measure and
 whether it is within the light travel time, which does not gate them.
 
+`injections.binary_frequency_ceiling` gives the highest frequency a compact
+binary can reach, the Kerr-limit ringdown of its remnant, and
+`injections.band_can_hold` whether a candidate's energy band meets a signal's:
+a candidate whose energy lies wholly outside the band a catalogued signal can
+occupy is not that signal.
+
 `scale.pixel_cloud` now carries each tile's `coefficient` index and signed
 `value`; `pixel_graph.cluster_wavegrams` carries the signed amplitude as the
 sixth tile array, so an event of the pixel graph is a node of the network
