@@ -44,6 +44,7 @@ from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds
 SCALE_PIXEL_COLUMNS = [
     "trigger_index", "ifo", "scale", "fs",
     "t_lo", "t_hi", "f_lo", "f_hi", "energy", "sigma",
+    "coefficient", "value",
 ]
 
 
@@ -59,7 +60,12 @@ def pixel_cloud(triggers: pd.DataFrame) -> pd.DataFrame:
         are absolute GPS. The stride is carried through because it is a
         property of the run that the tiles themselves do not record, and the
         grouping in `wdf.analysis.pixel_graph` needs it to know how far apart
-        two detections of one transient are.
+        two detections of one transient are. `coefficient` is the tile's
+        index in its window's coefficient vector and `value` the coefficient
+        itself, sign included: an event assembled from tiles is inverted from
+        those tiles and no others, which needs the index, and two detectors
+        are compared on signed amplitudes, which needs the sign. `energy` is
+        `value` squared.
     """
     if triggers.empty or "wt_index" not in triggers:
         return pd.DataFrame(columns=SCALE_PIXEL_COLUMNS)
@@ -91,6 +97,8 @@ def pixel_cloud(triggers: pd.DataFrame) -> pd.DataFrame:
             f_hi=f_hi_of[index],
             energy=value ** 2,
             sigma=np.repeat(group["sigma"].to_numpy(dtype=float), counts),
+            coefficient=index,
+            value=value,
             **(dict(stride=np.repeat(group["stride"].to_numpy(dtype=float),
                                      counts)) if "stride" in group else {}),
         )))

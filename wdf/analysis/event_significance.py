@@ -313,6 +313,86 @@ class EventCalibration:
             out[rows] = empirical
         return out
 
+    def statistic_at(self, significance: float) -> np.ndarray:
+        """The statistic each extent bin must reach to score `significance`.
+
+        The inverse of `significance`, bin by bin, which is what turns one
+        threshold on the calibrated scale into the threshold it is on the raw
+        statistic: one value per extent, rising with it, because a large
+        accidental event is louder than a small one by construction. Inside a
+        bin's measured range the plug-in survival is a step function, and the
+        value returned is the edge of the step that first reaches the asked
+        significance --- the largest background value that still falls short
+        of it, which an event must exceed. Beyond the measured range the bin's
+        exponential tail is inverted instead, continuously with `significance`.
+
+        :type significance: float
+        :param significance: the calibrated threshold, in nats.
+        :return: numpy.ndarray -- one value per bin, in the order of `edges`;
+            NaN for a bin that measured nothing, and for a bin whose empirical
+            branch stops short of the threshold and that carries no tail to
+            continue it.
+        """
+        out = np.full(len(self.tables), np.nan)
+        wanted = float(significance)
+        for b, table in enumerate(self.tables):
+            n = table.size
+            if n == 0:
+                continue
+            scale = self.tail_scales[b] if b < len(self.tail_scales) else np.nan
+            base = -np.log(2.0 / (n + 1.0))
+            if np.isfinite(scale) and wanted > base:
+                out[b] = float(table[-1]) + (wanted - base) * float(scale)
+                continue
+            # The most background values an event may still have at or above
+            # it and score the threshold: (above + 1) / (n + 1) <= exp(-S).
+            allowed = int(np.floor(np.exp(-wanted) * (n + 1.0) - 1.0 + 1e-12))
+            if allowed >= n:
+                out[b] = -np.inf
+            elif allowed >= 1:
+                out[b] = float(table[n - allowed - 1])
+            else:
+                out[b] = float(table[-1])
+        return out
+
+
+def rate_matched_significance(n_events: int, n_reference: int) -> float:
+    """The calibrated threshold that lets through as many accidental events as
+    a reference population holds.
+
+    The calibrated significance of an event the calibration was not fitted on
+    is exponential with unit rate under the null, so a threshold `S` on it
+    keeps a fraction `exp(-S)` of the background whatever the events' extents.
+    Asking that fraction to be `n_reference / n_events` gives
+
+        S = log(n_events / n_reference),
+
+    the threshold at which the calibrated cut passes, per unit time, as many
+    events of noise as the reference population contains. With the reference
+    the events a search at a single, higher threshold builds from the same
+    data, this is the second threshold of a search run at a low first one: the
+    same false-alarm rate into the next stage, spent on the events that are
+    loud for their extent instead of on the events that hold one loud window.
+
+    :type n_events: int
+    :param n_events: background events the calibration scores.
+    :type n_reference: int
+    :param n_reference: events of the reference population over the same
+        stretch.
+    :return: float -- the threshold, in nats; zero, keeping everything, when
+        the reference holds at least as many events, and infinite, keeping
+        nothing, when it holds none.
+    :raises ValueError: if either count is negative, or there are no events.
+    """
+    n_events, n_reference = int(n_events), int(n_reference)
+    if n_events <= 0 or n_reference < 0:
+        raise ValueError(
+            f"a rate is matched between two populations of events; got "
+            f"{n_events} events against a reference of {n_reference}")
+    if n_reference == 0:
+        return float("inf")
+    return float(max(np.log(n_events / n_reference), 0.0))
+
 
 def out_of_sample_significance(background: pd.DataFrame, folds: int = 10,
                                **kwargs) -> np.ndarray:

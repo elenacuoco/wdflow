@@ -304,6 +304,90 @@ def iter_cluster_coefficients(labeled_triggers: pd.DataFrame, events: pd.DataFra
         )
 
 
+def iter_tile_cluster_coefficients(pixels: pd.DataFrame, labels, triggers: pd.DataFrame,
+                                   window: int, overlap: int):
+    """Yield ``(cluster_id, ClusterCoefficients)`` for events made of tiles.
+
+    An event of `wdf.analysis.pixel_graph` owns tiles, not windows: one window
+    can hold tiles of two events, and tiles the grouping joined to nothing.
+    Its reconstruction inverts the event's own tiles and only those, so each
+    window the event touches contributes a coefficient vector that is zero
+    everywhere but at the tiles the event owns. The rest of the window's
+    energy belongs to other events, or to none, and entering it would make the
+    waveform, and the statistic read off it, describe something the grouping
+    did not assemble.
+
+    A region two overlapping windows both kept is one tile of the event but two
+    estimates of it, and both are given here, one per window: the stitching
+    averages them over the samples the windows share, which is what makes the
+    norm of the series count the region once.
+
+    The result is the same object the trigger-level grouping produces, so its
+    statistic, its waveform and its map are computed by the same code.
+
+    :type pixels: pandas.DataFrame
+    :param pixels: the tile cloud, as `wdf.analysis.scale.pixel_cloud`
+        returns it, carrying `trigger_index`, `coefficient` and `value`, at one
+        window length.
+    :param labels: the event of every row of `pixels`, positionally, as
+        `wdf.analysis.pixel_graph.tile_labels` returns it; -1 for none.
+    :type triggers: pandas.DataFrame
+    :param triggers: the triggers the cloud was built from, indexed as they
+        were when it was built (`trigger_index` is their index), carrying
+        `gps`, `wave`, `sigma`, `n_coeff` and `fs`.
+    :type window: int
+    :param window: analysis window length, samples.
+    :type overlap: int
+    :param overlap: overlap between consecutive windows, samples.
+    :return: iterator of ``(int, ClusterCoefficients)``, in increasing label.
+    :raises KeyError: if a tile names a trigger `triggers` does not hold.
+    :raises ValueError: if the cloud holds more than one window length, which
+        no single coefficient vector can hold.
+    """
+    labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+    if pixels.empty or not (labels >= 0).any():
+        return
+    lengths = np.unique(pixels["scale"].to_numpy(dtype=float))
+    if len(lengths) != 1:
+        raise ValueError(
+            f"the cloud holds {len(lengths)} window lengths; a coefficient "
+            "vector belongs to one of them")
+    n_coeff = int(lengths[0])
+
+    keep = labels >= 0
+    label = labels[keep]
+    position = triggers.index.get_indexer(
+        pixels["trigger_index"].to_numpy()[keep])
+    if (position < 0).any():
+        raise KeyError("a tile names a trigger the trigger table does not hold")
+    coefficient = pixels["coefficient"].to_numpy(dtype=np.int64)[keep]
+    value = pixels["value"].to_numpy(dtype=float)[keep]
+
+    gps = triggers["gps"].to_numpy(dtype=float)
+    waves = triggers["wave"].astype(str).to_numpy()
+    sigma = triggers["sigma"].to_numpy(dtype=float)
+    fs = float(triggers["fs"].to_numpy(dtype=float)[position[0]])
+    ifo = str(pixels["ifo"].iloc[0]) if "ifo" in pixels else ""
+
+    # Grouped by one sort over the labels rather than by a pass over the
+    # cloud per event, which is quadratic in the event count.
+    order = np.argsort(label, kind="stable")
+    boundary = np.flatnonzero(np.diff(label[order])) + 1
+    for rows in np.split(order, boundary):
+        members, row_of = np.unique(position[rows], return_inverse=True)
+        in_time = np.argsort(gps[members], kind="stable")
+        rank = np.empty_like(in_time)
+        rank[in_time] = np.arange(len(in_time))
+        matrix = np.zeros((len(members), n_coeff), dtype=np.float32)
+        matrix[rank[row_of], coefficient[rows]] = value[rows]
+        members = members[in_time]
+        cluster = int(label[rows[0]])
+        yield cluster, ClusterCoefficients(
+            cluster_id=cluster, ifo=ifo, fs=fs, window=int(window),
+            overlap=int(overlap), times=gps[members], coefficients=matrix,
+            waves=tuple(waves[members]), sigma=sigma[members])
+
+
 def collect_cluster_coefficients(labeled_triggers: pd.DataFrame, events: pd.DataFrame,
                                  fs: float, window: int, overlap: int,
                                  cluster_column: str = "cluster_id") -> dict:

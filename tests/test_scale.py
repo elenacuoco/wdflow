@@ -125,3 +125,16 @@ def test_an_empty_cloud_survives_every_stage():
     assert empty.empty
     scored = scale_maximum(empty, ScaleCalibration(tables={"x": np.zeros(1)}))
     assert scored.empty
+
+
+def test_every_tile_carries_its_index_and_its_signed_coefficient():
+    """What an event is inverted from, and what two detectors compare."""
+    rng = np.random.default_rng(3)
+    triggers = _triggers(512, 5, rng)
+    cloud = pixel_cloud(triggers)
+    index = np.concatenate([np.asarray(v, dtype=int) for v in triggers.wt_index])
+    value = np.concatenate([np.asarray(v, dtype=float) for v in triggers.wt_value])
+    assert cloud["coefficient"].tolist() == index.tolist()
+    assert cloud["value"].to_numpy() == pytest.approx(value)
+    assert cloud["energy"].to_numpy() == pytest.approx(value ** 2)
+    assert (cloud["value"] < 0).any()

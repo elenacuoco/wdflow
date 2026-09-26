@@ -39,7 +39,9 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.pairs import neighbour_pairs
-from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
+from wdf.analysis.ridge import (RIDGE_FEATURES, event_ridge,
+                                event_ridge_features, ridge_members,
+                                ridge_track)
 from wdf.analysis.robust_events import EPS, _UnionFind
 
 PIXEL_EDGE_FEATURES = [
@@ -514,6 +516,125 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
     return events[CLUSTER_COLUMNS]
 
 
+def follow_ridges(graph: PixelGraph, labels=None, n_bins: int = 32) -> np.ndarray:
+    """Each event cut down to the tiles its own ridge passes through.
+
+    The admission joins tiles on the geometry of the analysis alone, so an
+    event can hold, beside the path a transient traces across the plane, tiles
+    that only sit near it. The ridge says which of them follow the path:
+    `wdf.analysis.ridge.event_ridge` keeps the loudest tile of each time bin,
+    `ridge_track` fills the bins between them by a straight line in log
+    frequency, and `ridge_members` keeps every tile whose own band holds the
+    track at the centre of the tile's time support. The band is the corridor,
+    so no width is chosen, and the fill reads the same forwards and backwards
+    in time, so a falling path is followed exactly as a rising one and a
+    burst that jumps up and comes back is followed as it goes.
+
+    The tiles on the path are the event. What the path leaves behind is not
+    discarded: the rest of the cluster's tiles are grouped again by the
+    graph's own edges among themselves, and every group is an event of its
+    own. The stage therefore takes no tile out of the detector's events; it
+    decides which tiles are summed together.
+
+    A path is one frequency per instant. Tiles of a cluster lying at the same
+    instant in a band the track does not cross are, for this stage, another
+    event --- which is what it says about a transient spread over several
+    bands at once, whatever its origin.
+
+    :type graph: PixelGraph
+    :param graph: the detector's pixel graph.
+    :param labels: component label per node, or None to take every edge.
+    :type n_bins: int
+    :param n_bins: time bins an event's extent is divided into for its ridge.
+    :return: numpy.ndarray -- one label per node, contiguous from zero, the
+        path of an event and each group it leaves behind labelled apart.
+    """
+    from wdf.analysis.scale import normalised_energy
+
+    nodes = graph.nodes
+    if nodes.empty:
+        return np.zeros(0, dtype=np.int64)
+    labels = np.asarray(graph.components() if labels is None else labels,
+                        dtype=np.int64)
+    t_lo = nodes["t_lo"].to_numpy(dtype=float)
+    t_hi = nodes["t_hi"].to_numpy(dtype=float)
+    f_lo = nodes["f_lo"].to_numpy(dtype=float)
+    f_hi = nodes["f_hi"].to_numpy(dtype=float)
+    energy = normalised_energy(nodes)
+    energy = np.where(np.isfinite(energy), energy, 0.0)
+
+    on_path = np.ones(len(nodes), dtype=bool)
+    order = np.argsort(labels, kind="stable")
+    sizes = np.bincount(labels)
+    starts = np.concatenate(([0], np.cumsum(sizes)[:-1]))
+    for event in np.flatnonzero(sizes > 1):
+        rows = order[starts[event]:starts[event] + sizes[event]]
+        time, log_frequency, _ = event_ridge(t_lo[rows], t_hi[rows], f_lo[rows],
+                                             f_hi[rows], energy[rows], n_bins)
+        edges = np.linspace(float(t_lo[rows].min()), float(t_hi[rows].max()),
+                            int(n_bins) + 1)
+        centres = 0.5 * (edges[:-1] + edges[1:])
+        track, _ = ridge_track(time, log_frequency, bin_centres=centres)
+        on_path[rows] = ridge_members(t_lo[rows], t_hi[rows], f_lo[rows],
+                                      f_hi[rows], track, centres)
+
+    # What the path leaves behind is regrouped by the edges joining two tiles
+    # that are both off it; a tile on the path takes its event's label.
+    edges = graph.edges
+    if len(edges):
+        off = ~on_path[edges[:, 0]] & ~on_path[edges[:, 1]]
+        rest = graph.components(keep=off)
+    else:
+        rest = np.arange(len(nodes), dtype=np.int64)
+    key = np.where(on_path, labels, int(labels.max()) + 1 + rest)
+    _, relabelled = np.unique(key, return_inverse=True)
+    return np.asarray(relabelled, dtype=np.int64).reshape(-1)
+
+
+def tile_labels(pixels: pd.DataFrame, graph: PixelGraph, labels=None) -> np.ndarray:
+    """The event every tile of a cloud belongs to, the repeated ones included.
+
+    The graph holds each region of the plane once: where two overlapping
+    windows both kept a tile, `wdf.analysis.scale.unique_tiles` keeps the
+    larger estimate as the node, so that the event's energy counts the region
+    once. Both windows nevertheless measured it, and a reconstruction stitched
+    across them needs both estimates: the overlap-add averages the windows over
+    the samples they share, and a window stripped of the tile its neighbour
+    kept would halve the region there. Every tile of the cloud is therefore
+    given the label of the node describing the same region --- same detector,
+    same window length, same edges --- which is the rule `unique_tiles` joins
+    them by.
+
+    A tile no node describes, one below the graph's `minimum_significance`,
+    belongs to no event and is labelled -1.
+
+    :type pixels: pandas.DataFrame
+    :param pixels: the cloud the graph was built from, as
+        `wdf.analysis.scale.pixel_cloud` returns it.
+    :type graph: PixelGraph
+    :param graph: its pixel graph.
+    :param labels: component label per node, or None to take every edge.
+    :return: numpy.ndarray -- one label per row of `pixels`, positionally.
+    :raises ValueError: if two nodes describe the same region, which a graph
+        built by `build_pixel_graph` never holds.
+    """
+    if pixels.empty:
+        return np.zeros(0, dtype=np.int64)
+    nodes = graph.nodes
+    if nodes.empty:
+        return np.full(len(pixels), -1, dtype=np.int64)
+    labels = np.asarray(graph.components() if labels is None else labels,
+                        dtype=np.int64)
+    key = [name for name in ("ifo",) if name in pixels and name in nodes]
+    key += ["scale", "t_lo", "f_lo"]
+    owners = nodes[key].assign(_label=labels)
+    if owners.duplicated(subset=key).any():
+        raise ValueError("two nodes of the graph describe the same region of "
+                         "the plane")
+    joined = pixels[key].reset_index(drop=True).merge(owners, on=key, how="left")
+    return joined["_label"].fillna(-1).to_numpy(dtype=np.int64)
+
+
 def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
                       bin_seconds: float | None = None) -> dict:
     """Each event's wavegram, rendered from the tiles the event owns.
@@ -529,6 +650,17 @@ def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
     centroid, which follows how much of the transient each of them recovered.
     A column stands for the same time wherever it is drawn, so two maps
     compared across the network are not stretched onto each other.
+
+    Each map also carries the event's tiles themselves, in the six arrays
+    `wdf.analysis.detector_graph.event_tiles` returns: support in time and
+    band, energy on the noise scale, and the signed amplitude on the noise
+    scale. That is what the network stage renders and compares, so an event
+    assembled here is a node of `wdf.analysis.network_graph.TriggerGraphBuilder`
+    exactly as an event of the trigger graph is. The sign is the coefficient's
+    own and is read from the cloud's `value`; a cloud that did not record it
+    carries no signed amplitude, and the amplitude is then not a number rather
+    than a magnitude standing in for it, since a coherent product of
+    magnitudes is positive whatever the data.
 
     :type graph: PixelGraph
     :param graph: the detector's pixel graph.
@@ -559,6 +691,12 @@ def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
     centre = 0.5 * (t_lo + t_hi)
     amplitude = np.sqrt(np.maximum(normalised_energy(nodes), 0.0))
     amplitude = np.where(np.isfinite(amplitude), amplitude, 0.0)
+    sigma = nodes["sigma"].to_numpy(dtype=float)
+    signed = np.full(len(nodes), np.nan)
+    if "value" in nodes:
+        signed = np.divide(nodes["value"].to_numpy(dtype=float), sigma,
+                           out=signed,
+                           where=np.isfinite(sigma) & (sigma > 0.0))
 
     bands = band_grid(scale, float(np.median(rate[np.isfinite(rate)])))
     row_of = {(round(lo, 9), round(hi, 9)): row
@@ -598,5 +736,5 @@ def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
             grids[event], bin_seconds=bin_seconds, bands=bands,
             gps_first=float(first_of[event]),
             tiles=(t_lo[members], t_hi[members], f_lo[members], f_hi[members],
-                   amplitude[members] ** 2))
+                   amplitude[members] ** 2, signed[members]))
     return out

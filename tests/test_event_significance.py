@@ -114,3 +114,51 @@ def test_a_loud_event_is_not_pinned_at_the_bin_ceiling():
     scored = calibration.significance(background)
     inside = np.isfinite(scored)
     assert abs(np.mean(scored[inside] > 3.0) - np.exp(-3)) < 0.01
+
+
+def test_the_raw_threshold_is_where_the_calibrated_one_is_reached():
+    """`statistic_at` inverts the calibration, bin by bin and past its edge."""
+    from wdf.analysis.event_significance import EventCalibration
+
+    rng = np.random.default_rng(7)
+    calibration = EventCalibration.fit(_background(rng), min_count=500)
+    for wanted in (1.0, 3.0, 6.0, 12.0):
+        raw = calibration.statistic_at(wanted)
+        at = pd.DataFrame(dict(n_pixels=calibration.edges, EnWDF=raw))
+        above = at.assign(EnWDF=np.nextafter(raw, np.inf))
+        assert (calibration.significance(at) <= wanted + 1e-9).all()
+        assert (calibration.significance(above) >= wanted - 1e-9).all()
+
+
+def test_a_large_accidental_event_needs_a_larger_raw_statistic():
+    """The size-dependent threshold rises with the extent, as noise does."""
+    from wdf.analysis.event_significance import EventCalibration
+
+    rng = np.random.default_rng(8)
+    calibration = EventCalibration.fit(_background(rng), min_count=500)
+    raw = calibration.statistic_at(3.0)
+    assert raw[-1] > 2.0 * raw[0]
+
+
+def test_the_matched_threshold_passes_as_much_noise_as_the_reference():
+    """exp(-S*) of an exponential background is the reference's share."""
+    from wdf.analysis.event_significance import (EventCalibration,
+                                                 rate_matched_significance)
+
+    rng = np.random.default_rng(9)
+    calibration = EventCalibration.fit(_background(rng), min_count=500)
+    fresh = _background(rng)
+    threshold = rate_matched_significance(len(fresh), 1000)
+    passed = np.count_nonzero(calibration.significance(fresh) >= threshold)
+    assert passed == pytest.approx(1000, rel=0.1)
+
+
+def test_the_matched_threshold_at_its_limits():
+    from wdf.analysis.event_significance import rate_matched_significance
+
+    assert rate_matched_significance(100, 100) == 0.0
+    assert rate_matched_significance(100, 400) == 0.0
+    assert rate_matched_significance(100, 0) == np.inf
+    assert rate_matched_significance(1000, 10) == pytest.approx(np.log(100.0))
+    with pytest.raises(ValueError):
+        rate_matched_significance(0, 1)

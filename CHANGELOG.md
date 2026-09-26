@@ -3,6 +3,40 @@
 Versions follow [semantic versioning](https://semver.org). A release records
 what the software does differently, not how it came to.
 
+## Unreleased
+
+### The search from frames to a released list, with two thresholds
+
+`wdf.processes.network_search.search_and_release` runs the chain in one call:
+each detector searched over its own science time, read from the data-quality
+mask the frames carry, with its noise model fitted on the stretch whose
+periodograms have their mean closest to their median, one process per
+detector and segment under a stated cap; then `wdf.analysis.release.release`
+builds the events, applies the second threshold, forms the pairs and attaches
+a false-alarm rate from time slides drawn inside every stretch the same
+detectors were searched in.
+
+The first threshold is the search's own and may sit at the block rule's floor,
+where every window keeping a coefficient is written. The detector stage is the
+pixel graph: tiles joined on the stride and the band ladder, each cluster cut
+down to the path its ridge traces (`pixel_graph.follow_ridges`), what the path
+leaves regrouped into events of its own. An event's energy `EnWDF` is the norm
+of the waveform its own tiles invert to
+(`cluster_coefficients.iter_tile_cluster_coefficients`), and the second
+threshold is on its calibrated form `EnWDF_significance`, translated from a
+single threshold on the search statistic by matching the number of events that
+single threshold builds (`event_significance.rate_matched_significance`); on
+the raw energy it rises with the event's extent
+(`EventCalibration.statistic_at`). The loudest block `EnWDF_window` is carried
+beside it. Released pairs carry the lag their reconstructions measure and
+whether it is within the light travel time, which does not gate them.
+
+`scale.pixel_cloud` now carries each tile's `coefficient` index and signed
+`value`; `pixel_graph.cluster_wavegrams` carries the signed amplitude as the
+sixth tile array, so an event of the pixel graph is a node of the network
+graph; `pixel_graph.tile_labels` gives every tile of a cloud, repeated regions
+included, the event of the node describing it.
+
 ## 1.3.0 --- 2026-09-18
 
 ### The compiled core comes from PyPI

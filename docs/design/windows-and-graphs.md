@@ -347,3 +347,42 @@ Nothing here forms a dense pairwise matrix. `wdf.analysis.pairs` finds the pairs
 inside a tolerance by searching a sorted time axis, which is what makes a search
 carrying no per-detector threshold tractable: at these event rates an `n × n`
 array is tens of gigabytes, and the graphs are rebuilt once per slide.
+
+## From frames to a released list: `wdf.processes.network_search` and `wdf.analysis.release`
+
+`search_and_release` is the chain in one call. Each detector is searched on
+its own science time, read from the data-quality mask beside the strain, with
+its noise model fitted where its periodograms have their mean closest to their
+median; the triggers of all detectors are then handed to `release`.
+
+The events there are the pixel graph's. Tiles are joined on the stride and the
+band ladder, each cluster is cut down to the path its ridge traces
+(`pixel_graph.follow_ridges`: the loudest tile of each time bin, the bins
+between filled by a straight line in log frequency, the tiles whose band holds
+the track), and what the path leaves is regrouped into events of its own. A
+path is one frequency per instant, whichever way it runs.
+
+Each event carries its energy `EnWDF`, the norm of the waveform its own tiles
+invert to; its calibrated form `EnWDF_significance`, the tail probability of
+that energy among the detector's events of the same number of tiles, scored
+away from the event's own time; and its loudest block `EnWDF_window`. A
+search run at a low first threshold passes to the network only the events
+whose calibrated energy reaches
+
+```
+S* = log(N / N_ref),
+```
+
+where `N` is the number of events the stage builds and `N_ref` the number it
+builds from the triggers a single threshold at the reference would have
+written. Under the null the calibrated energy is exponential with unit rate,
+so the cut passes as many events of noise per unit time as the single
+threshold does, and spends them on the events loud for their extent. On the
+raw energy the same cut is a threshold rising with the extent,
+`EventCalibration.statistic_at`.
+
+The pairs are those `IndexedCoincidenceFinder` admits. Each stretch in which
+the same detectors were searched is slid within itself, since a slide must
+wrap inside data that exists, and the stretches' accidentals are pooled with
+their livetimes. The released pairs carry the lag their reconstructions
+measure and whether it lies within the light travel time; neither gates them.

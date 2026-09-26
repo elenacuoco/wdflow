@@ -70,6 +70,12 @@ wdf.processes.Coloring
 .. automodule:: wdf.processes.Coloring
    :members:
 
+wdf.processes.network_search
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.network_search
+   :members:
+
 wdf.observers.ParameterEstimationObserver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -281,6 +287,12 @@ wdf.analysis.timing_prior
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.timing_prior
+   :members:
+
+wdf.analysis.release
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.release
    :members:
 
 wdf.analysis.robust_events
