@@ -34,12 +34,13 @@ def SV_to_array(seqView):
     return y
 
 
-def settling_length(sos, sampling, floor=1e-12, limit_s=8.0):
+def settling_length(sos, sampling, floor=1e-12, limit_s=120.0):
     """How many samples the filter needs before its response has decayed.
 
     Measured from the impulse response rather than assumed from the order: a
     steep filter close to Nyquist rings far longer than its order suggests, and
-    this length is the context a block needs on each side.
+    a narrow notch longer still, since its poles sit next to the unit circle.
+    This length is the real data a block needs on each side.
 
     The floor is set by what happens downstream, not by what looks negligible
     here. Whitening against a high-order autoregressive model applies its
@@ -49,6 +50,15 @@ def settling_length(sos, sampling, floor=1e-12, limit_s=8.0):
     broadband burst. The default is therefore well below what the conditioned
     data alone would justify.
 
+    The response is followed for as long as it takes rather than over a fixed
+    window: it is computed over twice the length at which it was last above the
+    floor, so the stretch examined past the settling is always at least as long
+    as the settling itself, and a stable filter, whose response is a sum of
+    decaying modes, does not come back above the floor after staying below it
+    that long. A filter still ringing at `limit_s` is refused rather than
+    reported at the limit: a settling cut short puts the unsettled transient
+    into every block the filter emits.
+
     :type sos: numpy.ndarray
     :param sos: second-order sections.
     :type sampling: float
@@ -56,17 +66,34 @@ def settling_length(sos, sampling, floor=1e-12, limit_s=8.0):
     :type floor: float
     :param floor: fraction of the peak below which the response is spent.
     :type limit_s: float
-    :param limit_s: longest response to look for, seconds.
+    :param limit_s: longest settling accepted, seconds.
     :return: int -- samples until the response has decayed below `floor`.
+    :raises ValueError: if the response is still above `floor` after
+        `limit_s` seconds.
     """
-    impulse = np.zeros(int(limit_s * sampling))
-    impulse[0] = 1.0
-    response = np.abs(sosfilt(sos, impulse))
-    peak = response.max()
-    if peak <= 0.0:
-        return 1
-    above = np.flatnonzero(response > floor * peak)
-    return int(above[-1]) + 1 if above.size else 1
+    sos = np.asarray(sos, dtype=float)
+    limit = int(np.ceil(limit_s * sampling))
+    state = np.zeros((sos.shape[0], 2))
+    response = np.zeros(0)
+    chunk = np.zeros(max(1, int(sampling)))
+    chunk[0] = 1.0
+    settled = 1
+    while 2 * settled > len(response) and len(response) < 2 * limit:
+        filtered, state = sosfilt(sos, chunk, zi=state)
+        response = np.concatenate([response, np.abs(filtered)])
+        chunk = np.zeros(len(response))
+        peak = response.max()
+        if peak <= 0.0:
+            return 1
+        above = np.flatnonzero(response > floor * peak)
+        settled = int(above[-1]) + 1 if above.size else 1
+    if settled > limit or 2 * settled > len(response):
+        raise ValueError(
+            f"the filter still rings above {floor:g} of its peak after "
+            f"{limit_s:g} s: a notch this narrow, or a band edge this steep, "
+            f"needs more real data on each side of a block than the settling "
+            f"limit allows. Widen the filter or raise the limit")
+    return settled
 
 
 class BandPassDownSampling(object):
@@ -95,10 +122,13 @@ class BandPassDownSampling(object):
             Nyquist folds back into the analysed band, so the attenuation
             reached before it is the only thing keeping it out.
         :type padlen: int
-        :padlen: samples of real future data the backward pass settles over
-            before it reaches the stretch being emitted. Measured from the
-            impulse response when None; it must not exceed the read block, since
-            it is taken from the block that follows the one emitted.
+        :padlen: samples of real data each filter pass settles over before it
+            reaches the stretch being emitted: real past for the forward pass,
+            real future for the backward one. Measured from the impulse response
+            when None. It may exceed the read block: a block is held until that
+            much of what follows it has been read.
+        :raises ValueError: if the filter does not settle within the limit
+            `settling_length` accepts.
         """
         try:
             self.sampling = int(Parameters.sampling)
@@ -158,9 +188,12 @@ class BandPassDownSampling(object):
         """
         The method for the downsampling the data.
 
-        With `estimation=True` the block is complete in itself -- it is the
-        stretch the autoregressive fit is handed -- so it is band-passed with
-        `sosfiltfilt` and decimated in one shot.
+        With `estimation=True` the block is taken as complete in itself and is
+        band-passed with `sosfiltfilt` and decimated in one shot. Its first and
+        last `padlen` samples then carry the filter's start rather than the
+        data, so a stretch whose edges matter, such as the one the noise model
+        is fitted on, is read with its context and conditioned by
+        `condition_stretch` instead.
 
         Otherwise a block is filtered only once `padlen` samples of what follows
         it have been read. `sosfiltfilt` is then applied to the block together
@@ -220,6 +253,42 @@ class BandPassDownSampling(object):
 
         y_ds = emitted[::self.ResamplingFactor]
         return self._decimated_view(y_ds, block_start)
+
+    def condition_stretch(self, data, context):
+        """Band-pass and decimate a stretch read with real data on each side.
+
+        `data` holds the stretch and, before and after it, `context` samples of
+        the real data around it. The whole read is filtered with zero phase and
+        only the stretch between the two contexts is kept, so each pass of the
+        filter has run over `context` samples of real data before it reaches the
+        stretch: with `context` at least `padlen`, what is kept is what filtering
+        the whole stream at once gives there, to the floor `padlen` was measured
+        at. `Process` in estimation mode filters a stretch alone, and its first
+        and last `padlen` samples carry the filter's start instead.
+
+        :type data: py4tsa.tsa.SeqView_double_t
+        :param data: the stretch with its context, at the original rate.
+        :type context: int
+        :param context: samples of real data before and after the stretch.
+        :return: py4tsa.tsa.SeqView_double_t -- the stretch, band-passed and
+            decimated, starting at the time of its own first sample.
+        :raises ValueError: if `context` is shorter than `padlen`, or if the read
+            holds nothing between its two contexts.
+        """
+        context = int(context)
+        if context < self.padlen:
+            raise ValueError(
+                f"{context} samples of context on each side, but the filter "
+                f"settles over {self.padlen}: the edges of the stretch would "
+                f"carry its start")
+        y = SV_to_array(data)
+        if len(y) <= 2 * context:
+            raise ValueError(
+                f"a read of {len(y)} samples holds nothing between two contexts "
+                f"of {context}")
+        kept = sosfiltfilt(self.sos, y)[context:len(y) - context]
+        return self._decimated_view(kept[::self.ResamplingFactor],
+                                    data.GetStart() + context / self.sampling)
 
     @property
     def latency_s(self):

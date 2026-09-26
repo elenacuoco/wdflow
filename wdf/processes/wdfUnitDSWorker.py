@@ -65,30 +65,73 @@ class wdfUnitDSWorker(object):
         self.par.resampling=parameters.sampling/parameters.ResamplingFactor
         self.par.len=parameters.len
            
+    def _fit_start(self, gpsStart, gpsEnd, context_s=0.0):
+        """Where in the segment the noise model is fitted.
+
+        `AREstimationOffset` seconds into the segment or, when the segment is
+        too short to hold both the offset and `learn` seconds, its last `learn`
+        seconds; then moved inward just as far as it takes for `context_s`
+        seconds on each side of the stretch to lie inside the segment too.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :type context_s: float
+        :param context_s: seconds of real data needed on each side of the
+            stretch; none for a stretch that is read and not filtered.
+        :return: float -- GPS start of the `learn` seconds the model is fitted
+            on.
+        :raises ValueError: if the segment is shorter than the stretch and its
+            two contexts.
+        """
+        offset = getattr(self.par, "AREstimationOffset",
+                         DEFAULT_AR_ESTIMATION_OFFSET_S)
+        if gpsEnd - gpsStart >= self.learn + offset:
+            start = gpsStart + offset
+        else:
+            start = gpsEnd - self.learn
+        start = min(max(start, gpsStart + context_s),
+                    gpsEnd - self.learn - context_s)
+        if start < gpsStart + context_s:
+            raise ValueError(
+                f"the segment {gpsStart}-{gpsEnd} is shorter than the {self.learn} s "
+                f"the noise model is fitted on and the {context_s} s of real data "
+                f"its conditioning needs on each side")
+        return start
+
     def _learn_stretch(self, gpsStart, gpsEnd):
         """The conditioned stretch a noise model is fitted on.
 
-        `AREstimationOffset` seconds into the segment, `learn` seconds long,
-        conditioned by the estimation front end -- the same stretch whichever
-        way the filter is then fitted, so that the two are comparable.
+        `learn` seconds starting at `_fit_start`, the same stretch whichever
+        way the filter is then fitted, so that the two are comparable. It is
+        read together with the conditioning's settling of real data on each
+        side and conditioned by `BandPassDownSampling.condition_stretch`, so
+        its edges are filtered as the stream is filtered there. Filtered alone,
+        they would carry the filter's start over a settling at each end, and
+        the model would be fitted on that as though it were the noise.
 
         :type gpsStart: float
         :param gpsStart: start of the segment.
         :type gpsEnd: float
         :param gpsEnd: end of the segment.
         :return: py4tsa.tsa.SeqView_double_t -- the conditioned stretch.
-        """
-        offset = getattr(self.par, "AREstimationOffset",
-                         DEFAULT_AR_ESTIMATION_OFFSET_S)
-        if gpsEnd - gpsStart >= self.learn + offset:
-            gpsE = gpsStart + offset
-        else:
-            gpsE = gpsEnd - self.learn
+        :raises ValueError: if the segment cannot hold the stretch and its
+            context.
 
-        stream = FrameIChannel(self.par.file, self.par.channel, self.learn, gpsE)
+        Side effects: sets `AREstimationStart`, the GPS start of the stretch,
+        on the worker's parameters.
+        """
+        ds = BandPassDownSampling(self.par, estimation=True)
+        context_s = float(np.ceil(ds.padlen / self.par.sampling))
+        start = self._fit_start(gpsStart, gpsEnd, context_s)
+        self.par.AREstimationStart = start
+
+        stream = FrameIChannel(self.par.file, self.par.channel,
+                               self.learn + 2 * context_s, start - context_s)
         raw = SV()
         stream.GetData(raw)
-        return BandPassDownSampling(self.par, estimation=True).Process(raw)
+        return ds.condition_stretch(raw, int(round(context_s * self.par.sampling)))
 
     def _noise_model(self, gpsStart, gpsEnd, dir_chunk):
         """Fit the segment's noise model, or load it, and say how to whiten with it.
@@ -234,6 +277,16 @@ class wdfUnitDSWorker(object):
             continue  # If an exception is thrown, continue with the next iteration of the while loop
         ###---preheating---###
         streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
+        # The first searched sample has to be settled in both filters. The
+        # conditioning starts at the segment's first sample with no past and
+        # settles over `padlen` samples; the whitening's forward pass is FIR of
+        # its order, so it forgets its own start after that many samples of
+        # settled input. The warm-up is therefore at least the sum of the two,
+        # in reads of one second, whatever `preWhite` asks for, and the value
+        # used is what is recorded.
+        warm_up_s = (ds.padlen / self.par.sampling
+                     + whitening.latency / self.par.resampling)
+        self.par.preWhite = max(int(self.par.preWhite), int(np.ceil(warm_up_s)))
         # reading data, downsampling and whitening
         for i in range(self.par.preWhite):
             data_ds = read_conditioned(streaming, data, ds)
@@ -390,6 +443,8 @@ class wdfUnitDSWorker(object):
         would bias the noise model; set it to 0 for data known to be in science
         mode throughout. When the segment is too short to hold both the offset and
         the estimation window, the window is taken from the segment end instead.
+        Either way the window is conditioned with the settling of real data on
+        each side, and is moved inward as far as that requires (`_fit_start`).
         """
         gpsStart, gpsEnd = segment[0],segment[1]
         logging.info(

@@ -247,3 +247,65 @@ def test_the_estimation_branch_returns_the_block_it_was_given():
 
     assert view is not None
     assert view.GetSize() == SAMPLING * 4 // FACTOR
+
+
+# ------------------------------------------------------------------ settling
+
+def _with_notch(bandwidth, low_cut=12.0):
+    """The band-pass with a notch at 60 Hz of the given width stacked on."""
+    from scipy.signal import iirnotch, tf2sos
+    b, a = iirnotch(60.0, 60.0 / bandwidth, fs=SAMPLING)
+    return np.vstack([tf2sos(b, a), BandPassDownSampling(parameters(low_cut)).sos])
+
+
+def test_the_settling_is_followed_to_its_end():
+    """A narrow notch rings for tens of seconds, far past any window chosen in
+    advance. The length returned is where the response really falls below the
+    floor, and it stays below over a stretch several times as long."""
+    from scipy.signal import sosfilt
+    sos = _with_notch(0.3)
+    n = settling_length(sos, SAMPLING)
+    impulse = np.zeros(4 * n)
+    impulse[0] = 1.0
+    response = np.abs(sosfilt(sos, impulse))
+
+    assert n > 8 * SAMPLING
+    assert response[n - 1] > 1e-12 * response.max()
+    assert response[n:].max() <= 1e-12 * response.max()
+
+
+def test_a_filter_that_does_not_settle_within_the_limit_is_refused():
+    """Reporting the limit instead would put the unsettled transient into
+    every emitted block."""
+    with pytest.raises(ValueError, match="still rings"):
+        settling_length(_with_notch(0.3), SAMPLING, limit_s=10.0)
+
+
+def test_a_stretch_read_with_its_context_is_conditioned_as_the_stream():
+    """The stretch a noise model is fitted on is filtered as the stream is
+    filtered there, edges included, when it is read with the settling of real
+    data on each side. Filtered alone, its edges carry the filter's start."""
+    filt = BandPassDownSampling(parameters(), estimation=True)
+    samples = noise(SAMPLING * 30, seed=11)
+    reference = sosfiltfilt(filt.sos, samples)[::FACTOR]
+    context = int(np.ceil(filt.padlen / FACTOR)) * FACTOR
+    first, length = 10 * SAMPLING, 8 * SAMPLING
+
+    view = filt.condition_stretch(
+        _Block(samples[first - context:first + length + context],
+               (first - context) / SAMPLING), context)
+    kept = read_back(view)
+    expected = reference[first // FACTOR:(first + length) // FACTOR]
+
+    assert view.GetStart() == pytest.approx(first / SAMPLING)
+    assert np.max(np.abs(kept - expected)) / np.std(expected) < 1e-9
+
+    alone = read_back(BandPassDownSampling(parameters(), estimation=True).Process(
+        _Block(samples[first:first + length], first / SAMPLING)))
+    assert np.max(np.abs(alone - expected)) / np.std(expected) > 1e-3
+
+
+def test_a_context_shorter_than_the_settling_is_refused():
+    filt = BandPassDownSampling(parameters(), estimation=True)
+    with pytest.raises(ValueError, match="settles over"):
+        filt.condition_stretch(_Block(noise(SAMPLING * 20), 0.0), filt.padlen - 1)
