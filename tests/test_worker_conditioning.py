@@ -303,3 +303,30 @@ def test_a_later_start_is_checked_as_the_shorter_segment_would_be(tmp_path):
     assert len(first) == (1 if tried[0][1].passed else 2)
     with pytest.raises(ValueError, match="outside the segment"):
         whole.validate_starts((GPS0, GPS0 + 90.0), [GPS0 + 55.0])
+
+
+def test_every_window_is_the_search_at_the_same_positions(tmp_path):
+    """The windows read again between two instants sit on the search's own
+    grid and carry the statistic, the basis and the coefficients the search
+    computed there; the search wrote those above its threshold, and every one
+    of them is among them."""
+    import glob
+    import json
+    from conftest import run_segment_process
+
+    outdir = str(tmp_path) + "/"
+    written = run_segment_process(outdir)
+    with open(glob.glob(outdir + "offLine/H1/*/conditioning-check.json")[0]) as handle:
+        gates = json.load(handle)["gates"]
+    again = worker(outdir=outdir, segments=[[GPS0, GPS0 + 90.0]])
+    start, stop = GPS0 + 30.0, GPS0 + 34.0
+    every = again.every_window((GPS0, GPS0 + 90.0), start, stop, gates)
+    span = 64 / (SAMPLING / FACTOR)
+    inside = written[(written.gps + span >= start) & (written.gps < stop)]
+
+    assert len(inside) > 100 and len(every) >= len(inside)
+    matched = inside.merge(every, on="gps", suffixes=("", "_again"))
+    assert len(matched) == len(inside)
+    assert np.allclose(matched.EnWDF, matched.EnWDF_again, rtol=1e-5)
+    assert (matched.wave == matched.wave_again).mean() > 0.99
+    assert np.allclose(np.diff(np.sort(every.gps)), every.stride.iloc[0], atol=1e-9)

@@ -122,7 +122,12 @@ admitted pairs bounds the rate of the physical ones from above.
 `TriggerRelease.trace` says, around any instant, what each stage holds per
 detector --- triggers, the events holding them, the pairs those events form and
 their best rank --- which is where a transient seen in the data and absent from
-the list was lost.
+the list was lost. The search writes a window only when its statistic reaches
+the threshold, so where the trace finds no trigger,
+`wdf.processes.network_search.windows_around` (`wdfUnitDSWorker.every_window`)
+reads again every window the search read between two instants, on the same
+stream and the same grid of windows, at a threshold of zero: what each window
+held, and how far below the threshold it stood.
 
 ## Status
 

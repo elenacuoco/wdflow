@@ -33,6 +33,8 @@ from py4tsa.tsa import SeqView_double_t as SV
 
 from wdf.observers.ParameterEstimationObserver import ParameterEstimation 
 from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
+from wdf.observers.observer import Observer
+from wdf.structures.array2SeqView import array2SeqView
 
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 SV_to_array,
@@ -64,6 +66,16 @@ import os
 
 
 
+
+
+class _Collected(Observer):
+    """The records of the triggers handed to it, kept in memory."""
+
+    def __init__(self):
+        self.rows = []
+
+    def update(self, CEV):
+        self.rows.append(CEV.record())
 
 
 class wdfUnitDSWorker(object):
@@ -709,6 +721,84 @@ class wdfUnitDSWorker(object):
         _, report = self._examine(gpsStart, gpsEnd, build_whitening, True)
         self._record(report, dir_chunk)
         return report
+
+    def every_window(self, segment, start, stop, gates=None,
+                     wavThresh=WaveletThreshold.block):
+        """Every analysis window a segment's search reads between two instants,
+        whatever its statistic.
+
+        The search writes a window only when its statistic reaches the
+        threshold, so what a window below it held is in no trigger file. The
+        search's windows start at the segment's first searched sample, the
+        segment's start plus its warm-up, and step by the window less the
+        overlap. This reads the segment's stream (`whitened_stretch`, gated as
+        the search gates it) from the first window of that grid that reaches
+        `start` to the end of the last that begins before `stop`, and hands it,
+        on the search's own scale, to the same search at a threshold of zero:
+        every window holding a surviving coefficient is returned with the
+        statistic, the basis and the coefficients the search computed at that
+        position. Nothing is written.
+
+        :type segment: tuple[float, float]
+        :param segment: `(gpsStart, gpsEnd)` of the segment.
+        :type start: float
+        :param start: GPS time the first window returned must reach.
+        :type stop: float
+        :param stop: GPS time before which the last window returned begins.
+        :type gates: numpy.ndarray or None
+        :param gates: shape `(n, 2)`, the segment's gated stretches, as its check
+            reports them; None gates nothing.
+        :type wavThresh: py4tsa.tsa.WaveletThreshold.WaveletThresholding
+        :param wavThresh: the rule for the coefficients of a window.
+        :return: pandas.DataFrame -- one row per window, the trigger schema,
+            with `stride`, seconds, as a trigger file read back carries it.
+        :raises ValueError: if the windows asked for are not inside what the
+            segment's search reads.
+        """
+        import pandas as pd
+
+        gpsStart, gpsEnd = float(segment[0]), float(segment[1])
+        window, overlap = self.schedule[0]
+        rate = float(self.par.resampling)
+        _, dir_chunk = self._segment_directory(gpsStart)
+        self.par.LineNotches = self._segment_lines(gpsStart, gpsEnd)
+        whitening = self._noise_model(gpsStart, gpsEnd, dir_chunk)()
+        ds = BandPassDownSampling(self.par)
+        # The warm-up `_prime` gives every search of this segment, and so the
+        # first searched sample the windows are laid from.
+        origin = gpsStart + max(int(self.par.preWhite), int(np.ceil(
+            ds.padlen / self.par.sampling + whitening.latency / rate)))
+        stride = (window - overlap) / rate
+        first = origin + max(0, int(np.floor((float(start) - window / rate - origin)
+                                            / stride)) + 1) * stride
+        last = float(stop) + window / rate
+        t0, samples = self.whitened_stretch(segment, first, last, gates)
+        if abs(t0 - first) > 0.5 / rate:
+            raise ValueError(f"the stream starts at {t0}, not on the window at {first}")
+        par = Parameters()
+        par.copy(self.par)
+        par.window, par.overlap, par.Ncoeff, par.threshold = window, overlap, window, 0.0
+        search = wdf(par, wavThresh)
+        collected = _Collected()
+        estimation = ParameterEstimation(par)
+        estimation.register(collected)
+        search.register(estimation)
+        # The search is handed the stream on its own scale, which
+        # `whitened_stretch` divided out, in the blocks it reads.
+        raw = samples * float(self.par.sigma)
+        block = int(rate * self.par.len)
+        for at in range(0, raw.size, block):
+            piece = raw[at:at + block]
+            view = array2SeqView(t0 + at / rate, rate, piece.size)
+            view.Fill(t0 + at / rate, array=piece)
+            search.SetData(view.SV)
+            search.Process()
+        found = pd.DataFrame(collected.rows)
+        if found.empty:
+            return found
+        begins = found["gps"].to_numpy(dtype=float)
+        keep = (begins + window / rate >= float(start)) & (begins < float(stop))
+        return found[keep].reset_index(drop=True).assign(stride=stride)
 
     def validate_starts(self, segment, starts, stop_at_first=True):
         """Check a segment as though it began at each of several later instants.

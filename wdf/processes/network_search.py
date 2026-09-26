@@ -1000,3 +1000,43 @@ def whitened_around(config: SearchConfig, start: float, stop: float, outdir: str
 
     segment, par, gates = checked_segment(config, start, stop, outdir, ifo, first, last)
     return wdfUnitDSWorker(par).whitened_stretch(segment, first, last, gates)
+
+
+def windows_around(config: SearchConfig, start: float, stop: float, outdir: str,
+                   ifo: str, first: float, last: float):
+    """Every window a detector's search reads between two instants, whatever
+    its statistic.
+
+    The search writes a window only when its statistic reaches the threshold.
+    This reads again, on the segment `checked_segment` finds and on the
+    search's own grid of windows, every window that reaches `first` and begins
+    before `last`, under `config.wavelet_rule`
+    (`wdfUnitDSWorker.every_window`), so a window below the threshold can be
+    read as the search computed it.
+
+    :type config: SearchConfig
+    :param config: the configuration the stretch was checked and searched with.
+    :type start: float
+    :param start: GPS start of the stretch.
+    :type stop: float
+    :param stop: GPS end of it.
+    :type outdir: str
+    :param outdir: where the stretch was checked.
+    :type ifo: str
+    :param ifo: the detector.
+    :type first: float
+    :param first: GPS time the first window must reach.
+    :type last: float
+    :param last: GPS time before which the last window begins.
+    :return: pandas.DataFrame -- one row per window, the trigger schema with
+        `stride` and `ifo`.
+    :raises ValueError: as `checked_segment`.
+    """
+    from py4tsa.tsa import WaveletThreshold
+
+    from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
+
+    segment, par, gates = checked_segment(config, start, stop, outdir, ifo, first, last)
+    found = wdfUnitDSWorker(par).every_window(
+        segment, first, last, gates, getattr(WaveletThreshold, config.wavelet_rule))
+    return found.assign(ifo=ifo) if len(found) else found
