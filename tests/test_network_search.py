@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 
 from wdf.processes.gating import octave_bands
-from wdf.processes.network_search import (CONDITIONING_KEYS, Job, SearchConfig,
-                                          StretchRejected, _signature,
-                                          contamination, frame_index,
+from wdf.processes.network_search import (CONDITIONING_KEYS, SETTLING_LIMIT_S, Job,
+                                          SearchConfig, StretchRejected, _signature,
+                                          contamination, frame_index, later_starts,
                                           mask_segments, merge_segments,
                                           worker_parameters, write_frame_list)
 
@@ -121,3 +121,17 @@ def test_a_rejected_stretch_names_every_detector_band_and_criterion():
     assert "L1 fails: 16-32 Hz" in str(error) and "V1 fails" in str(error)
     assert len(error.reports) == 2
     assert error.table == "the whole check"
+
+
+def test_the_later_starts_are_fixed_by_the_segment_and_the_configuration():
+    """A grid from the segment's start, stopping where what is left would no
+    longer hold the shortest segment searched or the fit stretch with its
+    settling: nothing but the segment and the configuration places it."""
+    config = _config(trim_step_s=300.0, minimum_segment_s=900.0)
+    starts = later_starts(config, (1000.0, 11000.0), fit_offset=8000.0)
+    assert starts[0] == 1300.0 and np.allclose(np.diff(starts), 300.0)
+    assert starts[-1] <= 11000.0 - 900.0
+    assert starts[-1] <= 1000.0 + 8000.0 - 2 * SETTLING_LIMIT_S
+    early_fit = later_starts(config, (1000.0, 11000.0), fit_offset=500.0)
+    assert len(early_fit) == 0
+    assert len(later_starts(config, (1000.0, 2000.0), fit_offset=500.0)) == 0

@@ -276,3 +276,30 @@ def test_a_stretch_of_the_stream_is_the_stream_the_segment_search_reads(tmp_path
     assert np.max(np.abs(samples - same)) / np.std(same) < 1e-5
     with pytest.raises(ValueError, match="not inside"):
         part.whitened_stretch(segment, GPS0 - 5.0, GPS0 + 5.0)
+
+
+def test_a_later_start_is_checked_as_the_shorter_segment_would_be(tmp_path):
+    """Checking the tail of the segment's stream from a later start's warm-up
+    is checking the shorter segment: it keeps the fit stretch, so its lines
+    and model, and both filters forget where they were started."""
+    whole = worker(outdir=str(tmp_path / "whole") + "/", learn=20, AREstimationOffset=50.0)
+    tried = whole.validate_starts((GPS0, GPS0 + 90.0), [GPS0 + 10.0, GPS0 + 20.0],
+                                  stop_at_first=False)
+    assert [start for start, _ in tried] == [GPS0 + 10.0, GPS0 + 20.0]
+    for later, report in tried:
+        shorter = worker(outdir=str(tmp_path / str(int(later - GPS0))) + "/", learn=20,
+                         AREstimationOffset=GPS0 + 50.0 - later)
+        direct = shorter.validate((later, GPS0 + 90.0))
+        assert report.start == pytest.approx(direct.start)
+        assert report.stop == pytest.approx(direct.stop)
+        for name in ("power", "kurtosis", "gaussian", "thirds"):
+            assert np.allclose(getattr(report, name), getattr(direct, name), rtol=1e-5,
+                               atol=1e-6), name
+        assert report.transient_fraction == pytest.approx(direct.transient_fraction,
+                                                          abs=1e-9)
+        assert report.passed == direct.passed
+
+    first = whole.validate_starts((GPS0, GPS0 + 90.0), [GPS0 + 10.0, GPS0 + 20.0])
+    assert len(first) == (1 if tried[0][1].passed else 2)
+    with pytest.raises(ValueError, match="outside the segment"):
+        whole.validate_starts((GPS0, GPS0 + 90.0), [GPS0 + 55.0])

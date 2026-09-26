@@ -172,6 +172,22 @@ coefficients of a window --- is handed the check's model, lines and gates, the
 last as declared stretches with no census of its own: the stream searched is
 the stream the check read, whatever rule then reads it.
 
+A science segment that fails its check can be checked again from later starts
+(`SearchConfig.trim_step_s`): a grid of starts from the segment's own start, as
+long as what is left holds the shortest segment searched and the fit stretch.
+A segment searched from a later start keeps its fit stretch, its lines and its
+model, and both filters settle within the warm-up and forget where they were
+started, so the stream it searches is the whole segment's stream from that
+start's warm-up on. `wdfUnitDSWorker.validate_starts` therefore whitens the
+segment once and checks, start after start, the tail a segment beginning there
+would search, with the census, the gates and every criterion read on that tail
+alone: the check the shorter segment would get. The earliest start that passes
+is kept, its check is made and filed like any other, and the stretch before it
+is neither searched nor counted. The tolerances are the check's own; what
+moves is where the segment begins, and the grid is fixed by the segment and the
+configuration, so the start kept depends on the data's check and on nothing
+else.
+
 `wdfUnitDSWorker.whitened_stretch` rebuilds that stream between two instants
 without whitening the whole segment again. The chain is started a whole number
 of seconds before the first instant, far enough for both filters to have

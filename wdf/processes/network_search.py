@@ -58,6 +58,11 @@ FRAME_NAME = re.compile(r"-(\d{9,10})-(\d+)\.gwf$")
 #: its lines, its model and its gates from there.
 CHECK_RUN = "conditioning"
 
+#: Seconds beyond which the conditioning refuses a filter that still rings
+#: (`BandPassDownSampling.settling_length`): the longest settling of real data
+#: a fit stretch can need on each side.
+SETTLING_LIMIT_S = 120.0
+
 #: The worker's parameters a segment's conditioning depends on. A check or a
 #: search filed under the same directory with any of them different describes
 #: a different stream and is not read back.
@@ -262,6 +267,10 @@ class SearchConfig:
     :param contamination_limit: largest mean-over-median ratio a fit stretch
         may have in any octave; a segment with none below it is not searched.
     :param minimum_segment_s: shortest science segment searched, seconds.
+    :param trim_step_s: when a segment fails its check, the step, seconds, of
+        the later starts it is checked again from; the earliest from which it
+        passes is kept, and the stretch before it is neither searched nor
+        counted. None checks each segment from its start only.
     :param processes: most processes run at once.
     """
 
@@ -290,6 +299,7 @@ class SearchConfig:
     fit_step_s: float = 300.0
     contamination_limit: float = 3.0
     minimum_segment_s: float = 900.0
+    trim_step_s: float | None = None
     processes: int = 32
 
     @property
@@ -515,7 +525,10 @@ def check_job(arguments) -> dict:
     Filed under `CHECK_RUN`. A check already made there under the same
     conditioning is read back rather than made again.
 
-    :param arguments: `(config, job)`, the job's run being `CHECK_RUN`.
+    :param arguments: `(config, job)`, the job's run being `CHECK_RUN`, or
+        `(config, job, fit_offset)` to fit the model at that offset into the
+        segment rather than where the scan would choose, which is how a
+        segment checked from a later start keeps its own fit stretch.
     :return: dict -- the job's `ifo`, `segment` and `frame_list`, the fit
         stretch chosen and its contamination, the lines notched, the
         `ValidationReport` (None when no fit stretch was clean enough to fit a
@@ -524,7 +537,8 @@ def check_job(arguments) -> dict:
     from wdf.processes.validation import ValidationReport
     from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
 
-    config, job = arguments
+    config, job = arguments[:2]
+    fixed = arguments[2] if len(arguments) > 2 else None
     began = time.time()
     directory = job.directory(config.channels[job.ifo])
     record = os.path.join(directory, "check.json")
@@ -547,8 +561,9 @@ def check_job(arguments) -> dict:
                         lines=stored["lines"], report=report,
                         seconds=time.time() - began)
 
-    offset, worst = quietest_offset(config, job, sampling)
-    if not (np.isfinite(offset) and worst <= config.contamination_limit):
+    offset, worst = ((float(fixed), float("nan")) if fixed is not None
+                     else quietest_offset(config, job, sampling))
+    if fixed is None and not (np.isfinite(offset) and worst <= config.contamination_limit):
         logging.warning("%s %.0f-%.0f not checked: the cleanest fit stretch has "
                         "mean over median %.2f, above %.2f", job.ifo,
                         *job.segment, worst, config.contamination_limit)
@@ -638,6 +653,76 @@ def search_job(arguments) -> dict:
                 seconds=time.time() - began)
 
 
+def later_starts(config: SearchConfig, segment, fit_offset: float) -> np.ndarray:
+    """The later starts a failing segment is checked from.
+
+    Every `trim_step_s` after the segment's start, as long as what is left
+    holds `minimum_segment_s` and the fit stretch with its settling of real
+    data, which a later start keeps. The grid is fixed by the segment and the
+    configuration alone, so the start kept depends on the data's check and on
+    nothing else.
+
+    :type config: SearchConfig
+    :param config: the search's configuration.
+    :param segment: `(start, stop)` of the segment, GPS seconds.
+    :type fit_offset: float
+    :param fit_offset: seconds into the segment its fit stretch starts at.
+    :return: numpy.ndarray -- GPS starts, ascending; empty when none fits.
+    """
+    start, stop = float(segment[0]), float(segment[1])
+    # The settling a notched filter needs is bounded by the limit
+    # `settling_length` refuses beyond, so this margin always holds it.
+    latest = min(stop - float(config.minimum_segment_s),
+                 start + float(fit_offset) - 2.0 * SETTLING_LIMIT_S)
+    step = float(config.trim_step_s)
+    return start + step * np.arange(1, int(np.floor((latest - start) / step)) + 1)
+
+
+def trim_job(arguments) -> dict:
+    """The earliest later start from which a failing segment passes its check.
+
+    The segment's stream is whitened once, from its own model, and the later
+    starts of `later_starts` are checked in order on its tail
+    (`wdfUnitDSWorker.validate_starts`) until one passes. The result is filed
+    beside the segment's check under the configuration it was found with, and
+    read back while that holds.
+
+    :param arguments: `(config, job, checked)`: the search's configuration, the
+        job (its run `CHECK_RUN`), and what `check_job` returned for it.
+    :return: dict -- the job's `ifo` and `segment`, `start`, the earliest start
+        that passes (None when none does), and `tried`, one `(start, passed,
+        failures)` per start checked.
+    """
+    from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
+
+    config, job, checked = arguments
+    directory = job.directory(config.channels[job.ifo])
+    record = os.path.join(directory, "trim.json")
+    sampling = frame_rate(job.frame_list, config.channels[job.ifo], job.segment[0])
+    par = worker_parameters(config, job, sampling, checked["fit_offset"])
+    starts = later_starts(config, job.segment, checked["fit_offset"])
+    wanted = dict(conditioning=_signature(par, CONDITIONING_KEYS),
+                  starts=[float(v) for v in starts])
+    if os.path.isfile(record):
+        with open(record, encoding="utf-8") as handle:
+            stored = json.load(handle)
+        if {key: stored.get(key) for key in wanted} == wanted:
+            return dict(ifo=job.ifo, segment=tuple(job.segment), start=stored["start"],
+                        tried=[tuple(t) for t in stored["tried"]])
+    tried, found = [], None
+    if len(starts):
+        for later, report in wdfUnitDSWorker(par).validate_starts(tuple(job.segment),
+                                                                   starts):
+            passed = report is not None and report.passed
+            tried.append((float(later), bool(passed),
+                          [] if report is None else list(report.failures)))
+            if passed:
+                found = float(later)
+    with open(record, "w", encoding="utf-8") as handle:
+        json.dump(dict(wanted, start=found, tried=tried), handle, indent=1)
+    return dict(ifo=job.ifo, segment=tuple(job.segment), start=found, tried=tried)
+
+
 def plan(config: SearchConfig, start: float, stop: float, outdir: str,
          run: str = CHECK_RUN) -> list:
     """Every job the stretch holds: one per detector and science segment.
@@ -682,6 +767,13 @@ def _pool(config: SearchConfig, n_jobs: int):
 def check(config: SearchConfig, start: float, stop: float, outdir: str) -> pd.DataFrame:
     """Every segment of every detector in the stretch, checked before any search.
 
+    With `trim_step_s` set, a segment that fails is checked again from later
+    starts (`later_starts`, `trim_job`) and kept from the earliest that passes,
+    its own fit stretch and model unchanged; the check of the shorter segment
+    is then made and filed like any other. The tolerances are the check's own:
+    what is left out is the stretch before the start kept, which is neither
+    searched nor counted.
+
     :type config: SearchConfig
     :param config: the search's configuration.
     :type start: float
@@ -692,9 +784,14 @@ def check(config: SearchConfig, start: float, stop: float, outdir: str) -> pd.Da
     :param outdir: where everything is written; a segment already checked
         there under the same conditioning is read back.
     :return: pandas.DataFrame -- one row per segment, in the order planned:
-        `ifo`, `segment`, `frame_list`, `fit_offset`, `fit_contamination`,
-        `lines`, the `report` (a `ValidationReport`, or None where no fit
-        stretch was clean enough), `seconds` and `passed`.
+        `ifo`, `segment` (from the start kept, when a later one was),
+        `frame_list`, `fit_offset`, `fit_contamination`, `lines`, the `report`
+        (a `ValidationReport`, or None where no fit stretch was clean enough),
+        `seconds`, `checked_from` (the science segment's own start),
+        `excluded_s` (the seconds before the start kept), `tried` (one
+        `(start, passed, failures)` per later start checked), `whole_report`
+        (the check of the whole science segment, where a later start was kept;
+        None otherwise) and `passed`.
     :raises StretchRejected: if any segment fails its check, after every
         segment has been checked; its message names each detector, band and
         criterion that failed, and it carries the whole table as `table`.
@@ -706,6 +803,30 @@ def check(config: SearchConfig, start: float, stop: float, outdir: str) -> pd.Da
                          f"{config.minimum_segment_s:g} s in {start:.0f}-{stop:.0f}")
     with _pool(config, len(jobs)) as pool:
         results = pool.map(check_job, [(config, job) for job in jobs])
+    for result in results:
+        result.update(checked_from=result["segment"][0], excluded_s=0.0, tried=[],
+                      whole_report=None)
+    failing = [k for k, r in enumerate(results)
+               if r["report"] is not None and not r["report"].passed]
+    if config.trim_step_s and failing:
+        # Every failing segment of every detector goes through the same rule.
+        with _pool(config, len(failing)) as pool:
+            trims = pool.map(trim_job, [(config, jobs[k], results[k]) for k in failing])
+        later = [(k, trim) for k, trim in zip(failing, trims) if trim["start"] is not None]
+        shorter = [replace(jobs[k], segment=(trim["start"], jobs[k].segment[1]))
+                   for k, trim in later]
+        offsets = [results[k]["fit_offset"] + jobs[k].segment[0] - trim["start"]
+                   for k, trim in later]
+        with _pool(config, max(len(shorter), 1)) as pool:
+            rechecked = pool.map(check_job, [(config, job, offset) for job, offset
+                                             in zip(shorter, offsets)])
+        for (k, trim), result in zip(later, rechecked):
+            result.update(checked_from=jobs[k].segment[0],
+                          excluded_s=trim["start"] - jobs[k].segment[0],
+                          whole_report=results[k]["report"])
+            results[k] = result
+        for k, trim in zip(failing, trims):
+            results[k]["tried"] = trim["tried"]
     table = pd.DataFrame(results)
     table["passed"] = [r is not None and r.passed for r in table["report"]]
     failed = [r for r in table["report"] if r is not None and not r.passed]
@@ -789,13 +910,73 @@ def search(config: SearchConfig, start: float, stop: float, outdir: str,
     return triggers, spans, table
 
 
+def checked_segment(config: SearchConfig, start: float, stop: float, outdir: str,
+                    ifo: str, first: float, last: float):
+    """The checked segment of a detector holding two instants, as its search reads it.
+
+    Found among the segments `check` filed: from the later start it was kept
+    from, when it was and the instants follow that start, since the search
+    reads that segment's stream, gated by its own check; the stretch before
+    the start kept is read on the whole segment's, the stream its search would
+    have read.
+
+    :type config: SearchConfig
+    :param config: the configuration the stretch was checked with.
+    :type start: float
+    :param start: GPS start of the stretch.
+    :type stop: float
+    :param stop: GPS end of it.
+    :type outdir: str
+    :param outdir: where the stretch was checked.
+    :type ifo: str
+    :param ifo: the detector.
+    :type first: float
+    :param first: GPS time of the first instant.
+    :type last: float
+    :param last: GPS time of the last instant.
+    :return: tuple -- `(segment, parameters, gates)`: the segment's `(start,
+        stop)`, the worker's parameters as its check was made with them, and
+        its gated stretches.
+    :raises ValueError: if no checked segment of the detector holds both
+        instants, or if the stretch was not checked under this configuration.
+    """
+    from wdf.processes.validation import ValidationReport
+
+    jobs = [job for job in plan(replace(config, frames={ifo: config.frames[ifo]}),
+                                start, stop, outdir, CHECK_RUN)
+            if job.segment[0] <= first and last <= job.segment[1]]
+    if not jobs:
+        raise ValueError(f"no science segment of {ifo} holds {first}-{last}")
+    job = jobs[0]
+    trimmed = os.path.join(job.directory(config.channels[ifo]), "trim.json")
+    if os.path.isfile(trimmed):
+        with open(trimmed, encoding="utf-8") as handle:
+            kept = json.load(handle).get("start")
+        if kept is not None and first >= kept:
+            job = replace(job, segment=(float(kept), job.segment[1]))
+    directory = job.directory(config.channels[ifo])
+    record = os.path.join(directory, "check.json")
+    if not os.path.isfile(record):
+        raise ValueError(f"{ifo} {job.segment[0]:.0f} was not checked in {outdir}")
+    with open(record, encoding="utf-8") as handle:
+        stored = json.load(handle)
+    sampling = frame_rate(job.frame_list, config.channels[ifo], job.segment[0])
+    par = worker_parameters(config, job, sampling, stored["fit_offset"])
+    if stored["conditioning"] != _signature(par, CONDITIONING_KEYS):
+        raise ValueError(f"{ifo} {job.segment[0]:.0f} was checked under another "
+                         "conditioning")
+    with open(os.path.join(directory, "conditioning-check.json"),
+              encoding="utf-8") as handle:
+        gates = ValidationReport.from_dict(json.load(handle)).gates
+    return tuple(job.segment), par, gates
+
+
 def whitened_around(config: SearchConfig, start: float, stop: float, outdir: str,
                     ifo: str, first: float, last: float):
     """A detector's whitened stream between two instants, as its search read it.
 
-    The segment of the stretch holding the instants is found among those
-    `check` filed, and its stream is rebuilt from the model, the lines, the
-    fit stretch and the gates its check recorded
+    From the segment `checked_segment` finds, rebuilt from the model, the
+    lines, the fit stretch and the gates its check recorded
     (`wdfUnitDSWorker.whitened_stretch`), on the search's noise scale.
 
     :type config: SearchConfig
@@ -813,30 +994,9 @@ def whitened_around(config: SearchConfig, start: float, stop: float, outdir: str
     :type last: float
     :param last: GPS time of the last sample wanted.
     :return: tuple -- `(t0, samples)` at the analysed rate.
-    :raises ValueError: if no checked segment of the detector holds both
-        instants, or if the stretch was not checked under this configuration.
+    :raises ValueError: as `checked_segment`.
     """
-    from wdf.processes.validation import ValidationReport
     from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
 
-    jobs = [job for job in plan(replace(config, frames={ifo: config.frames[ifo]}),
-                                start, stop, outdir, CHECK_RUN)
-            if job.segment[0] <= first and last <= job.segment[1]]
-    if not jobs:
-        raise ValueError(f"no science segment of {ifo} holds {first}-{last}")
-    job = jobs[0]
-    directory = job.directory(config.channels[ifo])
-    record = os.path.join(directory, "check.json")
-    if not os.path.isfile(record):
-        raise ValueError(f"{ifo} {job.segment[0]:.0f} was not checked in {outdir}")
-    with open(record, encoding="utf-8") as handle:
-        stored = json.load(handle)
-    sampling = frame_rate(job.frame_list, config.channels[ifo], job.segment[0])
-    par = worker_parameters(config, job, sampling, stored["fit_offset"])
-    if stored["conditioning"] != _signature(par, CONDITIONING_KEYS):
-        raise ValueError(f"{ifo} {job.segment[0]:.0f} was checked under another "
-                         "conditioning")
-    with open(os.path.join(directory, "conditioning-check.json"),
-              encoding="utf-8") as handle:
-        gates = ValidationReport.from_dict(json.load(handle)).gates
-    return wdfUnitDSWorker(par).whitened_stretch(tuple(job.segment), first, last, gates)
+    segment, par, gates = checked_segment(config, start, stop, outdir, ifo, first, last)
+    return wdfUnitDSWorker(par).whitened_stretch(segment, first, last, gates)

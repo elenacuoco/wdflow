@@ -638,6 +638,28 @@ class wdfUnitDSWorker(object):
             `ValidationReport`, or None when not checked.
         """
         start, whitened, ds = self._whitened_segment(gpsStart, gpsEnd, build_whitening)
+        range_mpc = bns_range(*self._fit_spectrum(gpsStart, gpsEnd)) if check else None
+        return self._examine_stream(start, whitened, ds, check, range_mpc)
+
+    def _examine_stream(self, start, whitened, ds, check, range_mpc=float("nan")):
+        """Find the gates of a whitened stream and, if asked, check it.
+
+        The census, the gates and the check of `_examine`, on a stream already
+        in hand: the census's robust scale, the gates and every criterion are
+        read on this stream alone.
+
+        :type start: float
+        :param start: GPS time of the stream's first sample.
+        :type whitened: numpy.ndarray
+        :param whitened: the whitened stream, ungated, at the analysed rate.
+        :type ds: BandPassDownSampling
+        :param ds: the conditioning front end that produced it.
+        :type check: bool
+        :param check: whether to check the stream as well as gate it.
+        :type range_mpc: float
+        :param range_mpc: the detector's binary neutron star range, reported.
+        :return: tuple -- `(gates, report)`, as `_examine` returns them.
+        """
         rate = float(self.par.resampling)
         bands = octave_bands(rate, ds.search_low_frequency)
         found = transients(whitened, rate, bands)
@@ -650,9 +672,7 @@ class wdfUnitDSWorker(object):
         window = max(window for window, _ in self.schedule) / rate
         report = validation.validate(self.par.itf, gated, rate, start, bands,
                                      (ds.cutoff_frequency, 0.5 * rate), found, gates,
-                                     taper, window,
-                                     range_mpc=bns_range(*self._fit_spectrum(gpsStart,
-                                                                             gpsEnd)))
+                                     taper, window, range_mpc=range_mpc)
         logging.info("Conditioning check:\n%s" % report.table())
         return gates, report
 
@@ -689,6 +709,68 @@ class wdfUnitDSWorker(object):
         _, report = self._examine(gpsStart, gpsEnd, build_whitening, True)
         self._record(report, dir_chunk)
         return report
+
+    def validate_starts(self, segment, starts, stop_at_first=True):
+        """Check a segment as though it began at each of several later instants.
+
+        A segment searched from a later start keeps its own fit stretch, lines
+        and model, so the stream its search reads is the whole segment's stream
+        from that start's warm-up on: both filters settle within the warm-up and
+        forget where they were started. The segment is therefore whitened once,
+        and each start is checked on the tail of that stream a segment
+        beginning there would search, from the start plus the warm-up to the
+        segment's end, with the census, the gates and every criterion read on
+        that tail alone -- the check `validate` makes of the shorter segment,
+        without whitening it again. Nothing is searched and nothing is written.
+
+        :type segment: tuple[float, float]
+        :param segment: `(gpsStart, gpsEnd)` of the segment; its fit stretch is
+            where `AREstimationOffset` puts it, and a later start keeps it there.
+        :type starts: sequence of float
+        :param starts: GPS times the segment is checked from, in the order they
+            are tried; each must leave the fit stretch, with its settling,
+            inside the segment it begins.
+        :type stop_at_first: bool
+        :param stop_at_first: stop at the first start whose tail passes.
+        :return: list -- one `(start, ValidationReport)` per start tried, in
+            order; the report is None where the tail holds nothing to check.
+        :raises ValueError: if a start would leave the fit stretch outside the
+            segment it begins.
+        """
+        gpsStart, gpsEnd = float(segment[0]), float(segment[1])
+        # The lines are read on the stretch the offset names and the model is
+        # fitted on it with its settling of real data on each side; a later
+        # start keeps both only if it leaves the two inside the segment it
+        # begins, the second with its settling.
+        _, context_s, model_start = self._fit_plan(gpsStart, gpsEnd)
+        latest = min(self._fit_start(gpsStart, gpsEnd), model_start - context_s)
+        for later in starts:
+            if not gpsStart <= float(later) <= latest:
+                raise ValueError(f"a start at {later} leaves the fit stretch at "
+                                 f"{model_start} outside the segment it begins")
+        _, dir_chunk = self._segment_directory(gpsStart)
+        self.par.LineNotches = self._segment_lines(gpsStart, gpsEnd)
+        build_whitening = self._noise_model(gpsStart, gpsEnd, dir_chunk)
+        start, whitened, ds = self._whitened_segment(gpsStart, gpsEnd, build_whitening)
+        rate = float(self.par.resampling)
+        range_mpc = bns_range(*self._fit_spectrum(gpsStart, gpsEnd))
+        # `_whitened_segment` primed the chain, which set the warm-up every
+        # segment of this detector takes before its first searched block.
+        warm_up = float(self.par.preWhite)
+        times = start + np.arange(whitened.size) / rate
+        out = []
+        for later in starts:
+            tail = times >= float(later) + warm_up - 0.5 / rate
+            if not tail.any():
+                out.append((float(later), None))
+                continue
+            first = int(np.argmax(tail))
+            _, report = self._examine_stream(times[first], whitened[first:], ds, True,
+                                             range_mpc)
+            out.append((float(later), report))
+            if stop_at_first and report.passed:
+                break
+        return out
 
     @staticmethod
     def _record(report, dir_chunk):
