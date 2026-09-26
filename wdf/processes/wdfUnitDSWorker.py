@@ -31,7 +31,9 @@ from wdf.observers.ParameterEstimationObserver import ParameterEstimation
 from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
+                                                SV_to_array,
                                                 read_conditioned)
+from wdf.processes.lines import median_spectrum, spectral_lines
 from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
 from wdf.processes.Whitening import Whitening
@@ -41,6 +43,9 @@ from wdf.processes.zero_phase_whitening import (
 )
 
 DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0 
+#: Height above the local floor, as a ratio of amplitude spectral densities,
+#: from which a line is notched when the configuration names none.
+DEFAULT_LINE_THRESHOLD = 5.0
 import logging
 import os
 
@@ -66,6 +71,69 @@ class wdfUnitDSWorker(object):
         self.learn = parameters.learn
         self.par.resampling=parameters.sampling/parameters.ResamplingFactor
         self.par.len=parameters.len
+        # Lines named in the configuration are notched in every segment; when
+        # it names none, each segment's are found on its own fit stretch.
+        self.configured_lines = getattr(parameters, "LineNotches", None)
+
+    def _raw_stretch(self, start, seconds):
+        """The strain of a stretch as the frames hold it, unconditioned.
+
+        :type start: float
+        :param start: GPS start of the stretch.
+        :type seconds: float
+        :param seconds: its length.
+        :return: numpy.ndarray -- the samples, at the frames' rate.
+        """
+        stream = FrameIChannel(self.par.file, self.par.channel, seconds, start)
+        view = SV()
+        stream.GetData(view)
+        return SV_to_array(view)
+
+    def _fit_spectrum(self, gpsStart, gpsEnd):
+        """The spectrum of the strain on the stretch the offset names for the fit.
+
+        The median of the periodograms of `learn` seconds of unconditioned
+        strain, at the frames' rate (`wdf.processes.lines.median_spectrum`).
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :return: tuple -- `(frequency, psd)`, Hz and strain squared per Hz.
+        """
+        start = self._fit_start(gpsStart, gpsEnd)
+        return median_spectrum(self._raw_stretch(start, self.learn),
+                               self.par.sampling)
+
+    def _segment_lines(self, gpsStart, gpsEnd):
+        """The lines a segment is notched at.
+
+        Those the configuration names, when it names any. Otherwise every line
+        standing `LineThreshold` times above the local floor of the fit
+        stretch's spectrum, anywhere its content can reach the analysed stream
+        (`BandPassDownSampling.line_band`). The stretch is the one the offset
+        names, read without conditioning; the model is fitted on the same
+        stretch, moved inward by at most the conditioning's settling when the
+        segment's edges require it. A `LineThreshold` of zero or None notches
+        nothing.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :return: list -- `[frequency, bandwidth, height]` per line, as
+            `wdf.processes.lines.spectral_lines` returns them.
+        """
+        if self.configured_lines is not None:
+            return np.asarray(self.configured_lines, dtype=float).reshape(-1, 3).tolist()
+        threshold = getattr(self.par, "LineThreshold", DEFAULT_LINE_THRESHOLD)
+        if not threshold:
+            return []
+        self.par.LineNotches = None
+        low, high = BandPassDownSampling(self.par).line_band
+        frequency, psd = self._fit_spectrum(gpsStart, gpsEnd)
+        return spectral_lines(frequency, psd, low, high,
+                              threshold=float(threshold)).tolist()
            
     def _fit_start(self, gpsStart, gpsEnd, context_s=0.0):
         """Where in the segment the noise model is fitted.
@@ -514,6 +582,8 @@ class wdfUnitDSWorker(object):
         if not os.path.exists(dir_chunk):
             os.makedirs(dir_chunk)
         if not os.path.isfile(dir_chunk + "ProcessEnded.check"):
+            self.par.LineNotches = self._segment_lines(gpsStart, gpsEnd)
+            logging.info("Notching %d lines" % len(self.par.LineNotches))
             build_whitening = self._noise_model(gpsStart, gpsEnd, dir_chunk)
 
             # update the self.parameters to be saved in local json file

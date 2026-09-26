@@ -126,3 +126,36 @@ def test_a_saved_model_is_found_only_under_its_own_conditioning(tmp_path, monkey
     assert same.par.ARfile == first.par.ARfile
     assert same.par.sigma == first.par.sigma
     assert same.par.AREstimationStart == GPS0 + 50.0
+
+
+# ------------------------------------------------------------------ the lines
+
+def _line_strain(frequency):
+    """Unit noise at the frames' rate with one line, for `_raw_stretch`."""
+    def raw(self, start, seconds):
+        t = np.arange(int(seconds * SAMPLING)) / SAMPLING
+        return (np.random.default_rng(int(start)).standard_normal(t.size)
+                + (0.2 * np.sin(2 * np.pi * frequency * t) if frequency else 0.0))
+    return raw
+
+
+def test_each_segment_is_notched_at_the_lines_of_its_own_fit_stretch(monkeypatch):
+    """The lines are found per segment and not carried over to the next."""
+    w = worker(learn=20, AREstimationOffset=50.0)
+    monkeypatch.setattr(wdfUnitDSWorker, "_raw_stretch", _line_strain(331.3))
+    lines = w._segment_lines(GPS0, GPS0 + 90.0)
+    assert len(lines) == 1 and abs(lines[0][0] - 331.3) <= 1.0 / 16
+
+    w.par.LineNotches = lines
+    monkeypatch.setattr(wdfUnitDSWorker, "_raw_stretch", _line_strain(None))
+    assert w._segment_lines(GPS0 + 100.0, GPS0 + 190.0) == []
+
+
+def test_lines_named_in_the_configuration_are_used_as_they_are(monkeypatch):
+    def unread(*_):
+        raise AssertionError("the strain was searched for lines the configuration names")
+
+    monkeypatch.setattr(wdfUnitDSWorker, "_raw_stretch", unread)
+    named = [[60.0, 0.3, 40.0], [120.0, 0.3, 12.0]]
+    assert worker(LineNotches=named)._segment_lines(GPS0, GPS0 + 90.0) == named
+    assert worker(LineThreshold=0)._segment_lines(GPS0, GPS0 + 90.0) == []

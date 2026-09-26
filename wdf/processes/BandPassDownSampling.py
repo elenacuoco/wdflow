@@ -1,9 +1,13 @@
-"""Band-pass and downsample, before anything is estimated from the data.
+"""Notch the detector's lines, band-pass and downsample, before anything is
+estimated from the data.
 
 The strain is dominated by frequencies the search does not use, and modelling
 noise it will not look at spends the model's order where it buys nothing. This
 stage restricts the band and reduces the rate to match it, so the noise model
 and the transform that follow work on the band the search actually searches.
+The detector's own lines are cut down to the floor first, by notches stacked in
+front of the band-pass and applied with it (`wdf.processes.lines`): the
+detectors share the band-pass, and each has its own lines.
 
 The filter is applied so that its own settling is accounted for rather than
 left in the output: a filter has a memory, and the samples that carry only that
@@ -19,6 +23,7 @@ import numpy as np
 from scipy.signal import cheby2, sosfilt
 
 from wdf.filtering import sosfiltfilt
+from wdf.processes.lines import notch_sections
 
 
 def SV_to_array(seqView):
@@ -121,6 +126,11 @@ class BandPassDownSampling(object):
             This is what suppresses aliasing: everything above the decimated
             Nyquist folds back into the analysed band, so the attenuation
             reached before it is the only thing keeping it out.
+        `Parameters.LineNotches`, when present, lists the detector's lines as
+        `(frequency, bandwidth, height)` rows, as
+        `wdf.processes.lines.spectral_lines` returns them; their
+        `notch_sections` are stacked in front of the band-pass sections.
+
         :type padlen: int
         :padlen: samples of real data each filter pass settles over before it
             reaches the stretch being emitted: real past for the forward pass,
@@ -159,9 +169,19 @@ class BandPassDownSampling(object):
          # type II is flat in the pass band, with its ripple confined to the
          # stop band where nothing is read, and it reaches full attenuation at
          # the edges given here rather than merely starting to roll off there.
-        self.sos = cheby2(self.order, self.stopband_attenuation_db,
-                          [self.low_freq_hp, self.cutoff_frequency],
-                          fs=self.sampling, btype='bandpass', output='sos')
+        self.bandpass_sos = cheby2(self.order, self.stopband_attenuation_db,
+                                   [self.low_freq_hp, self.cutoff_frequency],
+                                   fs=self.sampling, btype='bandpass', output='sos')
+        # The detector's lines, cut down to the floor before the band is
+        # restricted. The cascade is linear, so the order of the sections
+        # changes nothing but the rounding; they are stacked in the order of the
+        # chain they implement, and every pass of the filter, streamed or not,
+        # applies all of them.
+        lines = getattr(Parameters, "LineNotches", None)
+        self.lines = np.asarray([] if lines is None else lines,
+                                dtype=float).reshape(-1, 3)
+        self.sos = np.vstack([notch_sections(self.lines, self.sampling),
+                              self.bandpass_sos])
         self.estimation=estimation
         
 
@@ -179,10 +199,22 @@ class BandPassDownSampling(object):
 
         logging.info(
             "BandPassDownSampling: %d -> %d Hz, band %.1f-%.1f Hz, order %d, "
-            "%.0f dB, settling %d samples (%.3f s)",
+            "%.0f dB, %d notches, settling %d samples (%.3f s)",
             self.sampling, self.resampling, self.low_freq_hp,
             self.cutoff_frequency, self.order, self.stopband_attenuation_db,
-            self.padlen, self.padlen / self.sampling)
+            len(self.lines), self.padlen, self.padlen / self.sampling)
+
+    @property
+    def line_band(self):
+        """The band a detector's lines are searched in, `(low, high)` in Hz.
+
+        Every frequency whose content can reach the analysed stream: from the
+        band-pass's low edge up to the frequency that folds onto its high edge
+        when the stream is decimated. The band-pass's upper stop band is inside
+        the analysed band, and the whitening lifts what is left there back up,
+        so a line in it, or folded into it, reaches the search.
+        """
+        return (self.low_freq_hp, self.resampling - self.cutoff_frequency)
 
     def Process(self, data):
         """

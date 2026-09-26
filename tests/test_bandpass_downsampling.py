@@ -309,3 +309,37 @@ def test_a_context_shorter_than_the_settling_is_refused():
     filt = BandPassDownSampling(parameters(), estimation=True)
     with pytest.raises(ValueError, match="settles over"):
         filt.condition_stretch(_Block(noise(SAMPLING * 20), 0.0), filt.padlen - 1)
+
+
+# ------------------------------------------------------------------ the lines
+
+def test_the_lines_are_notched_in_front_of_the_band_pass():
+    """The notches are stacked onto the band-pass and applied with it, so the
+    settling is the whole cascade's and a line leaves the stream at the floor,
+    while the band-pass alone lets it through."""
+    from wdf.processes.lines import median_spectrum, spectral_lines
+
+    n = SAMPLING * 64
+    t = np.arange(n) / SAMPLING
+    samples = noise(n, seed=21) + 0.2 * np.sin(2 * np.pi * 331.3 * t)
+    frequency, psd = median_spectrum(samples, SAMPLING)
+    lines = spectral_lines(frequency, psd, 12.0, 1126.4)
+    notched = BandPassDownSampling(SimpleNamespace(
+        sampling=SAMPLING, resampling=RESAMPLING, ResamplingFactor=FACTOR,
+        LowFrequencyCut=12.0, LineNotches=lines.tolist()))
+    plain = BandPassDownSampling(parameters())
+
+    assert lines.shape[0] == 1
+    assert notched.sos.shape[0] == plain.sos.shape[0] + 1
+    assert np.array_equal(notched.sos[1:], plain.sos)
+    assert notched.padlen == settling_length(notched.sos, SAMPLING) > plain.padlen
+
+    def height(filt):
+        out = np.concatenate(stream(filt, samples, block=4 * SAMPLING)[0][1:])
+        f, p = median_spectrum(out, RESAMPLING, segment_s=8.0)
+        near = np.abs(f - 331.3) < 0.2
+        floor = np.median(p[(np.abs(f - 331.3) > 2.0) & (np.abs(f - 331.3) < 6.0)])
+        return np.sqrt(p[near].max() / floor)
+
+    assert height(plain) > 5.0
+    assert height(notched) < 2.0

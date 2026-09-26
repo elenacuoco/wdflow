@@ -22,6 +22,7 @@ design/sparse-coefficients
 design/windows-and-graphs
 design/event-candidates
 design/sky-localisation
+design/conditioning
 design/whitening
 design/warm-up
 ```
