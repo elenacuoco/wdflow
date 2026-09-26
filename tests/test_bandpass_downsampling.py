@@ -3,6 +3,7 @@ anti-alias that stops what would otherwise fold back into the analysed band."""
 import numpy as np
 import pytest
 from types import SimpleNamespace
+from scipy.signal import sosfreqz
 from wdf.filtering import sosfiltfilt
 
 # The conditioning stage is built on the compiled core.
@@ -343,3 +344,48 @@ def test_the_lines_are_notched_in_front_of_the_band_pass():
 
     assert height(plain) > 5.0
     assert height(notched) < 2.0
+
+
+# ---------------------------------------------------------- the detector's cut
+
+def test_a_detector_cut_leaves_the_stream_flat_from_where_the_search_starts():
+    """The cut keeps 99% of the power at the frequency the search starts from
+    and all of it above; it reaches the band-pass's attenuation at its own stop
+    edge. The stretch the model is fitted on does not get it, so the model is
+    the one the detectors' shared conditioning gives."""
+    from wdf.processes.BandPassDownSampling import PASS_BAND_LOSS, highpass_stop_edge
+
+    par = SimpleNamespace(sampling=SAMPLING, resampling=RESAMPLING,
+                          ResamplingFactor=FACTOR, LowFrequencyCut=12.0,
+                          SearchLowFrequency=64.0)
+    streamed, fitted = BandPassDownSampling(par), BandPassDownSampling(par, estimation=True)
+    cut = streamed.sos[fitted.sos.shape[0]:]
+    stop = highpass_stop_edge(64.0, SAMPLING, streamed.order, streamed.stopband_attenuation_db)
+    _, response = sosfreqz(cut, worN=[stop, 64.0, 128.0], fs=SAMPLING)
+    power = np.abs(response) ** 4
+
+    assert np.array_equal(fitted.sos, BandPassDownSampling(parameters()).sos)
+    assert power[0] == pytest.approx(1e-12, rel=1e-3)
+    assert power[1] == pytest.approx(1.0 - PASS_BAND_LOSS, rel=1e-6)
+    assert power[2] > 1.0 - 1e-6
+    assert streamed.search_low_frequency == 64.0
+
+
+def test_below_the_detector_cut_the_stream_is_emptied():
+    n = SAMPLING * 12
+    t = np.arange(n) / SAMPLING
+    par = SimpleNamespace(sampling=SAMPLING, resampling=RESAMPLING,
+                          ResamplingFactor=FACTOR, LowFrequencyCut=12.0,
+                          SearchLowFrequency=64.0)
+    for frequency, kept in ((30.0, False), (100.0, True)):
+        blocks, _ = stream(BandPassDownSampling(par), np.sin(2 * np.pi * frequency * t))
+        level = np.std(np.concatenate(blocks[2:])) / np.sqrt(0.5)
+        assert (level > 0.99) if kept else (level < 1e-3)
+
+
+@pytest.mark.parametrize("low_cut, expected", [(6.0, 16.0), (12.0, 32.0), (24.0, 64.0)])
+def test_by_default_the_search_starts_at_the_first_whole_octave_of_the_band(low_cut, expected):
+    """The octaves of the analysed stream are the bands of its wavelet levels;
+    the first one wholly inside the pass band is where the search is read from,
+    and the one below it lies partly in the band-pass's transition."""
+    assert BandPassDownSampling(parameters(low_cut)).search_low_frequency == expected

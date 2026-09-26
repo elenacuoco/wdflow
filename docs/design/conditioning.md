@@ -51,3 +51,30 @@ fit stretch all follow it (see [Warm-up](warm-up.md)).
 The configuration can name the lines instead (`LineNotches`), in which case they
 are notched in every segment as given; otherwise each segment's lines are found
 on its own fit stretch, above `LineThreshold` times the floor.
+
+## The band, shared, and the detector's own low cut
+
+Every detector is conditioned by the same band-pass: a Chebyshev type II filter
+whose `LowFrequencyCut` and upper edge are the edges of its stop bands, run
+forward and backward, then decimated to the analysed rate. Its pass band starts
+above `LowFrequencyCut`, where the transition ends.
+
+The search reads the analysed stream in octaves, the bands of its wavelet
+levels, and by default a detector is searched from the lower edge of the lowest
+octave that lies wholly inside the pass band, where the two passes take no more
+than `PASS_BAND_LOSS` of the power (`BandPassDownSampling.search_low_frequency`).
+The octave below that one lies partly in the transition; it is still searched,
+and no check reads it.
+
+A detector whose noise is not to be searched that low is given its own
+`SearchLowFrequency`. The band-pass stays the one every detector shares, and a
+high-pass of the same order and attenuation, flat from `SearchLowFrequency` up
+(`highpass_stop_edge`), is stacked after it on the stream the search reads. It
+is not applied to the stretch the noise model is fitted on, and that is what
+makes it a cut rather than a distortion. A model fitted on a stream that
+includes the cut has to represent the cut: a model able to do so undoes it,
+lifting the stop band back up, and one that is not spends its order on the
+cliff and misfits the octave above it. Fitted without the cut, the model is the
+one the shared conditioning gives; applied to the cut stream it whitens
+everything above the cut exactly as it whitens the uncut stream, since there
+the cut's response is one, and below the cut nothing is left for it to lift.

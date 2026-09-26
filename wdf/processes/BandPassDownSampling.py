@@ -20,10 +20,46 @@ __project__ = "wdf"
 import logging
 from wdf.structures.array2SeqView import *
 import numpy as np
-from scipy.signal import cheby2, sosfilt
+from scipy.signal import cheby2, sosfilt, sosfreqz
 
 from wdf.filtering import sosfiltfilt
 from wdf.processes.lines import notch_sections
+
+
+#: Fraction of the power the two passes of the conditioning may take from the
+#: band the search reads. It places the start of that band on a filter's
+#: transition: below it the filter has attenuated the data, above it the data
+#: are what the detector recorded, to within this fraction.
+PASS_BAND_LOSS = 0.01
+
+
+def highpass_stop_edge(pass_edge, sampling, order, attenuation_db,
+                       loss=PASS_BAND_LOSS):
+    """Stop-band edge of the Chebyshev II high-pass that is flat from `pass_edge`.
+
+    The high-pass of the given order and attenuation whose response, run
+    forward and backward, keeps `1 - loss` of the power at `pass_edge` and
+    more above it. The Chebyshev II response is monotonic in its pass band, and
+    its prototype gives the ratio of the two edges in closed form; the bilinear
+    transform the digital design uses maps it through `tan(pi f / sampling)`.
+
+    :type pass_edge: float
+    :param pass_edge: frequency from which the filter is flat, Hz.
+    :type sampling: float
+    :param sampling: sampling rate, Hz.
+    :type order: int
+    :param order: filter order.
+    :type attenuation_db: float
+    :param attenuation_db: attenuation reached at the stop-band edge, dB.
+    :type loss: float
+    :param loss: fraction of the power the two passes lose at `pass_edge`.
+    :return: float -- the stop-band edge, Hz, as `scipy.signal.cheby2` takes it.
+    """
+    gain = np.sqrt(1.0 - loss)
+    ripple = 1.0 / np.sqrt(10.0 ** (attenuation_db / 10.0) - 1.0)
+    ratio = np.cosh(np.arccosh(np.sqrt(gain / (1.0 - gain)) / ripple) / order)
+    return float(sampling / np.pi
+                 * np.arctan(np.tan(np.pi * pass_edge / sampling) / ratio))
 
 
 def SV_to_array(seqView):
@@ -130,6 +166,12 @@ class BandPassDownSampling(object):
         `(frequency, bandwidth, height)` rows, as
         `wdf.processes.lines.spectral_lines` returns them; their
         `notch_sections` are stacked in front of the band-pass sections.
+        `Parameters.SearchLowFrequency`, when present, is the frequency in Hz
+        from which the detector is searched: a Chebyshev II high-pass of the
+        band-pass's order and attenuation, flat from there
+        (`highpass_stop_edge`), is stacked after the band-pass on the stream,
+        and not in estimation mode, which conditions what the noise model is
+        fitted on.
 
         :type padlen: int
         :padlen: samples of real data each filter pass settles over before it
@@ -180,8 +222,26 @@ class BandPassDownSampling(object):
         lines = getattr(Parameters, "LineNotches", None)
         self.lines = np.asarray([] if lines is None else lines,
                                 dtype=float).reshape(-1, 3)
+        # The detector's own low cut, for a detector whose noise is not to be
+        # searched as low as the shared band-pass reaches. It is applied to the
+        # stream the search reads and not to the stretch the noise model is
+        # fitted on: a model fitted with the cut in has to represent it, and a
+        # model that can undoes it while one that cannot spends its order on
+        # the cliff and misfits the octave above. Fitted without it, the model
+        # whitens the stream above the cut exactly as it would without the cut,
+        # since there the cut's response is one, and below it the cut removes
+        # what the model would have lifted back up.
+        search_low = getattr(Parameters, "SearchLowFrequency", None)
+        self.search_low = None if search_low is None else float(search_low)
+        cut = np.zeros((0, 6))
+        if self.search_low is not None and not estimation:
+            cut = cheby2(self.order, self.stopband_attenuation_db,
+                         highpass_stop_edge(self.search_low, self.sampling,
+                                            self.order,
+                                            self.stopband_attenuation_db),
+                         fs=self.sampling, btype='highpass', output='sos')
         self.sos = np.vstack([notch_sections(self.lines, self.sampling),
-                              self.bandpass_sos])
+                              self.bandpass_sos, cut])
         self.estimation=estimation
         
 
@@ -203,6 +263,32 @@ class BandPassDownSampling(object):
             self.sampling, self.resampling, self.low_freq_hp,
             self.cutoff_frequency, self.order, self.stopband_attenuation_db,
             len(self.lines), self.padlen, self.padlen / self.sampling)
+
+    @property
+    def search_low_frequency(self):
+        """The lowest frequency the search reads from this front end, Hz.
+
+        `SearchLowFrequency` when the configuration states it: the stream is
+        then flat from there up and cut below. Otherwise the lower edge of the
+        lowest octave of the analysed stream -- the bands `nyquist / 2**k` its
+        wavelet levels cover -- that lies wholly inside the band-pass's pass
+        band, where the two passes take no more than `PASS_BAND_LOSS` of the
+        power. The octave below it is partly in the band-pass's transition.
+        """
+        if self.search_low is not None:
+            return self.search_low
+        low, high = self.low_freq_hp, self.cutoff_frequency
+        for _ in range(60):
+            middle = 0.5 * (low + high)
+            _, response = sosfreqz(self.bandpass_sos, worN=[middle], fs=self.sampling)
+            if np.abs(response[0]) ** 4 >= 1.0 - PASS_BAND_LOSS:
+                high = middle
+            else:
+                low = middle
+        edge = 0.5 * self.resampling
+        while 0.5 * edge >= high:
+            edge *= 0.5
+        return edge
 
     @property
     def line_band(self):
