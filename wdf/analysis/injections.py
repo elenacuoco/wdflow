@@ -8,6 +8,10 @@ import pandas as pd
 
 MATCH_COLUMNS = ["found", "candidate_index", "dt_s", "recovered_snr"]
 
+#: c^3 / (2 pi G M_sun), Hz: the angular frequency one over the light-crossing
+#: time of a solar mass, as a frequency.
+SOLAR_MASS_FREQUENCY_HZ = 32311.0
+
 
 def candidate_spans(candidates, candidate_time="gpsPeak"):
     """The time each candidate covers, as a `(start, end)` pair of arrays.
@@ -245,3 +249,51 @@ def unclaimed_candidates(candidates, injections, window_s=0.5,
     if statistic is not None:
         out = out.sort_values(statistic, ascending=False)
     return out.head(limit) if limit is not None else out
+
+
+def binary_frequency_ceiling(final_mass_source, redshift):
+    """The highest frequency a compact binary's signal can reach, Hz.
+
+    A binary radiates up to the quadrupole ringdown of the remnant it leaves,
+    and that frequency is largest for a remnant spinning at the Kerr limit,
+    where it is `c^3 / (2 pi G M)` with `M` the remnant's mass as the detector
+    measures it, `M_source (1 + z)`. Any spin below the limit gives less, so
+    this is a ceiling whatever the remnant's spin, and it states nothing about
+    the shape of the signal below it. It is a property of the truth, read to
+    check a candidate, and never enters the search.
+
+    :param final_mass_source: the remnant's source-frame mass, solar masses.
+    :param redshift: the source's redshift.
+    :return: numpy.ndarray or float -- the ceiling, Hz.
+    """
+    mass = np.asarray(final_mass_source, dtype=float) * (
+        1.0 + np.asarray(redshift, dtype=float))
+    return SOLAR_MASS_FREQUENCY_HZ / mass
+
+
+def band_can_hold(candidates, low, high, lower_column="freqQ05",
+                  upper_column="freqQ95"):
+    """Whether each candidate's energy lies where a signal can be.
+
+    A candidate whose energy lies wholly outside the band a signal occupies is
+    not that signal, however close in time it sits. The candidate's band is
+    the interval holding the central part of its energy, which one marginal
+    tile cannot stretch as it stretches the support; it has to meet the
+    signal's band for the association to be possible at all.
+
+    :type candidates: pandas.DataFrame
+    :param candidates: the candidates, carrying the two band columns.
+    :param low: lowest frequency the signal occupies, Hz, one value or one per
+        candidate.
+    :param high: highest frequency it occupies, Hz.
+    :type lower_column: str
+    :param lower_column: the column holding each candidate's lower edge, Hz.
+    :type upper_column: str
+    :param upper_column: the column holding its upper edge, Hz.
+    :return: numpy.ndarray -- boolean, one per candidate; False where a band
+        edge is not a number, which is no measurement that it can.
+    """
+    lower = pd.to_numeric(candidates[lower_column], errors="coerce").to_numpy(float)
+    upper = pd.to_numeric(candidates[upper_column], errors="coerce").to_numpy(float)
+    return (lower <= np.asarray(high, dtype=float)) & (
+        upper >= np.asarray(low, dtype=float))
