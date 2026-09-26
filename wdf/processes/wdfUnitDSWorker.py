@@ -90,6 +90,279 @@ class wdfUnitDSWorker(object):
         stream.GetData(raw)
         return BandPassDownSampling(self.par, estimation=True).Process(raw)
 
+    def _noise_model(self, gpsStart, gpsEnd, dir_chunk):
+        """Fit the segment's noise model, or load it, and say how to whiten with it.
+
+        The autoregressive model is fitted on the stretch `_learn_stretch`
+        conditions and saved beside the segment's triggers; a model already
+        saved there is loaded instead. `WhiteningModel` then selects where the
+        whitening filter's coefficients come from, "burg" (the autoregressive
+        model and its square root) or "spectrum" (the measured spectrum of the
+        same stretch).
+
+        What is returned builds the whitening rather than being it: the filter
+        carries state, and each pass over the segment needs its own, identical,
+        filter.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :type dir_chunk: str
+        :param dir_chunk: the segment's output directory, where the model is
+            saved.
+        :return: callable -- takes no argument and returns a fresh
+            `ZeroPhaseWhitening`.
+        :raises ValueError: if `WhiteningModel` is neither "burg" nor
+            "spectrum".
+
+        Side effects: sets `ARfile`, `LVfile`, `sigma`, `sigmaWhitened` and
+        `SqrtWhiteningOrder` on the worker's parameters, and writes the model
+        files when it fits them.
+        """
+        whiten = Whitening(self.par.ARorder)
+        # .h5 (not .txt): Whitening.ParametersSave/Load now use HDF5
+        # (wdf.processes.ar_lv_io), not p4TSA's old XML Save/Load.
+        self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s.h5" % (
+            self.par.ARorder,
+            self.par.resampling,
+            self.par.channel,
+        )
+        self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s.h5" % (
+            self.par.ARorder,
+            self.par.resampling,
+            self.par.channel,
+        )
+
+        learn = None
+        if os.path.isfile(self.par.ARfile) and os.path.isfile(self.par.LVfile):
+            logging.info("Load AR parameters")
+            whiten.ParametersLoad(self.par.ARfile, self.par.LVfile)
+        else:
+            logging.info("Start AR parameter estimation")
+            learn = self._learn_stretch(gpsStart, gpsEnd)
+            whiten.ParametersEstimate(learn)
+            whiten.ParametersSave(self.par.ARfile, self.par.LVfile)
+
+        # sigma for the noise
+        self.par.sigma = whiten.GetSigma()
+        logging.info("Estimated sigma= %s" % self.par.sigma)
+
+        # Coefficients of the square-root model the zero-phase whitening runs
+        # in both directions (see wdf.processes.zero_phase_whitening). Unset
+        # means the model's own order: a lower one costs accuracy twice over,
+        # since the response is the square of the filter's magnitude.
+        sqrt_order = getattr(self.par, "SqrtWhiteningOrder", None)
+        sqrt_order = (max(DEFAULT_SQRT_ORDER, self.par.ARorder)
+                      if sqrt_order is None else int(sqrt_order))
+        self.par.SqrtWhiteningOrder = sqrt_order
+        ar = np.array([whiten.ADE.GetAR(j)
+                       for j in range(self.par.ARorder + 1)])
+
+        # Which fit the whitening filter comes from. "burg" is the
+        # historical path and the default: the autoregressive model above,
+        # then its square root. "spectrum" fits the same filter straight to
+        # the measured spectrum of the same stretch, which is one fit
+        # instead of two and weighs its error in decibels across the band
+        # rather than in absolute power -- Burg has no incentive to fit an
+        # octave 60 dB below the one that carries the power, and on O4b
+        # strain it leaves the whitened spectrum a factor 2.9 low below
+        # 32 Hz. The autoregressive model is estimated and saved either
+        # way, so a run can be read back and compared against the other.
+        model = str(getattr(self.par, "WhiteningModel", "burg")).lower()
+        if model not in ("burg", "spectrum"):
+            raise ValueError(
+                f"WhiteningModel is {model!r}; expected 'burg' or 'spectrum'")
+
+        output_size = int(self.par.resampling)
+        if model == "spectrum":
+            if learn is None:
+                learn = self._learn_stretch(gpsStart, gpsEnd)
+            samples = np.array([learn.GetY(0, i) for i in range(learn.GetSize())])
+            band = (self.par.LowFrequencyCut, 0.5 * self.par.resampling)
+
+            def build():
+                return ZeroPhaseWhitening.from_spectrum(
+                    samples, self.par.resampling, output_size, 0,
+                    order=sqrt_order, band=band)
+        else:
+            def build():
+                return ZeroPhaseWhitening(ar, output_size, 0, order=sqrt_order)
+
+        whitening = build()
+        if model == "spectrum":
+            # The scale the search thresholds on is the scale of the stream it
+            # is given, and that stream is this filter's output.
+            self.par.sigma = whitening.sigma
+        self.par.sigmaWhitened = whitening.sigma
+        logging.info("Whitening model: %s" % model)
+        logging.info("Zero-phase whitening, square-root order %s, "
+                     "latency %s samples" % (sqrt_order, whitening.latency))
+        return build
+
+    def _prime(self, gpsStart, gpsEnd, ds, whitening):
+        """Open the segment and fill the chain up to its first searched block.
+
+        The first stretch of the segment is read, conditioned and whitened
+        without being searched, so that both filters have settled, and the
+        whitening's lookahead is then loaded ahead of the first block it emits.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :type ds: BandPassDownSampling
+        :param ds: a conditioning front end that has read nothing yet.
+        :type whitening: ZeroPhaseWhitening
+        :param whitening: a whitening that has filtered nothing yet.
+        :return: py4tsa.tsa.FrameIChannel -- the reader, positioned after what
+            has been read, delivering `len` seconds per read.
+
+        Side effects: sets `WhiteningExtraSize`, `gpsEnd` and `NoutData` on the
+        worker's parameters.
+        """
+        data = SV()
+        dataw = SV()
+        for i in range(100):
+            try:
+                streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
+                streaming.GetData(data)
+                break  # If no exceptions are thrown, exit the while loop
+            except:
+                gpsStart=gpsStart+1.0
+                print("No frame, moving to the next one. New gpsStart is", gpsStart)
+            continue  # If an exception is thrown, continue with the next iteration of the while loop
+        ###---preheating---###
+        streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
+        # reading data, downsampling and whitening
+        for i in range(self.par.preWhite):
+            data_ds = read_conditioned(streaming, data, ds)
+            whitening.Process(data_ds,dataw)
+
+        # Fixed, len-independent lookahead window for whitening.
+        # DoubleWhitening's backward pass needs a buffer of real *future*
+        # data to settle its lattice-filter state before it can produce a
+        # good backward-pass estimate for the current output chunk (see
+        # DoubleWhitening::GetData in p4TSA). That lookahead ("ExtraSize")
+        # is a FIXED size, decoupled from par.len (an I/O batching/perf
+        # knob), mirroring BandPassDownSampling's own padlen convention.
+        # Set parameters.WhiteningExtraSize explicitly to override it, or
+        # to 0 to make the lookahead scale with par.len instead (legacy
+        # behaviour).
+        # The default is the filter's own order, which is exactly what the
+        # backward pass reads ahead: the filter is the prediction error of
+        # the model and is therefore FIR, so after `order` steps the
+        # initialisation is forgotten identically rather than
+        # asymptotically, and a longer lookahead buys nothing. It costs,
+        # though, because the pass is re-run over the lookahead for every
+        # output block: measured on O4b with an order of 3000, whitening
+        # 60 s took 35 s with a lookahead of 20 s and blocks of 1 s, and
+        # 2.3 s with a lookahead of `order` and blocks of 4 s.
+        extra_size = int(getattr(self.par, "WhiteningExtraSize",
+                                 self.par.SqrtWhiteningOrder))
+        self.par.WhiteningExtraSize = extra_size
+
+        # The chain reads ahead of what it emits, and the segment has to end
+        # far enough from the frame's end to supply that. Three terms, each
+        # a real buffer rather than an estimate:
+        #
+        #   par.len       the whitening holds a whole output block, since
+        #                 DoubleWhitening::GetData needs mOutputSize +
+        #                 ExtraSize buffered before it produces anything
+        #   par.len       the loop reads one block past the last it uses,
+        #                 because the read that ends the loop still happens
+        #   padlen        the conditioning filter's backward pass settles
+        #                 over this much data following the block it emits
+        #   ExtraSize     the whitening's own backward lookahead
+        #
+        # The two read blocks were already there as a bare `2 * par.len`,
+        # and that was right: what it did not cover was the conditioning
+        # filter's own lookahead, which is why the reader could still run
+        # off the end of the frame. Spelling the terms out costs about two
+        # seconds of observation time and makes the margin follow the
+        # filter instead of a constant that has to be remembered.
+        read_ahead_s = (2 * self.par.len
+                        + ds.padlen / self.par.sampling
+                        + extra_size / self.par.resampling)
+        self.par.gpsEnd = gpsEnd - read_ahead_s
+
+        #Set new size for the function in the loop
+        streaming.SetDataLength(self.par.len)
+
+        self.par.NoutData= int(self.par.resampling*self.par.len)
+        if extra_size > 0:
+            # Prime the whitening buffer before the detection loop starts.
+            # DoubleWhitening::GetData needs mOutputSize + ExtraSize samples
+            # buffered before it can produce anything, and each call removes
+            # only mOutputSize, so the surplus is pre-loaded exactly once
+            # here. whitening.Input() is SetData-only, so it neither needs
+            # nor consumes an output chunk.
+            #
+            # This runs after SetDataLength so that the conditioning front
+            # end has already flushed the short warm-up blocks still held in
+            # its lookahead queue. Priming first would leave those queued: the
+            # loop would then feed the whitening a one-second block while it
+            # expected par.len seconds, and it would starve on the second
+            # pass. Counted in samples delivered rather than in reads, since
+            # a read and a delivered block are neither the same event nor
+            # the same size.
+            needed = extra_size + int(self.par.resampling * self.par.len)
+            buffered = 0
+            while buffered < needed:
+                data_ds = read_conditioned(streaming, data, ds)
+                buffered += data_ds.GetSize()
+                whitening.Input(data_ds)
+
+        whitening.SetOutputSize(self.par.NoutData, extra_size)
+        return streaming
+
+    def _whitened(self, streaming, gpsEnd, ds, whitening):
+        """The segment's whitened stream, one block at a time.
+
+        Continues from where `_prime` left the chain and yields every block
+        the search reads, in order, up to the last one the frames can supply
+        with its lookahead.
+
+        :type streaming: py4tsa.tsa.FrameIChannel
+        :param streaming: the reader `_prime` returned.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :type ds: BandPassDownSampling
+        :param ds: the conditioning front end `_prime` was given.
+        :type whitening: ZeroPhaseWhitening
+        :param whitening: the whitening `_prime` was given.
+        :return: generator of py4tsa.tsa.SeqView_double_t -- the whitened
+            blocks. The same view is refilled for each block, so a consumer
+            that keeps a block copies it before asking for the next.
+        """
+        data = SV()
+        dataw = SV()
+        # Tested on the block that comes out of conditioning, not on the
+        # reader: the two are not at the same time, and testing the reader
+        # would end the loop while conditioned data was still queued.
+        data_ds = read_conditioned(streaming, data, ds)
+        while data_ds.GetStart() <= self.par.gpsEnd:
+            whitening.Process(data_ds, dataw)
+            yield dataw
+            if data.GetStart() + 2 * self.par.len > gpsEnd:
+                logging.warning(
+                    "Stopping at %.1f: the next read would pass the end of "
+                    "the segment at %.1f", data_ds.GetStart(), gpsEnd)
+                break
+            data_ds = read_conditioned(streaming, data, ds)
+
+        # Reading stops a whole priming ahead of what the whitening has
+        # emitted, so the filters still hold analysable data when the last
+        # read is refused. Draining it costs the segment nothing; leaving it
+        # costs a span set by the filters rather than by the segment.
+        while (whitening.DataNeeded() <= 0
+               and dataw.GetStart() <= self.par.gpsEnd):
+            emitted = dataw.GetStart()
+            whitening.Output(dataw)
+            if dataw.GetStart() <= emitted:
+                break
+            yield dataw
+
     def segmentProcess(self, segment, wavThresh=WaveletThreshold.block):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
@@ -130,191 +403,17 @@ class wdfUnitDSWorker(object):
         if not os.path.exists(dir_chunk):
             os.makedirs(dir_chunk)
         if not os.path.isfile(dir_chunk + "ProcessEnded.check"):
-            # self.parameter for whitening and its estimation self.parameters
-            whiten = Whitening(self.par.ARorder)
-            # .h5 (not .txt): Whitening.ParametersSave/Load now use HDF5
-            # (wdf.processes.ar_lv_io), not p4TSA's old XML Save/Load.
-            self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s.h5" % (
-                self.par.ARorder,
-                self.par.resampling,
-                self.par.channel,
-            )
-            self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s.h5" % (
-                self.par.ARorder,
-                self.par.resampling,
-                self.par.channel,
-            )
+            build_whitening = self._noise_model(gpsStart, gpsEnd, dir_chunk)
 
-            if os.path.isfile(self.par.ARfile) and os.path.isfile(self.par.LVfile):
-                logging.info("Load AR parameters")
-                whiten.ParametersLoad(self.par.ARfile, self.par.LVfile)
-                 
-            else:
-                logging.info("Start AR parameter estimation")
-                Learn_DS = self._learn_stretch(gpsStart, gpsEnd)
-                whiten.ParametersEstimate(Learn_DS)
-                whiten.ParametersSave(self.par.ARfile, self.par.LVfile)
-                del Learn_DS
-                
-            # sigma for the noise
-            self.par.sigma = whiten.GetSigma()
-            logging.info("Estimated sigma= %s" % self.par.sigma)
-
-            # Coefficients of the square-root model the zero-phase whitening
-            # runs in both directions (see wdf.processes.zero_phase_whitening).
-            # Unset means the model's own order: a lower one costs accuracy
-            # twice over, since the response is the square of the filter's
-            # magnitude.
-            sqrt_order = getattr(self.par, "SqrtWhiteningOrder", None)
-            sqrt_order = (max(DEFAULT_SQRT_ORDER, self.par.ARorder)
-                          if sqrt_order is None else int(sqrt_order))
-            self.par.SqrtWhiteningOrder = sqrt_order
-            ar = np.array([whiten.ADE.GetAR(j)
-                           for j in range(self.par.ARorder + 1)])
-
-            # Which fit the whitening filter comes from. "burg" is the
-            # historical path and the default: the autoregressive model above,
-            # then its square root. "spectrum" fits the same filter straight to
-            # the measured spectrum of the same stretch, which is one fit
-            # instead of two and weighs its error in decibels across the band
-            # rather than in absolute power -- Burg has no incentive to fit an
-            # octave 60 dB below the one that carries the power, and on O4b
-            # strain it leaves the whitened spectrum a factor 2.9 low below
-            # 32 Hz. The autoregressive model is estimated and saved either
-            # way, so a run can be read back and compared against the other.
-            model = str(getattr(self.par, "WhiteningModel", "burg")).lower()
-            if model not in ("burg", "spectrum"):
-                raise ValueError(
-                    f"WhiteningModel is {model!r}; expected 'burg' or 'spectrum'")
-            
             # update the self.parameters to be saved in local json file
             self.par.ID = ID
             self.par.dir = dir_chunk
             self.par.gps = gpsStart
             self.par.gpsStart = gpsStart
-            
 
-            ######################
-            # self.parameter for sequence of data and the resampling
-        
-            ds = BandPassDownSampling(self.par)        
-            
-            #Perform operation to intialite the detection loop    
-            #gpsStart = gpsStart - self.par.preWhite            
-            data = SV()
-            data_ds = SV()
-            dataw = SV()
-            Noutdata = int(self.par.resampling)
-            if model == "spectrum":
-                learn = self._learn_stretch(gpsStart, gpsEnd)
-                whitening = ZeroPhaseWhitening.from_spectrum(
-                    np.array([learn.GetY(0, i) for i in range(learn.GetSize())]),
-                    self.par.resampling, Noutdata, 0, order=sqrt_order,
-                    band=(self.par.LowFrequencyCut, 0.5 * self.par.resampling))
-                del learn
-                # The scale the search thresholds on is the scale of the stream
-                # it is given, and that stream is this filter's output.
-                self.par.sigma = whitening.sigma
-            else:
-                whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order)
-            self.par.sigmaWhitened = whitening.sigma
-            logging.info("Whitening model: %s" % model)
-            logging.info("Zero-phase whitening, square-root order %s, "
-                         "latency %s samples" % (sqrt_order, whitening.latency))
-            for i in range(100):
-                try:
-                    streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
-                    streaming.GetData(data)
-                    break  # If no exceptions are thrown, exit the while loop
-                except:
-                    gpsStart=gpsStart+1.0
-                    print("No frame, moving to the next one. New gpsStart is", gpsStart)
-                continue  # If an exception is thrown, continue with the next iteration of the while loop
-            ###---preheating---###
-            streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
-            # reading data, downsampling and whitening
-            for i in range(self.par.preWhite):
-                data_ds = read_conditioned(streaming, data, ds)
-                whitening.Process(data_ds,dataw)
-               
-                
-            # Fixed, len-independent lookahead window for whitening.
-            # DoubleWhitening's backward pass needs a buffer of real *future*
-            # data to settle its lattice-filter state before it can produce a
-            # good backward-pass estimate for the current output chunk (see
-            # DoubleWhitening::GetData in p4TSA). That lookahead ("ExtraSize")
-            # is a FIXED size, decoupled from par.len (an I/O batching/perf
-            # knob), mirroring BandPassDownSampling's own padlen convention.
-            # Set parameters.WhiteningExtraSize explicitly to override it, or
-            # to 0 to make the lookahead scale with par.len instead (legacy
-            # behaviour).
-            # The default is the filter's own order, which is exactly what the
-            # backward pass reads ahead: the filter is the prediction error of
-            # the model and is therefore FIR, so after `order` steps the
-            # initialisation is forgotten identically rather than
-            # asymptotically, and a longer lookahead buys nothing. It costs,
-            # though, because the pass is re-run over the lookahead for every
-            # output block: measured on O4b with an order of 3000, whitening
-            # 60 s took 35 s with a lookahead of 20 s and blocks of 1 s, and
-            # 2.3 s with a lookahead of `order` and blocks of 4 s.
-            extra_size = int(getattr(self.par, "WhiteningExtraSize", sqrt_order))
-            self.par.WhiteningExtraSize = extra_size
-
-            # The chain reads ahead of what it emits, and the segment has to end
-            # far enough from the frame's end to supply that. Three terms, each
-            # a real buffer rather than an estimate:
-            #
-            #   par.len       the whitening holds a whole output block, since
-            #                 DoubleWhitening::GetData needs mOutputSize +
-            #                 ExtraSize buffered before it produces anything
-            #   par.len       the loop reads one block past the last it uses,
-            #                 because the read that ends the loop still happens
-            #   padlen        the conditioning filter's backward pass settles
-            #                 over this much data following the block it emits
-            #   ExtraSize     the whitening's own backward lookahead
-            #
-            # The two read blocks were already there as a bare `2 * par.len`,
-            # and that was right: what it did not cover was the conditioning
-            # filter's own lookahead, which is why the reader could still run
-            # off the end of the frame. Spelling the terms out costs about two
-            # seconds of observation time and makes the margin follow the
-            # filter instead of a constant that has to be remembered.
-            read_ahead_s = (2 * self.par.len
-                            + ds.padlen / self.par.sampling
-                            + extra_size / self.par.resampling)
-            self.par.gpsEnd = gpsEnd - read_ahead_s
-
-            #Set new size for the function in the loop
-            streaming.SetDataLength(self.par.len)
-
-            self.par.NoutData= int(self.par.resampling*self.par.len)
-            if extra_size > 0:
-                # Prime the whitening buffer before the detection loop starts.
-                # DoubleWhitening::GetData needs mOutputSize + ExtraSize samples
-                # buffered before it can produce anything, and each call removes
-                # only mOutputSize, so the surplus is pre-loaded exactly once
-                # here. whitening.Input() is SetData-only, so it neither needs
-                # nor consumes an output chunk.
-                #
-                # This runs after SetDataLength so that the conditioning front
-                # end has already flushed the short warm-up blocks still held in
-                # its lookahead queue. Priming first would leave those queued: the
-                # loop would then feed the whitening a one-second block while it
-                # expected par.len seconds, and it would starve on the second
-                # pass. Counted in samples delivered rather than in reads, since
-                # a read and a delivered block are neither the same event nor
-                # the same size.
-                needed = extra_size + int(self.par.resampling * self.par.len)
-                buffered = 0
-                while buffered < needed:
-                    data_ds = read_conditioned(streaming, data, ds)
-                    buffered += data_ds.GetSize()
-                    whitening.Input(data_ds)
-
-            whitening.SetOutputSize(self.par.NoutData, extra_size)
-
-
-            
+            ds = BandPassDownSampling(self.par)
+            whitening = build_whitening()
+            streaming = self._prime(gpsStart, gpsEnd, ds, whitening)
 
             # One search per analysis window length, all reading the same
             # whitened stream: the conditioning is the expensive part and is
@@ -336,35 +435,7 @@ class wdfUnitDSWorker(object):
                 writers.append(savetrigger)
             # Start detection loop
             logging.info("Starting detection loop")
-            data = SV()
-            data_ds = SV()
-            dataw = SV()
-            # Tested on the block that comes out of conditioning, not on the
-            # reader: the two are not at the same time, and testing the reader
-            # would end the loop while conditioned data was still queued.
-            data_ds = read_conditioned(streaming, data, ds)
-            while data_ds.GetStart() <= self.par.gpsEnd:
-                whitening.Process(data_ds, dataw)
-                for search in searches:
-                    search.SetData(dataw)
-                    search.Process()
-                if data.GetStart() + 2 * self.par.len > gpsEnd:
-                    logging.warning(
-                        "Stopping at %.1f: the next read would pass the end of "
-                        "the segment at %.1f", data_ds.GetStart(), gpsEnd)
-                    break
-                data_ds = read_conditioned(streaming, data, ds)
-
-            # Reading stops a whole priming ahead of what the whitening has
-            # emitted, so the filters still hold analysable data when the last
-            # read is refused. Draining it costs the segment nothing; leaving it
-            # costs a span set by the filters rather than by the segment.
-            while (whitening.DataNeeded() <= 0
-                   and dataw.GetStart() <= self.par.gpsEnd):
-                emitted = dataw.GetStart()
-                whitening.Output(dataw)
-                if dataw.GetStart() <= emitted:
-                    break
+            for dataw in self._whitened(streaming, gpsEnd, ds, whitening):
                 for search in searches:
                     search.SetData(dataw)
                     search.Process()
