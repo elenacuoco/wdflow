@@ -258,6 +258,32 @@ class ValidationReport:
         lines.append("  " + ("PASS" if self.passed else "FAIL: " + "; ".join(self.failures)))
         return "\n".join(lines)
 
+    @classmethod
+    def from_dict(cls, record):
+        """The report `to_dict` wrote, read back.
+
+        :type record: dict
+        :param record: what `to_dict` returned, as a JSON record holds it.
+        :return: ValidationReport -- the same measurements and failures;
+            `passed` follows from the failures, as it does for a report made
+            by `validate`.
+        :raises KeyError: if a field of the report is missing.
+        """
+        return cls(
+            detector=str(record["detector"]), start=float(record["start"]),
+            stop=float(record["stop"]),
+            bands=tuple(tuple(float(v) for v in band) for band in record["bands"]),
+            power=np.asarray(record["power"], dtype=float),
+            kurtosis=np.asarray(record["kurtosis"], dtype=float),
+            gaussian=np.asarray(record["gaussian"], dtype=float),
+            thirds=np.asarray(record["thirds"], dtype=float),
+            stop_band=tuple(float(v) for v in record["stop_band"]),
+            transient_fraction=float(record["transient_fraction"]),
+            transients=int(record["transients"]),
+            gates=np.asarray(record["gates"], dtype=float).reshape(-1, 2),
+            range_mpc=float(record["range_mpc"]),
+            failures=list(record["failures"]))
+
     def to_dict(self):
         """The report as plain values, for a JSON record."""
         return dict(detector=self.detector, start=self.start, stop=self.stop,

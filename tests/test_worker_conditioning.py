@@ -232,3 +232,47 @@ def test_a_segment_can_be_checked_without_being_searched(tmp_path):
     assert report.range_mpc > 0.0
     assert glob.glob(str(tmp_path) + "/offLine/H1/*/conditioning-check.json")
     assert not glob.glob(str(tmp_path) + "/offLine/H1/*/*.parquet")
+
+
+def test_a_report_reads_back_as_it_was_written(tmp_path):
+    from wdf.processes.validation import ValidationReport
+    report = worker(outdir=str(tmp_path) + "/").validate((GPS0, GPS0 + 90.0))
+    again = ValidationReport.from_dict(report.to_dict())
+    assert again.to_dict() == report.to_dict()
+    assert again.passed == report.passed
+
+
+# ------------------------------------------------------ a stretch of the stream
+
+def test_a_stretch_of_the_stream_is_the_stream_the_segment_search_reads(tmp_path):
+    """Both filters settle before the stretch starts, so once they have the
+    stretch is the whole segment's stream at the same instants: the band-pass
+    runs with real data on both sides of every block and the whitening is a
+    finite filter with a look-ahead of its own order. The gates are applied
+    and the scale divided out as the check applies and divides them."""
+    from wdf.processes.gating import gate_weights
+
+    segment = (GPS0, GPS0 + 90.0)
+    gates = np.array([[GPS0 + 44.0, GPS0 + 44.5]])
+    whole = worker(outdir=str(tmp_path) + "/", learn=20, AREstimationOffset=50.0)
+    _, directory = whole._segment_directory(GPS0)
+    whole.par.LineNotches = whole._segment_lines(*segment)
+    build = whole._noise_model(*segment, directory)
+    t0, stream, _ = whole._whitened_segment(*segment, build)
+    rate = whole.par.resampling
+    times = t0 + np.arange(stream.size) / rate
+    expected = stream * gate_weights(times, gates, 0.25) / whole.par.sigma
+
+    part = worker(outdir=str(tmp_path) + "/", learn=20, AREstimationOffset=50.0)
+    start, samples = part.whitened_stretch(segment, GPS0 + 40.0, GPS0 + 48.0, gates)
+    first = int(round((start - t0) * rate))
+    same = expected[first:first + samples.size]
+
+    assert start == pytest.approx(GPS0 + 40.0, abs=1.0 / rate)
+    assert samples.size == pytest.approx(8.0 * rate, abs=2)
+    # The band-pass agrees to 1e-10 of the noise whatever the grid; the
+    # whitening's lattice arithmetic leaves differences of order 1e-6 of the
+    # noise at the joins of either grid, which is rounding and not a start.
+    assert np.max(np.abs(samples - same)) / np.std(same) < 1e-5
+    with pytest.raises(ValueError, match="not inside"):
+        part.whitened_stretch(segment, GPS0 - 5.0, GPS0 + 5.0)

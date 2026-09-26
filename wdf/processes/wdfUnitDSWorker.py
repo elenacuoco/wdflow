@@ -696,6 +696,86 @@ class wdfUnitDSWorker(object):
         with open(dir_chunk + "conditioning-check.json", "w", encoding="utf-8") as handle:
             json.dump(report.to_dict(), handle, indent=1)
 
+    def whitened_stretch(self, segment, start, stop, gates=None):
+        """The whitened stream of a segment between two instants, as the search reads it.
+
+        The segment's lines and noise model are found and fitted as
+        `segmentProcess` finds and fits them --- a model already saved beside
+        the segment is loaded --- and the strain is conditioned and whitened
+        from a whole number of seconds before `start`, far enough for both
+        filters to have settled there. The band-pass is applied with real data
+        on both sides of every block and the whitening is a finite filter run
+        forward and then backward over a look-ahead of its own order, so once
+        they have settled each sample is what the pass over the whole segment
+        gives at that instant, whatever block it falls in, to the rounding the
+        whitening's arithmetic leaves at a block join; starting on a whole
+        second keeps the decimation on the segment's phase. The stream is then
+        gated as the search gates it and divided by the scale the search
+        divides it by, which is the stream `validate` checks.
+
+        :type segment: tuple[float, float]
+        :param segment: `(gpsStart, gpsEnd)` of the segment.
+        :type start: float
+        :param start: GPS time of the first sample wanted.
+        :type stop: float
+        :param stop: GPS time of the last sample wanted.
+        :type gates: numpy.ndarray or None
+        :param gates: shape `(n, 2)`, GPS start and stop of each gated stretch
+            of the segment, as its check reports them
+            (`ValidationReport.gates`); None gates nothing.
+        :return: tuple -- `(t0, samples)`: the GPS time of the first sample and
+            the samples at the analysed rate, on the search's noise scale.
+        :raises ValueError: if the stretch asked for is not inside what the
+            segment's search reads, once its warm-up and its read-ahead are
+            taken from it.
+        :raises RuntimeError: if the whitened blocks do not follow one another
+            without a gap.
+
+        Side effects: as `validate`, the lines and the model are set on the
+        worker's parameters and a model fitted here is saved beside the
+        segment's triggers.
+        """
+        gpsStart, gpsEnd = float(segment[0]), float(segment[1])
+        start, stop = float(start), float(stop)
+        if not gpsStart <= start < stop <= gpsEnd:
+            raise ValueError(f"{start}-{stop} is not inside the segment {gpsStart}-{gpsEnd}")
+        _, dir_chunk = self._segment_directory(gpsStart)
+        self.par.LineNotches = self._segment_lines(gpsStart, gpsEnd)
+        build_whitening = self._noise_model(gpsStart, gpsEnd, dir_chunk)
+        ds = BandPassDownSampling(self.par)
+        whitening = build_whitening()
+        rate = float(self.par.resampling)
+        # The warm-up `_prime` will take, so that its first emitted sample
+        # falls at or before `start`; a second more for the reader's rounding.
+        warm_up = max(int(self.par.preWhite),
+                      int(np.ceil(ds.padlen / self.par.sampling + whitening.latency / rate)))
+        first = gpsStart + max(0.0, np.floor(start - warm_up - 1.0 - gpsStart))
+        streaming = self._prime(first, gpsEnd, ds, whitening)
+        starts, blocks = [], []
+        for dataw in self._whitened(streaming, gpsEnd, ds, whitening):
+            if dataw.GetStart() > stop:
+                break
+            starts.append(dataw.GetStart())
+            blocks.append(SV_to_array(dataw))
+        if not blocks:
+            raise ValueError(f"the segment {gpsStart}-{gpsEnd} emits no block before {stop}")
+        lengths = np.array([len(b) for b in blocks], dtype=float)
+        expected = starts[0] + np.concatenate([[0.0], np.cumsum(lengths[:-1])]) / rate
+        if np.max(np.abs(np.array(starts) - expected)) > 0.5 / rate:
+            raise RuntimeError("the whitened blocks of the stretch do not follow one another")
+        samples = np.concatenate(blocks)
+        times = starts[0] + np.arange(samples.size) / rate
+        keep = (times >= start - 0.5 / rate) & (times <= stop + 0.5 / rate)
+        if not keep.any() or times[keep][0] > start + 0.5 / rate \
+                or times[keep][-1] < stop - 1.5 / rate:
+            raise ValueError(
+                f"the search of {gpsStart}-{gpsEnd} reads {times[0]:.3f}-{times[-1]:.3f}, "
+                f"which does not hold {start}-{stop}")
+        taper = float(getattr(self.par, "GateTaper", DEFAULT_GATE_TAPER_S))
+        declared = np.zeros((0, 2)) if gates is None else np.asarray(gates, dtype=float)
+        weights = gate_weights(times[keep], declared.reshape(-1, 2), taper)
+        return float(times[keep][0]), samples[keep] * weights / float(self.par.sigma)
+
     def _apply_gates(self, view, gates):
         """Multiply a whitened block by the gates' weights, in place.
 
