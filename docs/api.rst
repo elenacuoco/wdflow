@@ -229,6 +229,12 @@ wdf.analysis.network_graph
 .. automodule:: wdf.analysis.network_graph
    :members:
 
+wdf.analysis.trigger_release
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.trigger_release
+   :members:
+
 wdf.analysis.wavegram_match
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

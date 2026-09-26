@@ -100,6 +100,30 @@ Glitches are single-detector by construction and are never projected. They exist
 to measure the accidental floor of the coincidence, and a glitch placed in both
 detectors would measure something else.
 
+## From a stretch of frames to a released list
+
+`wdf.processes.network_search.search` produces each detector's triggers over a
+stretch of released frames, after every segment has passed its check, and
+`wdf.analysis.trigger_release.release` reads them the way the method paper
+does, at one threshold. Each detector's triggers are re-read on the noise of
+their neighbouring blocks, joined at the trigger level by the detector graph,
+and every event is measured on its own stitched reconstruction --- `EnWDF`, what
+it is worth --- with its loudest block kept as `EnWDF_window`, what selects it,
+and its own instant read on the reconstruction. Every event goes to
+coincidence. The network graph is built on each stretch in which both
+detectors were searched, a learned ranking is applied to its zero lag and to
+every slide where each graph is formed, and the rates are read on the slides
+of every stretch pooled with their livetimes. Each released pair is then timed
+on its two reconstructions, and is `physical` when that lag lies within the
+light travel time widened by the width the correlation declares. The lag is
+measured on the zero-lag pairs only, so it gates nothing: a rate read on the
+admitted pairs bounds the rate of the physical ones from above.
+
+`TriggerRelease.trace` says, around any instant, what each stage holds per
+detector --- triggers, the events holding them, the pairs those events form and
+their best rank --- which is where a transient seen in the data and absent from
+the list was lost.
+
 ## Status
 
 Timing coincidence + time-slide FAR is the production-track method: fast,
