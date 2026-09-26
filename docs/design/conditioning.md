@@ -78,3 +78,41 @@ cliff and misfits the octave above it. Fitted without the cut, the model is the
 one the shared conditioning gives; applied to the cut stream it whitens
 everything above the cut exactly as it whitens the uncut stream, since there
 the cut's response is one, and below the cut nothing is left for it to lift.
+
+## Gates on the whitened stream
+
+A detector's noise holds transients no noise model describes and no search is
+meant to report: instrumental glitches hundreds of noise standard deviations
+tall, often at low frequency and not flagged by the detector's data quality.
+Left in, one of them fills every wavelet level it touches with coefficients far
+above the threshold.
+
+They are gated on the whitened stream, the stream the search reads, and not on
+the strain. A gate on the strain is an edge in the data that the band-pass and
+the whitening then filter: both ring on it, and what they leave on either side
+of the gated stretch is a transient of its own in the whitened stream. On the
+whitened stream nothing downstream spreads the gate, and its raised-cosine
+taper is the only edge there is.
+
+`wdf.processes.gating` takes the census. At each sample the level is the
+largest ratio of the stream to its robust standard deviation (a median absolute
+deviation, which the transients do not move) over the broadband stream and
+every octave the search reads, so that a glitch confined to one octave is
+measured there and not diluted by the others. A transient is a run of samples
+above the flag level, runs closer than a quarter of a second joined; its extent
+therefore holds its whole excursion in every band. A transient whose peak
+reaches `GateThreshold` is gated: its extent is zeroed and `GateTaper` seconds
+on each side are tapered. `Gates` in the configuration declares stretches to
+gate as well, and declared and found gates are merged.
+
+The census needs the whole segment, since a transient's extent and the scale it
+is measured against are known only from the stream around it. The worker
+therefore conditions and whitens the segment once before searching it, finds
+the gates, and applies them to each whitened block of the search pass by
+absolute time; the two passes run the same front end and the same filter, so
+the stream the gates were found on is the stream they are applied to.
+
+The threshold is an empirical choice, not a physical constraint: it must stand
+above the loudest excursion an astrophysical signal the search is meant to
+report can produce in one octave of the whitened stream, and below the
+instrumental transients it is meant to remove.

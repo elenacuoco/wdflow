@@ -40,6 +40,12 @@ wdf.processes.lines
 .. automodule:: wdf.processes.lines
    :members:
 
+wdf.processes.gating
+~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.gating
+   :members:
+
 wdf.processes.zero_phase_whitening
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

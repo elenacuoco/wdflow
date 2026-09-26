@@ -159,3 +159,37 @@ def test_lines_named_in_the_configuration_are_used_as_they_are(monkeypatch):
     named = [[60.0, 0.3, 40.0], [120.0, 0.3, 12.0]]
     assert worker(LineNotches=named)._segment_lines(GPS0, GPS0 + 90.0) == named
     assert worker(LineThreshold=0)._segment_lines(GPS0, GPS0 + 90.0) == []
+
+
+# ------------------------------------------------------------------ the gates
+
+def test_a_declared_gate_takes_its_stretch_out_of_the_search(tmp_path):
+    """The gates are applied to the whitened blocks the search reads: no
+    window inside a gate reaches the threshold, while the same stretch of the
+    ungated run fires as often as the noise does anywhere."""
+    from conftest import run_segment_process
+
+    def inside(gates):
+        df = run_segment_process(str(tmp_path / str(len(gates))) + "/",
+                                 changes=dict(Gates=gates))
+        return int(((df.gps > GPS0 + 40.1) & (df.gps < GPS0 + 41.9)).sum())
+
+    assert inside([]) > 20
+    assert inside([[GPS0 + 40.0, GPS0 + 42.0]]) == 0
+
+
+def test_the_gates_are_the_declared_ones_and_the_loud_transients():
+    w = worker(Gates=[[GPS0 + 10.0, GPS0 + 11.0]])
+    ds = BandPassDownSampling(w.par)
+    rate = w.par.resampling
+    x = np.random.default_rng(3).standard_normal(int(60 * rate))
+    t = np.arange(x.size) / rate - 30.0
+    x += 500.0 * np.exp(-(t / 0.05) ** 2) * np.sin(2 * np.pi * 200.0 * t)
+
+    gates = w._gates(GPS0, x, ds)
+    assert gates.shape == (2, 2)
+    assert gates[0].tolist() == [GPS0 + 10.0, GPS0 + 11.0]
+    assert GPS0 + 29.8 < gates[1, 0] < GPS0 + 30.0 < gates[1, 1] < GPS0 + 30.2
+
+    w.par.GateThreshold = 0
+    assert w._gates(GPS0, x, ds).tolist() == [[GPS0 + 10.0, GPS0 + 11.0]]

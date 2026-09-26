@@ -33,6 +33,7 @@ from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 SV_to_array,
                                                 read_conditioned)
+from wdf.processes.gating import gate_weights, merged, octave_bands, transients
 from wdf.processes.lines import median_spectrum, spectral_lines
 from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
@@ -46,6 +47,11 @@ DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0
 #: Height above the local floor, as a ratio of amplitude spectral densities,
 #: from which a line is notched when the configuration names none.
 DEFAULT_LINE_THRESHOLD = 5.0
+#: Height, in robust standard deviations of the whitened stream in any octave
+#: the search reads, from which a transient is gated rather than searched.
+DEFAULT_GATE_THRESHOLD = 50.0
+#: Seconds over which a gate takes the whitened stream to zero on each side.
+DEFAULT_GATE_TAPER_S = 0.25
 import logging
 import os
 
@@ -540,6 +546,89 @@ class wdfUnitDSWorker(object):
                 break
             yield dataw
 
+    def _whitened_segment(self, gpsStart, gpsEnd, build_whitening):
+        """The whitened stream the search reads, as one array, before searching it.
+
+        The segment is conditioned and whitened exactly as the search pass
+        conditions and whitens it -- the same front end, a fresh filter from the
+        same model, the same warm-up and the same blocks -- and the blocks are
+        joined in time order.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :type build_whitening: callable
+        :param build_whitening: what `_noise_model` returned.
+        :return: tuple -- `(start, samples, front end)`: the GPS time of the
+            first sample, the samples at the analysed rate, and the conditioning
+            front end that produced them.
+        :raises RuntimeError: if the blocks do not follow one another without a
+            gap, since a stream placed from its first sample would then be
+            misplaced after the gap.
+        """
+        ds = BandPassDownSampling(self.par)
+        whitening = build_whitening()
+        streaming = self._prime(gpsStart, gpsEnd, ds, whitening)
+        starts, blocks = [], []
+        for dataw in self._whitened(streaming, gpsEnd, ds, whitening):
+            starts.append(dataw.GetStart())
+            blocks.append(SV_to_array(dataw))
+        lengths = np.array([len(b) for b in blocks], dtype=float)
+        expected = starts[0] + np.concatenate([[0.0], np.cumsum(lengths[:-1])]) / self.par.resampling
+        if np.max(np.abs(np.array(starts) - expected)) > 0.5 / self.par.resampling:
+            raise RuntimeError("the whitened blocks of the segment do not follow one another")
+        return starts[0], np.concatenate(blocks), ds
+
+    def _gates(self, start, whitened, ds):
+        """The stretches of the whitened stream the search is not given.
+
+        Those the configuration declares (`Gates`, GPS `[start, stop]` pairs),
+        and every transient of the whitened stream whose height reaches
+        `GateThreshold` robust standard deviations, broadband or in an octave
+        the search reads (`wdf.processes.gating.transients`); a threshold of
+        zero or None gates only what is declared.
+
+        :type start: float
+        :param start: GPS time of the stream's first sample.
+        :type whitened: numpy.ndarray
+        :param whitened: the stream, as `_whitened_segment` returns it.
+        :type ds: BandPassDownSampling
+        :param ds: the front end that conditioned it.
+        :return: numpy.ndarray -- shape `(n, 2)`, GPS start and stop of each
+            zeroed stretch, sorted and disjoint.
+        """
+        declared = getattr(self.par, "Gates", None)
+        gates = np.asarray([] if declared is None else declared, dtype=float).reshape(-1, 2)
+        threshold = getattr(self.par, "GateThreshold", DEFAULT_GATE_THRESHOLD)
+        if threshold:
+            rate = float(self.par.resampling)
+            found = transients(whitened, rate, octave_bands(rate, ds.search_low_frequency))
+            loud = found.peak >= float(threshold)
+            gates = np.vstack([gates, np.column_stack([start + found.start[loud] / rate,
+                                                       start + found.stop[loud] / rate])])
+        return merged(gates)
+
+    def _apply_gates(self, view, gates):
+        """Multiply a whitened block by the gates' weights, in place.
+
+        Only the samples a gate or its taper reaches are rewritten, so a block
+        no gate touches is left exactly as it is.
+
+        :type view: py4tsa.tsa.SeqView_double_t
+        :param view: the whitened block.
+        :type gates: numpy.ndarray
+        :param gates: as `_gates` returns them.
+        :return: None
+        """
+        if gates.shape[0] == 0:
+            return
+        taper = float(getattr(self.par, "GateTaper", DEFAULT_GATE_TAPER_S))
+        times = view.GetStart() + np.arange(view.GetSize()) / float(self.par.resampling)
+        weights = gate_weights(times, gates, taper)
+        for i in np.flatnonzero(weights < 1.0):
+            view.FillPoint(0, int(i), view.GetY(0, int(i)) * float(weights[i]))
+
     def segmentProcess(self, segment, wavThresh=WaveletThreshold.block):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
@@ -569,6 +658,18 @@ class wdfUnitDSWorker(object):
         the estimation window, the window is taken from the segment end instead.
         Either way the window is conditioned with the settling of real data on
         each side, and is moved inward as far as that requires (`_fit_start`).
+
+        The strain is notched at the segment's lines before the band-pass
+        (`_segment_lines`: those `LineNotches` names, or those standing
+        `LineThreshold` times above the floor of the estimation window). Before
+        any of the segment is searched it is conditioned and whitened once in
+        full, and every transient of that whitened stream reaching
+        `GateThreshold` robust standard deviations, broadband or in an octave
+        the search reads, is gated together with the stretches `Gates`
+        declares (`_gates`): the search pass zeroes them, with a raised-cosine
+        taper of `GateTaper` seconds on each side. The lines and the gates used
+        are recorded with the run's parameters, as `LineNotches` and
+        `GatesApplied`.
         """
         gpsStart, gpsEnd = segment[0],segment[1]
         logging.info(
@@ -591,6 +692,17 @@ class wdfUnitDSWorker(object):
             self.par.dir = dir_chunk
             self.par.gps = gpsStart
             self.par.gpsStart = gpsStart
+
+            # The gates are found on the whole whitened segment before any of it
+            # is searched, since a transient's extent and the noise it is
+            # measured against are only known from the stream around it.
+            if getattr(self.par, "GateThreshold", DEFAULT_GATE_THRESHOLD):
+                gates = self._gates(*self._whitened_segment(gpsStart, gpsEnd,
+                                                            build_whitening))
+            else:
+                gates = self._gates(0.0, np.zeros(0), None)
+            self.par.GatesApplied = gates.tolist()
+            logging.info("Gating %d stretches of the whitened stream" % len(gates))
 
             ds = BandPassDownSampling(self.par)
             whitening = build_whitening()
@@ -617,6 +729,7 @@ class wdfUnitDSWorker(object):
             # Start detection loop
             logging.info("Starting detection loop")
             for dataw in self._whitened(streaming, gpsEnd, ds, whitening):
+                self._apply_gates(dataw, gates)
                 for search in searches:
                     search.SetData(dataw)
                     search.Process()

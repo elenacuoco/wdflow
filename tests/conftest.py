@@ -27,7 +27,7 @@ TEST_PARAMS = dict(
 )
 
 
-def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None):
+def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None, changes=None):
     """Runs the real wdfUnitDSWorker.segmentProcess over the small synthetic
     noise fixture and returns the resulting trigger DataFrame. Shared by the
     golden-output regression test and the len-equivalence test.
@@ -35,7 +35,10 @@ def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None):
     :param rule: the rule for the coefficients of a window, a
         `py4tsa.tsa.WaveletThreshold.WaveletThresholding`; None for the
         worker's default.
+    :param changes: entries of the configuration to set or replace, a dict;
+        None for the test run as it is.
     """
+    os.makedirs(tmp_outdir, exist_ok=True)
     from wdf.config.Parameters import Parameters
     from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
     from py4tsa.tsa import FrameIChannel, SeqView_double_t as SV
@@ -43,6 +46,7 @@ def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None):
     cfg = dict(TEST_PARAMS)
     cfg.update(file=NOISE_GWF, segments=[[GPS0, GPS0 + 90.0]], outdir=tmp_outdir, dir=tmp_outdir,
                ID="golden_test")
+    cfg.update(changes or {})
     filejson = os.path.join(tmp_outdir, "inputWDF.json")
     with open(filejson, "w") as fh:
         json.dump(cfg, fh)
