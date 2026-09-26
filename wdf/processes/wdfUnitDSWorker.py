@@ -16,6 +16,8 @@ __version__ = "1.0.0"
 __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 __status__ = "Development"
+import hashlib
+import json
 import time
 
 import numpy as np
@@ -100,6 +102,57 @@ class wdfUnitDSWorker(object):
                 f"its conditioning needs on each side")
         return start
 
+    def _fit_plan(self, gpsStart, gpsEnd):
+        """The conditioning the noise model is fitted under, and where.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :return: tuple -- `(front end, context, start)`: the estimation front
+            end, the whole seconds of real data it needs on each side of a
+            stretch, and the GPS start of the stretch.
+        :raises ValueError: if the segment cannot hold the stretch and its
+            context.
+        """
+        ds = BandPassDownSampling(self.par, estimation=True)
+        context_s = float(np.ceil(ds.padlen / self.par.sampling))
+        return ds, context_s, self._fit_start(gpsStart, gpsEnd, context_s)
+
+    def _model_key(self, gpsStart, gpsEnd):
+        """What the noise model depends on, and a name derived from it.
+
+        The model is a function of the samples it is fitted on and of its
+        order, and the samples are a function of the channel, the rates, the
+        conditioning filter, the numerical type they are handed over in and the
+        stretch they are taken from. The name digests all of them, so a model
+        fitted under any other conditioning has another name and is never found
+        in its place; the description is stored in the model's file.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :return: tuple -- `(name, description)`: twelve hexadecimal characters,
+            and the JSON they are the digest of.
+        """
+        ds, context_s, start = self._fit_plan(gpsStart, gpsEnd)
+        sections = np.ascontiguousarray(ds.sos, dtype=np.float64)
+        description = json.dumps(dict(
+            channel=str(self.par.channel),
+            sampling=float(self.par.sampling),
+            resampling_factor=int(self.par.ResamplingFactor),
+            band=[float(ds.low_freq_hp), float(ds.cutoff_frequency)],
+            filter_order=int(ds.order),
+            stopband_attenuation_db=float(ds.stopband_attenuation_db),
+            sections=hashlib.sha256(sections.tobytes()).hexdigest(),
+            samples="float64",
+            start=float(start),
+            learn=float(self.learn),
+            context_s=context_s,
+            ar_order=int(self.par.ARorder)), sort_keys=True)
+        return hashlib.sha256(description.encode()).hexdigest()[:12], description
+
     def _learn_stretch(self, gpsStart, gpsEnd):
         """The conditioned stretch a noise model is fitted on.
 
@@ -122,9 +175,7 @@ class wdfUnitDSWorker(object):
         Side effects: sets `AREstimationStart`, the GPS start of the stretch,
         on the worker's parameters.
         """
-        ds = BandPassDownSampling(self.par, estimation=True)
-        context_s = float(np.ceil(ds.padlen / self.par.sampling))
-        start = self._fit_start(gpsStart, gpsEnd, context_s)
+        ds, context_s, start = self._fit_plan(gpsStart, gpsEnd)
         self.par.AREstimationStart = start
 
         stream = FrameIChannel(self.par.file, self.par.channel,
@@ -159,33 +210,38 @@ class wdfUnitDSWorker(object):
         :raises ValueError: if `WhiteningModel` is neither "burg" nor
             "spectrum".
 
-        Side effects: sets `ARfile`, `LVfile`, `sigma`, `sigmaWhitened` and
-        `SqrtWhiteningOrder` on the worker's parameters, and writes the model
-        files when it fits them.
+        Side effects: sets `ARkey`, `ARfile`, `LVfile`, `AREstimationStart`,
+        `sigma`, `sigmaWhitened` and `SqrtWhiteningOrder` on the worker's
+        parameters, and writes the model files when it fits them.
         """
         whiten = Whitening(self.par.ARorder)
-        # .h5 (not .txt): Whitening.ParametersSave/Load now use HDF5
-        # (wdf.processes.ar_lv_io), not p4TSA's old XML Save/Load.
-        self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s.h5" % (
+        # HDF5 (wdf.processes.ar_lv_io), named by everything the model depends
+        # on, so that a model saved under another conditioning is not loaded.
+        key, conditioning = self._model_key(gpsStart, gpsEnd)
+        self.par.ARkey = key
+        self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s-%s.h5" % (
             self.par.ARorder,
             self.par.resampling,
             self.par.channel,
+            key,
         )
-        self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s.h5" % (
+        self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s-%s.h5" % (
             self.par.ARorder,
             self.par.resampling,
             self.par.channel,
+            key,
         )
 
         learn = None
         if os.path.isfile(self.par.ARfile) and os.path.isfile(self.par.LVfile):
             logging.info("Load AR parameters")
             whiten.ParametersLoad(self.par.ARfile, self.par.LVfile)
+            self.par.AREstimationStart = json.loads(conditioning)["start"]
         else:
             logging.info("Start AR parameter estimation")
             learn = self._learn_stretch(gpsStart, gpsEnd)
             whiten.ParametersEstimate(learn)
-            whiten.ParametersSave(self.par.ARfile, self.par.LVfile)
+            whiten.ParametersSave(self.par.ARfile, self.par.LVfile, conditioning)
 
         # sigma for the noise
         self.par.sigma = whiten.GetSigma()

@@ -93,3 +93,36 @@ def test_the_search_starts_once_both_filters_have_settled():
     assert needed > 2
     assert w.par.preWhite == int(np.ceil(needed))
     assert first.GetStart() == pytest.approx(GPS0 + w.par.preWhite)
+
+
+# ------------------------------------------------------------ the saved model
+
+@pytest.mark.parametrize("change", [
+    dict(LowFrequencyCut=12.0), dict(FilterOrder=6), dict(AREstimationOffset=40.0),
+    dict(learn=16), dict(ARorder=20)], ids=lambda c: next(iter(c)))
+def test_a_saved_model_is_found_only_under_its_own_conditioning(tmp_path, monkeypatch, change):
+    """The model depends on everything that shapes the samples it is fitted
+    on. A model saved under another conditioning, reloaded silently, whitens
+    the stream with the spectrum of other data."""
+    import h5py
+    import json
+    directory = str(tmp_path) + "/"
+    first = worker(learn=20, AREstimationOffset=50.0)
+    first._noise_model(GPS0, GPS0 + 90.0, directory)
+    with h5py.File(first.par.ARfile, "r") as fh:
+        stored = json.loads(fh.attrs["conditioning"])
+    assert stored["start"] == GPS0 + 50.0
+
+    other = worker(**dict(dict(learn=20, AREstimationOffset=50.0), **change))
+    other._noise_model(GPS0, GPS0 + 90.0, directory)
+    assert other.par.ARfile != first.par.ARfile
+
+    def refit(*_):
+        raise AssertionError("a model saved under the same conditioning was fitted again")
+
+    monkeypatch.setattr(wdfUnitDSWorker, "_learn_stretch", refit)
+    same = worker(learn=20, AREstimationOffset=50.0)
+    same._noise_model(GPS0, GPS0 + 90.0, directory)
+    assert same.par.ARfile == first.par.ARfile
+    assert same.par.sigma == first.par.sigma
+    assert same.par.AREstimationStart == GPS0 + 50.0

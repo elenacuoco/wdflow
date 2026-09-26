@@ -64,7 +64,7 @@ class Whitening(object):
         self.LF(data, dataw)
         return 
 
-    def ParametersSave(self, ARfile, LVfile):
+    def ParametersSave(self, ARfile, LVfile, conditioning=None):
         """
         This method saves the calculated AR and LV parameter to the file
         (HDF5 -- see wdf.processes.ar_lv_io -- not p4TSA's old XML Save/Load).
@@ -75,8 +75,11 @@ class Whitening(object):
         :type LVfile: basestring
         :param LVfile: file for Lattice View parameters
 
+        :type conditioning: str or None
+        :param conditioning: description of the data the model was fitted on,
+            stored in `ARfile` beside the coefficients.
         """
-        save_ar_burg(ARfile, self.ADE)
+        save_ar_burg(ARfile, self.ADE, conditioning)
         save_lattice_view(LVfile, self.LV)
         return
 

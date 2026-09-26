@@ -83,6 +83,17 @@ Two off-by-one conventions in the p4TSA containers, both easy to get wrong:
   `ErrorForward`/`ErrorBackward` are metadata: the filter output does not depend on
   them.
 
+## The saved model
+
+The autoregressive model is saved beside the segment's triggers and loaded
+from there when the segment is run again. It is a function of the samples it
+was fitted on and of its order, and the samples are a function of the channel,
+the rates, the conditioning filter with every section stacked on it, the
+numerical type they are handed over in and the stretch they are taken from.
+The file's name carries a digest of all of them, and the file itself the
+description the digest was taken of, so a model fitted under another
+conditioning has another name and is never loaded in its place.
+
 ## Using it
 
 `wdf.processes.zero_phase_whitening.ZeroPhaseWhitening` wraps the whole thing and is

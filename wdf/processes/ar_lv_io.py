@@ -29,18 +29,24 @@ import h5py
 import numpy as np
 
 
-def save_ar_burg(h5path: str, ade) -> None:
+def save_ar_burg(h5path: str, ade, conditioning: str | None = None) -> None:
     """Writes an ArBurgEstimator's state (`mArOrder`, `mAR`) to `h5path`.
 
     :type h5path: str
     :param h5path: output file path.
     :type ade: py4tsa.tsa.ArBurgEstimator
     :param ade: the estimator to persist.
+    :type conditioning: str or None
+    :param conditioning: a description of the data the model was fitted on,
+        stored beside it as the attribute `conditioning` so that the file says
+        what it is a model of; nothing is stored when None.
     """
     order = ade.GetArOrder()
     ar = np.array([ade.GetAR(j) for j in range(order + 1)])
     with h5py.File(h5path, "w") as fh:
         fh.attrs["ar_order"] = order
+        if conditioning is not None:
+            fh.attrs["conditioning"] = conditioning
         fh.create_dataset("ar", data=ar, compression="gzip")
 
 
