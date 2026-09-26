@@ -114,8 +114,12 @@ def write_frame_list(index: list, start: float, stop: float, path: str) -> str:
     if not lines:
         raise ValueError(f"no frame covers {start:.0f}-{stop:.0f}")
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
+    # Written beside and moved into place, so that a reader never meets a list
+    # another process is still writing.
+    partial = f"{path}.{os.getpid()}.part"
+    with open(partial, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
+    os.replace(partial, path)
     return path
 
 
@@ -749,12 +753,15 @@ def plan(config: SearchConfig, start: float, stop: float, outdir: str,
         name = f"{ifo}-{int(np.floor(start))}-{int(np.ceil(stop - start))}"
         frame_list = write_frame_list(index, start, stop,
                                       os.path.join(outdir, f"{name}.ffl"))
-        scratch = os.path.join(outdir, f"{name}-quality.ffl")
+        # One per process: the list is rewritten for every frame read.
+        scratch = os.path.join(outdir, f"{name}-quality-{os.getpid()}.ffl")
         for segment in science_segments(index, config.quality[ifo], start,
                                         stop, config.science_bits, scratch):
             if segment[1] - segment[0] >= config.minimum_segment_s:
                 jobs.append(Job(ifo=ifo, segment=segment,
                                 frame_list=frame_list, outdir=outdir, run=run))
+        if os.path.exists(scratch):
+            os.remove(scratch)
     return jobs
 
 
