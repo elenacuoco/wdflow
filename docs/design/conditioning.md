@@ -163,6 +163,23 @@ the detector, the band and the criterion; the segment is then neither searched
 nor marked done. Either way the report is written beside the segment's triggers
 as `conditioning-check.json`. `ValidateConditioning = False` turns the check off.
 
+A stretch of data holds several detectors and, for each, one or more science
+segments. `wdf.processes.network_search.check` checks every segment of every
+detector before any of them is searched, and stops the stretch with every
+detector, band and criterion that failed. The check of a segment is filed in a
+directory of its own, and each search of that segment --- one per rule for the
+coefficients of a window --- is handed the check's model, lines and gates, the
+last as declared stretches with no census of its own: the stream searched is
+the stream the check read, whatever rule then reads it.
+
+`wdfUnitDSWorker.whitened_stretch` rebuilds that stream between two instants
+without whitening the whole segment again. The chain is started a whole number
+of seconds before the first instant, far enough for both filters to have
+settled there, and since the band-pass runs with real data on both sides of
+every block and the whitening is a finite filter with a look-ahead of its own
+order, what it returns is the segment's stream at those instants, gated and on
+the search's scale.
+
 The check does not read the octave below the detector's search low frequency,
 which the search still reads where the band-pass has not emptied it. Whether
 that octave is to be checked, or cut, is an open decision.

@@ -52,6 +52,12 @@ wdf.processes.validation
 .. automodule:: wdf.processes.validation
    :members:
 
+wdf.processes.network_search
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.network_search
+   :members:
+
 wdf.processes.zero_phase_whitening
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
