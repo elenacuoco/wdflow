@@ -116,6 +116,8 @@ def test_a_rejected_stretch_names_every_detector_band_and_criterion():
             return self.text
 
     error = StretchRejected([Failed("L1 fails: 16-32 Hz: window kurtosis"),
-                             Failed("V1 fails: transients and gates cover")])
+                             Failed("V1 fails: transients and gates cover")],
+                            table="the whole check")
     assert "L1 fails: 16-32 Hz" in str(error) and "V1 fails" in str(error)
     assert len(error.reports) == 2
+    assert error.table == "the whole check"

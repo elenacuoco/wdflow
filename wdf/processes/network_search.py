@@ -326,11 +326,14 @@ class StretchRejected(RuntimeError):
 
     :param reports: every `ValidationReport` that failed, in the order the
         segments were planned.
+    :param table: the whole check, one row per segment, as `check` would have
+        returned it, passing segments included; None when not given.
     """
 
-    def __init__(self, reports):
+    def __init__(self, reports, table=None):
         super().__init__("\n".join(report.message() for report in reports))
         self.reports = list(reports)
+        self.table = table
 
 
 def worker_parameters(config: SearchConfig, job: Job, sampling: float,
@@ -694,7 +697,7 @@ def check(config: SearchConfig, start: float, stop: float, outdir: str) -> pd.Da
         stretch was clean enough), `seconds` and `passed`.
     :raises StretchRejected: if any segment fails its check, after every
         segment has been checked; its message names each detector, band and
-        criterion that failed.
+        criterion that failed, and it carries the whole table as `table`.
     :raises ValueError: if the stretch holds no segment long enough to search.
     """
     jobs = plan(config, start, stop, outdir, CHECK_RUN)
@@ -707,7 +710,7 @@ def check(config: SearchConfig, start: float, stop: float, outdir: str) -> pd.Da
     table["passed"] = [r is not None and r.passed for r in table["report"]]
     failed = [r for r in table["report"] if r is not None and not r.passed]
     if failed:
-        raise StretchRejected(failed)
+        raise StretchRejected(failed, table)
     return table
 
 
