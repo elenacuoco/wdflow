@@ -116,3 +116,53 @@ The threshold is an empirical choice, not a physical constraint: it must stand
 above the loudest excursion an astrophysical signal the search is meant to
 report can produce in one octave of the whitened stream, and below the
 instrumental transients it is meant to remove.
+
+## The check before the search
+
+The threshold means the same thing at every frequency and at every time only on
+a stream that is white, Gaussian and stationary, on the scale the search divides
+by. The conditioning is meant to give the stream those properties, and it can
+fail to, one band at a time: a noise model that misfits an octave, a line left
+in, a glitch the gates did not catch, noise that is not Gaussian in one band
+whatever the model. A single number over the whole band hides all of them, so
+the check is read octave by octave.
+
+`wdf.processes.validation.validate` reads the whitened stream the search is
+about to read -- gated, divided by the search's scale, over the whole stretch it
+will search -- in every octave from the detector's search low frequency to the
+Nyquist frequency:
+
+- **White**: the octave's power, as the median of one-second periodograms,
+  within a tenth of the power of unit white noise. The median, so that
+  transients do not lift it; they are the third criterion's.
+- **Gaussian**: the median over eight-second windows of the kurtosis of the
+  octave, within a tenth of what the same estimator gives on Gaussian white
+  noise of the same length through the same filter. Comparing with the
+  estimator's own value on Gaussian noise rather than with three removes its
+  bias on a finite, band-limited window by construction, since the bias is the
+  same in both. The band above the band-pass's high edge is read as well: the
+  band-pass empties it and the whitening lifts what is left back up, so it is
+  where a rounding floor, or any other residue the conditioning leaves, shows.
+  Windows a gate touches are left out, since they are not searched there.
+- **Clean**: the transients the census flags, each widened by one analysis
+  window, and the gates with their tapers, cover at most one percent of the
+  stretch.
+- **Stationary**: in each third of the stretch every octave's power is within a
+  tenth of its power over the whole stretch.
+
+The report also carries the detector's angle-averaged range for a binary
+neutron star, read off the spectrum of the strain on its fit stretch. It is
+reported and not tested: a detector's sensitivity is not a property of its
+conditioning.
+
+`wdfUnitDSWorker.validate(segment)` runs everything the search runs before its
+first block -- lines, model, whitened stream, gates -- checks the stream and
+returns the report without searching. `segmentProcess` does the same before it
+searches and stops with `ConditioningRejected` when a criterion fails, naming
+the detector, the band and the criterion; the segment is then neither searched
+nor marked done. Either way the report is written beside the segment's triggers
+as `conditioning-check.json`. `ValidateConditioning = False` turns the check off.
+
+The check does not read the octave below the detector's search low frequency,
+which the search still reads where the band-pass has not emptied it. Whether
+that octave is to be checked, or cut, is an open decision.

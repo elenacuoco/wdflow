@@ -102,9 +102,12 @@ what `wdfUnitDSWorker` uses; `SqrtWhiteningOrder` sets `q`. See
 
 ## Verifying a change
 
-Any change to the conditioning should be checked against all four:
-
-- `std / σ ≈ 1`
-- kurtosis ≈ 3
-- spectral flatness ≈ 1 across the analysis band
-- zero lag between an injection and its reconstruction
+A change to the conditioning is checked band by band, never on the whole band
+at once: a standard deviation of one, or a kurtosis of three over the whole
+stream, is compatible with an octave far from white and another far from
+Gaussian. `wdf.processes.validation` reads, in every octave the search reads,
+the power against white, the window kurtosis against Gaussian noise's, the
+transients and gates, and the stationarity across the stretch (see
+[Conditioning](conditioning.md)); `wdfUnitDSWorker.validate` runs it on a
+segment. What it does not read, and has to be checked separately, is the lag
+between an injection and its reconstruction, which must be zero.

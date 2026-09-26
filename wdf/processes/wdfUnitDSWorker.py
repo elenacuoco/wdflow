@@ -1,12 +1,16 @@
 """One segment, from frames to trigger files, with the conditioning downsampled.
 
-The unit of work a run is divided into. It reads a segment block by block,
-conditions it once --- band-pass, downsample, whiten --- and searches the
-conditioned stream at the configured analysis window, writing the triggers of
-that segment.
+The unit of work a run is divided into, for one detector. It finds the
+segment's lines and fits its noise model, then reads the segment block by block
+and conditions it --- notch, band-pass, downsample, whiten --- twice: once in
+full, to find the transients to gate and to check that the stream is fit to be
+searched, and once to search it, gated, at the configured analysis windows,
+writing the triggers of that segment. The two passes run the same front end and
+the same filter, so the stream checked is the stream searched; the first holds
+the whitened segment in memory, the second streams it.
 
-The conditioning is shared and the search reads its output, so the expensive
-part of the chain is done once per block however the search is configured.
+The search pass is shared by every analysis window, so the conditioning is done
+once per block of that pass however the search is configured.
 """
 __author__ = "Elena Cuoco"
 __copyright__ = "Copyright 2017, Elena Cuoco"
@@ -35,6 +39,8 @@ from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 read_conditioned)
 from wdf.processes.gating import gate_weights, merged, octave_bands, transients
 from wdf.processes.lines import median_spectrum, spectral_lines
+from wdf.processes import validation
+from wdf.processes.validation import ConditioningRejected, bns_range
 from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
 from wdf.processes.Whitening import Whitening
@@ -563,9 +569,9 @@ class wdfUnitDSWorker(object):
         :return: tuple -- `(start, samples, front end)`: the GPS time of the
             first sample, the samples at the analysed rate, and the conditioning
             front end that produced them.
-        :raises RuntimeError: if the blocks do not follow one another without a
-            gap, since a stream placed from its first sample would then be
-            misplaced after the gap.
+        :raises RuntimeError: if the segment yields no block, or if the blocks
+            do not follow one another without a gap, since a stream placed from
+            its first sample would then be misplaced after the gap.
         """
         ds = BandPassDownSampling(self.par)
         whitening = build_whitening()
@@ -574,40 +580,121 @@ class wdfUnitDSWorker(object):
         for dataw in self._whitened(streaming, gpsEnd, ds, whitening):
             starts.append(dataw.GetStart())
             blocks.append(SV_to_array(dataw))
+        if not blocks:
+            raise RuntimeError(
+                f"the segment {gpsStart}-{gpsEnd} holds no block to search once "
+                f"the warm-up and the read-ahead are taken from it")
         lengths = np.array([len(b) for b in blocks], dtype=float)
         expected = starts[0] + np.concatenate([[0.0], np.cumsum(lengths[:-1])]) / self.par.resampling
         if np.max(np.abs(np.array(starts) - expected)) > 0.5 / self.par.resampling:
             raise RuntimeError("the whitened blocks of the segment do not follow one another")
         return starts[0], np.concatenate(blocks), ds
 
-    def _gates(self, start, whitened, ds):
+    def _gates(self, start, found):
         """The stretches of the whitened stream the search is not given.
 
         Those the configuration declares (`Gates`, GPS `[start, stop]` pairs),
-        and every transient of the whitened stream whose height reaches
-        `GateThreshold` robust standard deviations, broadband or in an octave
-        the search reads (`wdf.processes.gating.transients`); a threshold of
-        zero or None gates only what is declared.
+        and every transient of the census whose height reaches `GateThreshold`
+        robust standard deviations, broadband or in an octave the search reads;
+        a threshold of zero or None gates only what is declared.
 
         :type start: float
         :param start: GPS time of the stream's first sample.
-        :type whitened: numpy.ndarray
-        :param whitened: the stream, as `_whitened_segment` returns it.
-        :type ds: BandPassDownSampling
-        :param ds: the front end that conditioned it.
+        :type found: wdf.processes.gating.Transients or None
+        :param found: the census of the whitened stream; None when none was
+            taken.
         :return: numpy.ndarray -- shape `(n, 2)`, GPS start and stop of each
             zeroed stretch, sorted and disjoint.
         """
         declared = getattr(self.par, "Gates", None)
         gates = np.asarray([] if declared is None else declared, dtype=float).reshape(-1, 2)
         threshold = getattr(self.par, "GateThreshold", DEFAULT_GATE_THRESHOLD)
-        if threshold:
+        if threshold and found is not None:
             rate = float(self.par.resampling)
-            found = transients(whitened, rate, octave_bands(rate, ds.search_low_frequency))
             loud = found.peak >= float(threshold)
             gates = np.vstack([gates, np.column_stack([start + found.start[loud] / rate,
                                                        start + found.stop[loud] / rate])])
         return merged(gates)
+
+    def _examine(self, gpsStart, gpsEnd, build_whitening, check):
+        """Whiten the whole segment once, find its gates and, if asked, check it.
+
+        The census of the whitened stream (`wdf.processes.gating.transients`,
+        over the octaves from the detector's search low frequency) gives the
+        gates. The check (`wdf.processes.validation.validate`) is read on the
+        stream as the search will read it: gated, and divided by the scale the
+        search divides by, with the detector's binary neutron star range from
+        the spectrum of its fit stretch.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :type build_whitening: callable
+        :param build_whitening: what `_noise_model` returned.
+        :type check: bool
+        :param check: whether to check the stream as well as gate it.
+        :return: tuple -- `(gates, report)`: as `_gates` returns them, and the
+            `ValidationReport`, or None when not checked.
+        """
+        start, whitened, ds = self._whitened_segment(gpsStart, gpsEnd, build_whitening)
+        rate = float(self.par.resampling)
+        bands = octave_bands(rate, ds.search_low_frequency)
+        found = transients(whitened, rate, bands)
+        gates = self._gates(start, found)
+        if not check:
+            return gates, None
+        taper = float(getattr(self.par, "GateTaper", DEFAULT_GATE_TAPER_S))
+        times = start + np.arange(whitened.size) / rate
+        gated = whitened * gate_weights(times, gates, taper) / float(self.par.sigma)
+        window = max(window for window, _ in self.schedule) / rate
+        report = validation.validate(self.par.itf, gated, rate, start, bands,
+                                     (ds.cutoff_frequency, 0.5 * rate), found, gates,
+                                     taper, window,
+                                     range_mpc=bns_range(*self._fit_spectrum(gpsStart,
+                                                                             gpsEnd)))
+        logging.info("Conditioning check:\n%s" % report.table())
+        return gates, report
+
+    def _segment_directory(self, gpsStart):
+        """Where a segment's model, check and triggers are written.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :return: tuple -- `(ID, directory)`, the directory with a trailing
+            separator, created if missing.
+        """
+        ID = "".join([str(self.par.channel), "_", str(int(gpsStart))])
+        dir_chunk = "".join([self.par.outdir, self.par.run, "/", self.par.itf, "/", ID, '/'])
+        if not os.path.exists(dir_chunk):
+            os.makedirs(dir_chunk)
+        return ID, dir_chunk
+
+    def validate(self, segment):
+        """Condition and whiten a segment as the search would, and check it.
+
+        Everything `segmentProcess` does before its first search: the lines,
+        the noise model, the whitened stream, its gates and its check; nothing
+        is searched. The report is written beside the segment's triggers as
+        `conditioning-check.json`.
+
+        :type segment: tuple[float, float]
+        :param segment: `(gpsStart, gpsEnd)` of the segment.
+        :return: wdf.processes.validation.ValidationReport
+        """
+        gpsStart, gpsEnd = segment[0], segment[1]
+        _, dir_chunk = self._segment_directory(gpsStart)
+        self.par.LineNotches = self._segment_lines(gpsStart, gpsEnd)
+        build_whitening = self._noise_model(gpsStart, gpsEnd, dir_chunk)
+        _, report = self._examine(gpsStart, gpsEnd, build_whitening, True)
+        self._record(report, dir_chunk)
+        return report
+
+    @staticmethod
+    def _record(report, dir_chunk):
+        """Write a check's report beside the segment's triggers."""
+        with open(dir_chunk + "conditioning-check.json", "w", encoding="utf-8") as handle:
+            json.dump(report.to_dict(), handle, indent=1)
 
     def _apply_gates(self, view, gates):
         """Multiply a whitened block by the gates' weights, in place.
@@ -670,6 +757,17 @@ class wdfUnitDSWorker(object):
         taper of `GateTaper` seconds on each side. The lines and the gates used
         are recorded with the run's parameters, as `LineNotches` and
         `GatesApplied`.
+
+        The same whitened stream, gated, is checked before the search starts
+        (`wdf.processes.validation`): in every octave the search reads it must
+        be white, Gaussian and stationary, and transients and gates must cover
+        little of it. The report is written beside the triggers as
+        `conditioning-check.json`; `ValidateConditioning = False` skips the
+        check.
+
+        :raises wdf.processes.validation.ConditioningRejected: if the check
+            fails, before anything is searched; its message names the
+            detector, the band and the criterion.
         """
         gpsStart, gpsEnd = segment[0],segment[1]
         logging.info(
@@ -677,11 +775,7 @@ class wdfUnitDSWorker(object):
             % (gpsStart, gpsEnd, self.par.channel, self.par.resampling)
         )
         start_time = time.time()
-        ID = "".join([str(self.par.channel),"_",str(int(gpsStart))])
-        dir_chunk = "".join([self.par.outdir,self.par.run, "/", self.par.itf,"/",ID,'/'])
-        # create the output dir
-        if not os.path.exists(dir_chunk):
-            os.makedirs(dir_chunk)
+        ID, dir_chunk = self._segment_directory(gpsStart)
         if not os.path.isfile(dir_chunk + "ProcessEnded.check"):
             self.par.LineNotches = self._segment_lines(gpsStart, gpsEnd)
             logging.info("Notching %d lines" % len(self.par.LineNotches))
@@ -693,16 +787,22 @@ class wdfUnitDSWorker(object):
             self.par.gps = gpsStart
             self.par.gpsStart = gpsStart
 
-            # The gates are found on the whole whitened segment before any of it
-            # is searched, since a transient's extent and the noise it is
-            # measured against are only known from the stream around it.
-            if getattr(self.par, "GateThreshold", DEFAULT_GATE_THRESHOLD):
-                gates = self._gates(*self._whitened_segment(gpsStart, gpsEnd,
-                                                            build_whitening))
+            # The gates are found, and the stream is checked, on the whole
+            # whitened segment before any of it is searched: a transient's
+            # extent, the noise it is measured against and the stationarity of
+            # the stretch are only known from the stream around them. A stream
+            # that fails the check is not searched.
+            check = bool(getattr(self.par, "ValidateConditioning", True))
+            if check or getattr(self.par, "GateThreshold", DEFAULT_GATE_THRESHOLD):
+                gates, report = self._examine(gpsStart, gpsEnd, build_whitening, check)
             else:
-                gates = self._gates(0.0, np.zeros(0), None)
+                gates, report = self._gates(0.0, None), None
             self.par.GatesApplied = gates.tolist()
             logging.info("Gating %d stretches of the whitened stream" % len(gates))
+            if report is not None:
+                self._record(report, dir_chunk)
+                if not report.passed:
+                    raise ConditioningRejected(report)
 
             ds = BandPassDownSampling(self.par)
             whitening = build_whitening()

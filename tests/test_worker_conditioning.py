@@ -170,8 +170,10 @@ def test_a_declared_gate_takes_its_stretch_out_of_the_search(tmp_path):
     from conftest import run_segment_process
 
     def inside(gates):
+        # A gate this long covers more of the short fixture than the check
+        # allows; what is tested here is how the gate is applied.
         df = run_segment_process(str(tmp_path / str(len(gates))) + "/",
-                                 changes=dict(Gates=gates))
+                                 changes=dict(Gates=gates, ValidateConditioning=False))
         return int(((df.gps > GPS0 + 40.1) & (df.gps < GPS0 + 41.9)).sum())
 
     assert inside([]) > 20
@@ -186,10 +188,47 @@ def test_the_gates_are_the_declared_ones_and_the_loud_transients():
     t = np.arange(x.size) / rate - 30.0
     x += 500.0 * np.exp(-(t / 0.05) ** 2) * np.sin(2 * np.pi * 200.0 * t)
 
-    gates = w._gates(GPS0, x, ds)
+    from wdf.processes.gating import octave_bands, transients
+    found = transients(x, rate, octave_bands(rate, ds.search_low_frequency))
+    gates = w._gates(GPS0, found)
     assert gates.shape == (2, 2)
     assert gates[0].tolist() == [GPS0 + 10.0, GPS0 + 11.0]
     assert GPS0 + 29.8 < gates[1, 0] < GPS0 + 30.0 < gates[1, 1] < GPS0 + 30.2
 
     w.par.GateThreshold = 0
-    assert w._gates(GPS0, x, ds).tolist() == [[GPS0 + 10.0, GPS0 + 11.0]]
+    assert w._gates(GPS0, found).tolist() == [[GPS0 + 10.0, GPS0 + 11.0]]
+    assert w._gates(GPS0, None).tolist() == [[GPS0 + 10.0, GPS0 + 11.0]]
+
+
+# ------------------------------------------------------------------ the check
+
+def test_a_segment_that_fails_the_check_is_not_searched(tmp_path):
+    """The check runs before the first search; a failure stops the segment
+    with the detector, the band and the criterion, writes no trigger and does
+    not mark the segment done, and the report is kept beside it."""
+    import glob
+    import json
+    from conftest import run_segment_process
+    from wdf.processes.validation import ConditioningRejected
+
+    outdir = str(tmp_path) + "/"
+    with pytest.raises(ConditioningRejected, match="H1 fails .*transients and gates cover"):
+        run_segment_process(outdir, changes=dict(Gates=[[GPS0 + 30.0, GPS0 + 32.5]]))
+
+    segment = glob.glob(outdir + "offLine/H1/*/")[0]
+    assert not glob.glob(segment + "*.parquet")
+    assert not glob.glob(segment + "ProcessEnded.check")
+    with open(segment + "conditioning-check.json") as handle:
+        assert json.load(handle)["passed"] is False
+
+
+def test_a_segment_can_be_checked_without_being_searched(tmp_path):
+    import glob
+    w = worker(outdir=str(tmp_path) + "/")
+    report = w.validate((GPS0, GPS0 + 90.0))
+
+    assert report.passed, report.message()
+    assert report.bands[0][0] == BandPassDownSampling(w.par).search_low_frequency
+    assert report.range_mpc > 0.0
+    assert glob.glob(str(tmp_path) + "/offLine/H1/*/conditioning-check.json")
+    assert not glob.glob(str(tmp_path) + "/offLine/H1/*/*.parquet")

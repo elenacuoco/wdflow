@@ -46,6 +46,12 @@ wdf.processes.gating
 .. automodule:: wdf.processes.gating
    :members:
 
+wdf.processes.validation
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.validation
+   :members:
+
 wdf.processes.zero_phase_whitening
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
