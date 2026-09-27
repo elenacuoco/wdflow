@@ -159,3 +159,25 @@ def test_the_background_holds_no_injection(tmp_path):
         inside[i0:i1] = True
     assert np.all(fg[~inside] == bg[~inside])
     assert np.any(fg[inside] != bg[inside])
+
+
+def test_a_set_above_the_search_rate_records_the_band_it_is_searched_in(tmp_path):
+    from wdf.mock.benchmark import BENCHMARK_CONFIG, worker_band, write_benchmark
+
+    assert worker_band(4096, 2) == worker_band(2048, 1) == (12.0, 921.6)
+    with pytest.raises(ValueError):
+        worker_band(4096, 0)
+
+    config = dict(BENCHMARK_CONFIG, sample_rate=4096, resampling_factor=2,
+                  duration=1200.0, n_cbc=3, edge_pad=100.0, frame_length=512.0)
+    truth = write_benchmark(tmp_path, config=config)
+    summary = json.loads((tmp_path / "validation.json").read_text())
+    assert summary["worker_band_loss"]["band"] == [12.0, 921.6]
+    assert "`ResamplingFactor` = 2" in (tmp_path / "README.md").read_text()
+    written = json.loads((tmp_path / "benchmark_config.json").read_text())
+    assert written["resampling_factor"] == 2
+    for ifo in NETWORK:
+        mf = summary["matched_filter"][ifo]
+        assert mf["n"] == len(truth)
+        assert mf["injected_over_recorded_max_deviation"] < 1e-3
+        assert mf["injected_lag_samples_max"] == 0

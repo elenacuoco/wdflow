@@ -78,6 +78,25 @@ BENCHMARK_CONFIG = {
 WORKER_BAND = (12.0, 0.9 * 0.5 * 2048)
 
 
+def worker_band(sample_rate, resampling_factor=1):
+    """The band the worker passes on a set written at `sample_rate`.
+
+    The worker searches the stream at ``sample_rate / resampling_factor`` and
+    band-passes it to 0.9 of that rate's Nyquist frequency, so a set written
+    above the rate it is searched at loses what lies between the two.
+
+    :type sample_rate: float
+    :param sample_rate: rate of the frames, Hz.
+    :type resampling_factor: int
+    :param resampling_factor: the worker's ``ResamplingFactor``.
+    :return: tuple -- ``(low, high)`` in Hz.
+    """
+    factor = int(resampling_factor)
+    if factor < 1 or factor != float(resampling_factor):
+        raise ValueError("resampling_factor must be a positive integer")
+    return (WORKER_BAND[0], 0.9 * 0.5 * float(sample_rate) / factor)
+
+
 def _provenance():
     """What produced the set: the library's commit and the waveform code."""
     import pycbc
@@ -250,7 +269,7 @@ Injections are {gap:g} s apart at least, support to support; the first and last
 ## Reading it with the worker
 
 `file` = the FFL, `channel` = `<IFO>:{channel_suffix}`, `sampling` = {sample_rate},
-`ResamplingFactor` = 1. Any `window`/`overlap` (e.g. 512/32, 1024/768) and any
+`ResamplingFactor` = {resampling_factor}, so the search runs at {search_rate:g} Hz. Any `window`/`overlap` (e.g. 512/32, 1024/768) and any
 basis or thresholding rule: the data do not depend on them. The worker still
 band-passes to [LowFrequencyCut, 0.9 Nyquist] and fits its AR whitening; on
 white noise that fit is the identity within estimation error. A median
@@ -318,7 +337,10 @@ def write_benchmark(outdir, config=None, validate=True):
     :type config: dict | None
     :param config: keyword arguments for :func:`wdf.mock.generate_dataset`;
         :data:`BENCHMARK_CONFIG` when None. A different one writes a
-        different set, recorded as such.
+        different set, recorded as such. Its optional ``resampling_factor``
+        (default 1) is not the generator's: it is the worker's
+        ``ResamplingFactor`` for the set, which fixes the band the recorded
+        band loss is measured against and the reading the README gives.
     :type validate: bool
     :param validate: run :func:`wdf.mock.validation.validate_white_set` and
         :func:`worker_read_check` on what was written, and record them.
@@ -328,6 +350,10 @@ def write_benchmark(outdir, config=None, validate=True):
     from wdf.mock.validation import validate_white_set
 
     config = dict(BENCHMARK_CONFIG if config is None else config)
+    # How the worker reads the set, not how it is generated: recorded with the
+    # configuration and kept out of the generator's arguments.
+    resampling_factor = int(config.get("resampling_factor", 1))
+    band = worker_band(config["sample_rate"], resampling_factor)
     if config.get("noise") != "white":
         raise ValueError("the benchmark is a white-noise set; noise must be 'white'")
     outdir = os.path.abspath(os.fspath(outdir))
@@ -339,7 +365,8 @@ def write_benchmark(outdir, config=None, validate=True):
               encoding="utf-8") as handle:
         json.dump(_provenance(), handle, indent=2)
 
-    truth = generate_dataset(outdir, **config)
+    truth = generate_dataset(
+        outdir, **{k: v for k, v in config.items() if k != "resampling_factor"})
     if not validate:
         return truth
 
@@ -350,7 +377,6 @@ def write_benchmark(outdir, config=None, validate=True):
                                 sensitivity)
     report["matched_filter"].to_parquet(
         os.path.join(outdir, "validation_matched_filter.parquet"), index=False)
-    band = (WORKER_BAND[0], 0.9 * 0.5 * float(config["sample_rate"]))
     losses = _band_loss(truth, detectors, sensitivity,
                         float(config["sample_rate"]), band)
     summary = _summarise(report, truth, losses)
@@ -377,6 +403,8 @@ def write_benchmark(outdir, config=None, validate=True):
             frame_length=config["frame_length"],
             channel_suffix=config["channel_suffix"],
             sample_rate=config["sample_rate"],
+            resampling_factor=resampling_factor,
+            search_rate=float(config["sample_rate"]) / resampling_factor,
             track_points=config["track_points"],
             duration_h=config["duration"] / 3600.0,
             start_gps=config["start_gps"],
