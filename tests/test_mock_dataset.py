@@ -401,3 +401,46 @@ def test_no_two_injections_overlap_in_any_detector():
         f"{int((separation <= 0).sum())} pairs of injections overlap")
     # The gap asked for is a floor on that separation, not a nominal value.
     assert separation.min() >= 1.0 - 1e-6
+
+
+def test_detector_ranges_hold_in_every_named_detector():
+    """Loudness set per detector: every named detector inside its range.
+
+    One amplitude for the network and the geometric shares of each detector,
+    so the ranges are asserted on the drawn parameters, as the floor is; the
+    detector left out receives what its share gives it and is not bounded.
+    """
+    from wdf.mock.dataset import _detector_share, draw_injections
+
+    ranges = {"H1": (12.0, 20.0), "L1": (12.0, 20.0)}
+    detectors = ("H1", "L1", "V1")
+    sensitivity = {"V1": 0.32}
+    rows = draw_injections(n_cbc=40, n_glitch=0, duration=30000.0, seed=4,
+                           detectors=detectors, detector_snr_range=ranges,
+                           relative_sensitivity=sensitivity)
+    for row in rows:
+        share = _detector_share(row, row["gps"], detectors, sensitivity)
+        snr = share * row["target_snr"]
+        assert 12.0 - 1e-9 <= snr[0] <= 20.0 + 1e-9
+        assert 12.0 - 1e-9 <= snr[1] <= 20.0 + 1e-9
+
+
+def test_detector_ranges_are_what_the_injection_receives(tmp_path):
+    """The recorded per-detector SNR of a written injection lies in its range."""
+    ranges = {"H1": (12.0, 20.0), "L1": (12.0, 20.0)}
+    table = generate_dataset(
+        tmp_path, duration=700.0, n_cbc=3, n_glitch=0, seed=5,
+        detectors=("H1", "L1", "V1"), edge_pad=100.0, noise="white",
+        relative_sensitivity={"V1": 0.32}, detector_snr_range=ranges,
+        cbc_population={"chirp_mass": (20.0, 30.0)}, write_background=False,
+        minimum_injection_gap=5.0)
+    for ifo in ("H1", "L1"):
+        assert table[f"snr_{ifo}"].between(12.0 * 0.995, 20.0 * 1.005).all()
+
+
+def test_detector_ranges_refuse_a_floor_beside_them():
+    """Two rules for one loudness are refused rather than composed."""
+    with pytest.raises(ValueError, match="exclusive"):
+        draw_injections(n_cbc=1, n_glitch=0, duration=30000.0,
+                        detector_snr_range={"H1": (12.0, 20.0)},
+                        min_detector_snr=7.0)

@@ -193,6 +193,9 @@ def _summarise(report, truth, losses):
             cbc["network_snr"].between(7.0, 12.0).mean()),
         "chirp_mass_range": (float(cbc["chirp_mass"].min()),
                              float(cbc["chirp_mass"].max())),
+        "detector_snr_range": {
+            ifo: (float(cbc[f"snr_{ifo}"].min()), float(cbc[f"snr_{ifo}"].max()))
+            for ifo in report["spectrum"]},
         "v1_over_ligo_rms_median": float(
             (cbc["snr_V1"] / np.hypot(cbc["snr_H1"], cbc["snr_L1"])
              * np.sqrt(2.0)).median()),
@@ -238,8 +241,7 @@ samples. `provenance.json` records the wdflow commit it was written from.
 ## Configuration
 
 {duration_h:g} h from GPS {start_gps:.0f}, detectors {detectors}, unit-variance white
-noise, {n_cbc} compact binaries (IMRPhenomD from {f_lower:g} Hz), network SNR
-{snr_low:g}-{snr_high:g} with a share {core_w:g} drawn in {core_low:g}-{core_high:g}, chirp mass
+noise, {n_cbc} compact binaries (IMRPhenomD from {f_lower:g} Hz), {loudness}, chirp mass
 {mc_low:g}-{mc_high:g} Msun uniform in its logarithm, mass ratio {q_low:g}-{q_high:g}. V1 receives
 {v1:g} of the amplitude a LIGO detector with the same antenna response would.
 Injections are {gap:g} s apart at least, support to support; the first and last
@@ -291,7 +293,10 @@ def _validation_text(summary):
         f"- Population: {pop['n']} injections, network SNR "
         f"{pop['network_snr_range'][0]:.1f}-{pop['network_snr_range'][1]:.1f}, "
         f"{pop['share_network_snr_7_12']:.0%} in 7-12; chirp mass "
-        f"{pop['chirp_mass_range'][0]:.1f}-{pop['chirp_mass_range'][1]:.1f}.")
+        f"{pop['chirp_mass_range'][0]:.1f}-{pop['chirp_mass_range'][1]:.1f}; "
+        "optimal SNR " + ", ".join(
+            f"{ifo} {low:.1f}-{high:.1f}"
+            for ifo, (low, high) in pop["detector_snr_range"].items()) + ".")
     return "\n".join(lines)
 
 
@@ -357,6 +362,15 @@ def write_benchmark(outdir, config=None, validate=True):
         json.dump(_jsonable(summary), handle, indent=2)
 
     population = config["cbc_population"]
+    if config.get("detector_snr_range"):
+        loudness = "optimal SNR " + ", ".join(
+            f"{low:g}-{high:g} in {ifo}"
+            for ifo, (low, high) in config["detector_snr_range"].items())
+    else:
+        loudness = (f"network SNR {config['snr_range'][0]:g}-"
+                    f"{config['snr_range'][1]:g} with a share "
+                    f"{config['snr_core'][2]:g} drawn in "
+                    f"{config['snr_core'][0]:g}-{config['snr_core'][1]:g}")
     with open(os.path.join(outdir, "README.md"), "w", encoding="utf-8") as handle:
         handle.write(README.format(
             outdir=outdir,
@@ -369,9 +383,7 @@ def write_benchmark(outdir, config=None, validate=True):
             detectors=", ".join(detectors),
             n_cbc=config["n_cbc"],
             f_lower=population["f_lower"],
-            snr_low=config["snr_range"][0], snr_high=config["snr_range"][1],
-            core_low=config["snr_core"][0], core_high=config["snr_core"][1],
-            core_w=config["snr_core"][2],
+            loudness=loudness,
             mc_low=population["chirp_mass"][0],
             mc_high=population["chirp_mass"][1],
             q_low=population["mass_ratio"][0],
@@ -392,5 +404,14 @@ if __name__ == "__main__":
     parser.add_argument("outdir", help="directory to write the set to")
     parser.add_argument("--no-validate", action="store_true",
                         help="write the set without validating it")
+    parser.add_argument("--config", default=None,
+                        help="JSON file of keys replacing those of "
+                             "BENCHMARK_CONFIG; the set written is then a "
+                             "different one, recorded as such")
     arguments = parser.parse_args()
-    write_benchmark(arguments.outdir, validate=not arguments.no_validate)
+    chosen = None
+    if arguments.config is not None:
+        with open(arguments.config, encoding="utf-8") as handle:
+            chosen = dict(BENCHMARK_CONFIG, **json.load(handle))
+    write_benchmark(arguments.outdir, config=chosen,
+                    validate=not arguments.no_validate)

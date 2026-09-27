@@ -702,6 +702,53 @@ def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
         f"{attempts} redraws")
 
 
+def _enforce_detector_ranges(rng, spec, gps, detectors, ranges,
+                             attempts=2000, relative_sensitivity=None):
+    """Redraw sky and orientation until named detectors can each fall in range.
+
+    One source is seen by every detector through its own antenna response, so
+    the detectors' signal-to-noise ratios are one network amplitude times the
+    geometric shares of :func:`_detector_share`; they cannot be set one by one.
+    What can be asked is that a geometry exist for which a single network
+    amplitude puts each detector named in `ranges` inside its own range. The
+    sky and orientation are redrawn until it does, and the network target is
+    then drawn uniformly over the amplitudes that satisfy all the ranges at
+    once. Detectors not named receive what the geometry and their relative
+    sensitivity give them.
+
+    :param rng: the generator the redraws come from.
+    :param spec: the injection's parameters, modified in place.
+    :type gps: float
+    :param gps: geocentric time of the merger.
+    :param detectors: the detector names.
+    :type ranges: dict
+    :param ranges: ``{ifo: (low, high)}`` optimal signal-to-noise ratio each
+        named detector must receive.
+    :type relative_sensitivity: dict | None
+    :param relative_sensitivity: ``{ifo: factor}``; see :func:`generate_dataset`.
+    :raises ValueError: if no geometry satisfies the ranges within `attempts`.
+    """
+    detectors = tuple(detectors)
+    named = [detectors.index(ifo) for ifo in ranges]
+    low = np.array([float(ranges[ifo][0]) for ifo in ranges])
+    high = np.array([float(ranges[ifo][1]) for ifo in ranges])
+    for _ in range(int(attempts)):
+        share = _detector_share(spec, gps, detectors, relative_sensitivity)[named]
+        if (share > 0.0).all():
+            bottom = float(np.max(low / share))
+            top = float(np.min(high / share))
+            if bottom <= top:
+                spec["target_snr"] = float(rng.uniform(bottom, top))
+                return
+        spec["inclination"] = float(np.arccos(rng.uniform(-1.0, 1.0)))
+        spec["ra"] = float(rng.uniform(0.0, 2.0 * np.pi))
+        spec["dec"] = float(np.arcsin(rng.uniform(-1.0, 1.0)))
+        spec["polarization"] = float(rng.uniform(0.0, 2.0 * np.pi))
+    raise ValueError(
+        f"no sky and orientation put every detector in {dict(ranges)} within "
+        f"{attempts} redraws")
+
+
 def _edge_pads(edge_pad):
     """Resolve an edge padding to the pair of spans kept free at the two ends.
 
@@ -749,6 +796,7 @@ def draw_injections(
     cbc_population=None,
     snr_core=None,
     relative_sensitivity=None,
+    detector_snr_range=None,
 ):
     """Draw and place non-overlapping CBC and glitch injections.
 
@@ -781,7 +829,29 @@ def draw_injections(
     signal-to-noise ratio inside ``snr_range``; see :func:`_draw_snr`.
     ``relative_sensitivity`` enters the detector floor only; see
     :func:`generate_dataset`.
+
+    ``detector_snr_range``, ``{ifo: (low, high)}``, sets the astrophysical
+    injections' loudness by what the named detectors receive rather than by
+    the network: sky and orientation are redrawn until one network amplitude
+    puts every named detector inside its range, and the amplitude is drawn
+    over those that do (:func:`_enforce_detector_ranges`). ``snr_range`` and
+    ``snr_core`` then no longer set the loudness of those injections. It
+    excludes ``min_detector_snr``.
     """
+    if detector_snr_range is not None:
+        if min_detector_snr is not None:
+            raise ValueError(
+                "detector_snr_range and min_detector_snr are exclusive")
+        unknown = set(detector_snr_range) - set(detectors)
+        if unknown:
+            raise ValueError(
+                f"detector_snr_range names {sorted(unknown)}, which are not "
+                f"among the detectors {tuple(detectors)}")
+        for ifo, (low, high) in detector_snr_range.items():
+            if not 0.0 < float(low) <= float(high):
+                raise ValueError(
+                    f"detector_snr_range for {ifo} must be 0 < low <= high, "
+                    f"got ({low}, {high})")
     if n_cbc < 0 or n_glitch < 0 or n_ccsn < 0:
         raise ValueError("Injection counts must be non-negative")
     if n_ccsn and not ccsn_catalogue:
@@ -878,6 +948,10 @@ def draw_injections(
                                     detectors, snr_range,
                                     float(min_detector_snr),
                                     relative_sensitivity=relative_sensitivity)
+        if item["category"] in ("cbc", "ccsn") and detector_snr_range is not None:
+            _enforce_detector_ranges(floor_streams[index], item, float(gps),
+                                     detectors, detector_snr_range,
+                                     relative_sensitivity=relative_sensitivity)
         item["gps_start"] = float(gps - support_before)
         item["gps_end"] = float(gps + support_after)
         placed.append(item)
@@ -1299,6 +1373,7 @@ def generate_dataset(
     cbc_population=None,
     snr_core=None,
     track_points=64,
+    detector_snr_range=None,
 ):
     """Generate and write a complete mock foreground/background data set.
 
@@ -1341,6 +1416,10 @@ def generate_dataset(
     to ``tracks.parquet``, one row per point: ``injection_id``, ``time`` in
     seconds relative to the merger, and ``frequency`` in Hz. A detector's track
     is that one moved to its own arrival time, ``gps_<ifo> + time``.
+
+    ``detector_snr_range``, ``{ifo: (low, high)}``, sets the compact binaries'
+    loudness by the optimal signal-to-noise ratio the named detectors receive
+    instead of by the network's; see :func:`draw_injections`.
 
     :return: pandas.DataFrame -- the foreground truth table. The background's,
         when one is written, is on disk beside it.
@@ -1408,6 +1487,7 @@ def generate_dataset(
         cbc_population=cbc_population,
         snr_core=snr_core,
         relative_sensitivity=relative_sensitivity,
+        detector_snr_range=detector_snr_range,
     )
 
     # The spectrum every amplitude is measured against. For coloured noise it
