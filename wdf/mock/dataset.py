@@ -39,7 +39,8 @@ import numpy as np
 import pandas as pd
 
 from wdf.mock import waveforms
-from wdf.mock.noise import DEFAULT_PSD, analytic_psd, coloured_noise
+from wdf.mock.noise import (DEFAULT_PSD, analytic_psd, coloured_noise,
+                            white_noise, white_psd)
 
 
 GROUND_TRUTH_COLUMNS = [
@@ -69,6 +70,10 @@ GROUND_TRUTH_COLUMNS = [
     "support_after",
     "mass1",
     "mass2",
+    # Detector frame, which is the only frame a mock set has: no redshift is
+    # drawn, so these are the masses the waveform was generated with.
+    "chirp_mass",
+    "mass_ratio",
     "spin1z",
     "spin2z",
     "inclination",
@@ -84,7 +89,45 @@ GROUND_TRUTH_COLUMNS = [
     "arch_period",
     "n_arches",
     "sigma_t",
+    # Where a compact binary sits in the time-frequency plane: the frequency
+    # its track starts at inside the data, and the highest it reaches. The
+    # track itself, one row per point, is written beside the table.
+    "track_f_low",
+    "track_f_high",
 ]
+
+# Columns that carry one detector's value, named with the detector's suffix.
+PER_DETECTOR_PREFIXES = ("gps_", "gps_start_", "gps_end_", "snr_")
+
+
+def truth_columns(detectors=("H1", "L1")):
+    """The truth table's columns for a given network.
+
+    :data:`GROUND_TRUTH_COLUMNS` names the two LIGO detectors, which is the
+    network the simulated set was first written for. A detector beyond them
+    gets the same four columns --- arrival time, support, and optimal
+    signal-to-noise ratio --- placed after the LIGO ones, so a table written
+    for two detectors reads as it always has.
+
+    :type detectors: iterable of str
+    :param detectors: the detectors the set is written for.
+    :return: list[str] -- the column names, in order.
+    """
+    columns = list(GROUND_TRUTH_COLUMNS)
+    extra = [ifo for ifo in detectors if f"snr_{ifo}" not in columns]
+    if not extra:
+        return columns
+    anchor = columns.index("network_snr")
+    added = [f"{prefix}{ifo}" for ifo in extra
+             for prefix in PER_DETECTOR_PREFIXES]
+    return columns[:anchor] + added + columns[anchor:]
+
+
+def _sensitivity(relative_sensitivity, ifo):
+    """One detector's amplitude factor, one when none is given."""
+    if relative_sensitivity is None:
+        return 1.0
+    return float(relative_sensitivity.get(ifo, 1.0))
 
 
 def optimal_snr(
@@ -272,6 +315,118 @@ def _draw_cbc(rng, snr_range, cbc_mix=DEFAULT_CBC_MIX):
     }
 
 
+def _draw_snr(rng, snr_range, snr_core=None):
+    """Draw a network signal-to-noise ratio.
+
+    Uniform over ``snr_range`` when no core is given, which is one draw from
+    the stream and what every set before the core existed was drawn with.
+    With a core ``(low, high, weight)``, a share `weight` of the draws is
+    uniform in ``[low, high]`` and the rest uniform over the whole range: the
+    range still sets where the population ends, and the core is where it is
+    dense --- the stretch of amplitude where a search is decided, which is
+    where a comparison between two of them needs its counts.
+
+    :param rng: the generator the draw comes from.
+    :param snr_range: ``(low, high)`` the population spans.
+    :param snr_core: ``(low, high, weight)``, or None.
+    :return: float -- the drawn value.
+    :raises ValueError: if the core does not lie inside the range, or its
+        weight is not in ``[0, 1]``.
+    """
+    if snr_core is None:
+        return float(rng.uniform(*snr_range))
+    low, high, weight = (float(value) for value in snr_core)
+    if not (float(snr_range[0]) <= low < high <= float(snr_range[1])):
+        raise ValueError(
+            f"snr_core [{low:g}, {high:g}] must lie inside snr_range "
+            f"{tuple(snr_range)}")
+    if not 0.0 <= weight <= 1.0:
+        raise ValueError(f"snr_core weight must be in [0, 1], got {weight:g}")
+    in_core = rng.uniform() < weight
+    return float(rng.uniform(low, high) if in_core else rng.uniform(*snr_range))
+
+
+# The chirp-mass population a benchmark draws from: detector frame, spanning
+# the systems whose tracks are long and low (a few solar masses, tens of
+# seconds from 20 Hz) to those that are short and end low (tens, a fraction of
+# a second), with the mass ratio and spins of the binary-black-hole class.
+DEFAULT_CHIRP_MASS_POPULATION = {
+    "chirp_mass": (5.0, 30.0),
+    "mass_ratio": (1.0, 4.0),
+    "spin": (-0.5, 0.5),
+    "f_lower": 20.0,
+    "approximant": "IMRPhenomD",
+}
+
+
+def component_masses(chirp_mass, mass_ratio):
+    """Component masses of a binary of given chirp mass and mass ratio.
+
+    :type chirp_mass: float
+    :param chirp_mass: ``(m1 m2)^(3/5) / (m1 + m2)^(1/5)``, solar masses.
+    :type mass_ratio: float
+    :param mass_ratio: ``m1 / m2``, at least one.
+    :return: tuple -- ``(m1, m2)``, the heavier first, solar masses.
+    :raises ValueError: if the mass ratio is below one or the chirp mass is not
+        positive.
+    """
+    q = float(mass_ratio)
+    if q < 1.0 or float(chirp_mass) <= 0.0:
+        raise ValueError("mass_ratio must be at least 1 and chirp_mass positive")
+    mass2 = float(chirp_mass) * (1.0 + q) ** 0.2 / q ** 0.6
+    return q * mass2, mass2
+
+
+def chirp_mass_of(mass1, mass2):
+    """Chirp mass of two component masses, in their units."""
+    mass1, mass2 = float(mass1), float(mass2)
+    return (mass1 * mass2) ** 0.6 / (mass1 + mass2) ** 0.2
+
+
+def _draw_cbc_by_chirp_mass(rng, snr_range, population, snr_core=None):
+    """Draw one compact binary from a chirp-mass population.
+
+    The chirp mass is what sets a binary's track --- how long it spends in
+    band and how fast it sweeps --- so a population meant to exercise a
+    time-frequency search is drawn in it directly, uniform in its logarithm:
+    each factor of chirp mass, and so each factor of track length, gets the
+    same share of injections, and the long light systems are not a minority.
+    The mass ratio is uniform over its range. Sky, polarisation and
+    inclination are drawn as for every compact binary here.
+
+    :param rng: the generator the draw comes from.
+    :param snr_range: the network signal-to-noise ratio range.
+    :type population: dict
+    :param population: ranges and settings, the keys of
+        :data:`DEFAULT_CHIRP_MASS_POPULATION`; a key left out takes its value
+        from there.
+    :param snr_core: see :func:`_draw_snr`.
+    :return: dict -- the injection's physical parameters.
+    """
+    settings = dict(DEFAULT_CHIRP_MASS_POPULATION)
+    settings.update(population or {})
+    low, high = (float(value) for value in settings["chirp_mass"])
+    chirp_mass = float(np.exp(rng.uniform(np.log(low), np.log(high))))
+    mass_ratio = float(rng.uniform(*settings["mass_ratio"]))
+    mass1, mass2 = component_masses(chirp_mass, mass_ratio)
+    subclass = "bbh" if mass2 >= 3.0 else "bhns"
+    return {
+        "category": "cbc",
+        "subclass": subclass,
+        "approximant": str(settings["approximant"]),
+        "mass1": float(mass1),
+        "mass2": float(mass2),
+        "spin1z": float(rng.uniform(*settings["spin"])),
+        "spin2z": float(rng.uniform(*settings["spin"])),
+        "inclination": float(np.arccos(rng.uniform(-1.0, 1.0))),
+        "ra": float(rng.uniform(0.0, 2.0 * np.pi)),
+        "dec": float(np.arcsin(rng.uniform(-1.0, 1.0))),
+        "polarization": float(rng.uniform(0.0, 2.0 * np.pi)),
+        "f_lower": float(settings["f_lower"]),
+        "target_snr": _draw_snr(rng, snr_range, snr_core),
+    }
+
+
 def _draw_ccsn(rng, snr_range, catalogue):
     """Draw one core-collapse supernova injection from a waveform catalogue.
 
@@ -436,7 +591,7 @@ def _prepare_injection_support(spec, sample_rate):
     return prepared
 
 
-def _detector_share(spec, gps, detectors):
+def _detector_share(spec, gps, detectors, relative_sensitivity=None):
     """Each detector's share of the network amplitude, from geometry alone.
 
     For one waveform seen through equal spectra the signal-to-noise ratio a
@@ -454,12 +609,16 @@ def _detector_share(spec, gps, detectors):
     which is the same quantity without the circular-binary assumption. Either
     way the shares a_i / sqrt(sum a_i^2) are exact when the detectors' spectra
     are equal --- the simulated set's case --- and an approximation where they
-    differ.
+    differ. A detector given a relative sensitivity has its amplitude
+    multiplied by it before the shares are formed, which is exact for spectra
+    of one shape and different levels.
 
     :param spec: the injection's drawn parameters.
     :type gps: float
     :param gps: geocentric time the antenna response is taken at.
     :param detectors: the detector names.
+    :type relative_sensitivity: dict | None
+    :param relative_sensitivity: ``{ifo: factor}``; see :func:`generate_dataset`.
     :return: numpy.ndarray -- one share per detector, unit norm.
     """
     from pycbc.detector import Detector
@@ -485,6 +644,7 @@ def _detector_share(spec, gps, detectors):
         else:
             amplitude.append(np.hypot(f_plus * (1.0 + cosine * cosine) / 2.0,
                                       f_cross * cosine))
+        amplitude[-1] *= _sensitivity(relative_sensitivity, ifo)
     amplitude = np.asarray(amplitude, dtype=float)
     norm = float(np.linalg.norm(amplitude))
     if norm <= 0.0:
@@ -493,7 +653,7 @@ def _detector_share(spec, gps, detectors):
 
 
 def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
-                            attempts=500):
+                            attempts=500, relative_sensitivity=None):
     """Redraw sky and orientation until every detector receives `floor`.
 
     The population this produces is the one every detector sees: sources whose
@@ -510,6 +670,8 @@ def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
     :param snr_range: the allowed network signal-to-noise ratio.
     :type floor: float
     :param floor: least signal-to-noise ratio any detector may receive.
+    :type relative_sensitivity: dict | None
+    :param relative_sensitivity: ``{ifo: factor}``; see :func:`generate_dataset`.
     :raises ValueError: if the range cannot hold the floor at all, or no
         acceptable geometry is found.
     """
@@ -521,7 +683,7 @@ def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
             f"{floor * np.sqrt(len(detectors)):.1f}, above the range's top "
             f"{high:g}")
     for _ in range(int(attempts)):
-        share = _detector_share(spec, gps, detectors)
+        share = _detector_share(spec, gps, detectors, relative_sensitivity)
         least = float(share.min())
         if least > 0.0 and floor / least <= high:
             target = float(spec["target_snr"])
@@ -584,6 +746,9 @@ def draw_injections(
     strict=True,
     cbc_mix=DEFAULT_CBC_MIX,
     min_detector_snr=None,
+    cbc_population=None,
+    snr_core=None,
+    relative_sensitivity=None,
 ):
     """Draw and place non-overlapping CBC and glitch injections.
 
@@ -608,6 +773,14 @@ def draw_injections(
     detectors as compact binaries do, through the antenna response and the time
     of flight, and differ in carrying no closed-form parameters and no
     inclination.
+
+    ``cbc_population``, when given, draws the compact binaries from a
+    chirp-mass population instead of the three classes of ``cbc_mix``; see
+    :data:`DEFAULT_CHIRP_MASS_POPULATION` for its keys, and pass an empty dict
+    for that population as it stands. ``snr_core`` concentrates their network
+    signal-to-noise ratio inside ``snr_range``; see :func:`_draw_snr`.
+    ``relative_sensitivity`` enters the detector floor only; see
+    :func:`generate_dataset`.
     """
     if n_cbc < 0 or n_glitch < 0 or n_ccsn < 0:
         raise ValueError("Injection counts must be non-negative")
@@ -620,7 +793,13 @@ def draw_injections(
         raise ValueError("minimum_gap must be non-negative")
 
     rng = np.random.default_rng(seed)
-    specs = [_draw_cbc(rng, snr_range, cbc_mix) for _ in range(n_cbc)]
+    if cbc_population is None:
+        if snr_core is not None:
+            raise ValueError("snr_core applies to a cbc_population draw")
+        specs = [_draw_cbc(rng, snr_range, cbc_mix) for _ in range(n_cbc)]
+    else:
+        specs = [_draw_cbc_by_chirp_mass(rng, snr_range, cbc_population,
+                                         snr_core) for _ in range(n_cbc)]
     specs.extend(_draw_ccsn(rng, snr_range, ccsn_catalogue) for _ in range(n_ccsn))
     specs.extend(_draw_glitch(rng, snr_range, detectors) for _ in range(n_glitch))
     specs = [_prepare_injection_support(spec, sample_rate) for spec in specs]
@@ -697,7 +876,8 @@ def draw_injections(
         if item["category"] in ("cbc", "ccsn") and min_detector_snr is not None:
             _enforce_detector_floor(floor_streams[index], item, float(gps),
                                     detectors, snr_range,
-                                    float(min_detector_snr))
+                                    float(min_detector_snr),
+                                    relative_sensitivity=relative_sensitivity)
         item["gps_start"] = float(gps - support_before)
         item["gps_end"] = float(gps + support_after)
         placed.append(item)
@@ -857,9 +1037,18 @@ def _inject_one(
     high_frequency_cutoff,
     psd_name,
     psd=None,
+    relative_sensitivity=None,
+    track_points=0,
 ):
-    """Inject one signal in place and return its complete truth-table row."""
-    row = {column: np.nan for column in GROUND_TRUTH_COLUMNS}
+    """Inject one signal in place and return its complete truth-table row.
+
+    ``relative_sensitivity`` multiplies what each detector receives of an
+    astrophysical signal; see :func:`generate_dataset`. ``track_points``, when
+    positive, adds a compact binary's time-frequency track to the row under
+    ``track_time`` and ``track_frequency``, which are not table columns and are
+    written beside it.
+    """
+    row = {column: np.nan for column in truth_columns(detectors)}
     for key, value in spec.items():
         if key in row:
             row[key] = value
@@ -917,6 +1106,7 @@ def _inject_one(
             low_frequency_cutoff=low_frequency_cutoff,
             high_frequency_cutoff=high_frequency_cutoff,
             psd_name=psd_name,
+            psd=psd if psd is None else psd.get(ifo, None),
         )
 
         row["detector"] = ifo
@@ -928,6 +1118,21 @@ def _inject_one(
         return row
 
     hp, hc, waveform_start_offset = _polarisations(spec, sample_rate)
+    if spec["category"] == "cbc":
+        row["chirp_mass"] = chirp_mass_of(spec["mass1"], spec["mass2"])
+        row["mass_ratio"] = float(spec["mass1"]) / float(spec["mass2"])
+        # Face on, where the two polarisations are in quadrature and their
+        # phase turns at the rate of the source; see `waveforms.cbc_track`.
+        face_p, face_c, face_offset = _polarisations(
+            dict(spec, inclination=0.0), sample_rate)
+        track_time, track_frequency = waveforms.cbc_track(
+            face_p, face_c, sample_rate, face_offset,
+            n_points=max(int(track_points), 2))
+        row["track_f_low"] = float(track_frequency[0])
+        row["track_f_high"] = float(track_frequency[-1])
+        if track_points:
+            row["track_time"] = track_time
+            row["track_frequency"] = track_frequency
     projected = project_cbc(
         hp,
         hc,
@@ -937,6 +1142,16 @@ def _inject_one(
         spec["gps"],
         detectors,
     )
+    # A detector less sensitive than another receives, in units of its own
+    # noise, a smaller copy of the same projection. In whitened data that is
+    # the whole of the difference, and it is applied here, before any
+    # amplitude is measured, so that the network scaling below divides the
+    # signal between the detectors as the sensitivities do.
+    projected = {
+        ifo: (np.asarray(samples, dtype=float)
+              * _sensitivity(relative_sensitivity, ifo), arrival)
+        for ifo, (samples, arrival) in projected.items()
+    }
 
     # Against the spectrum of the detector the signal is being projected onto,
     # measured when one is given: the amplitude of an injection is only
@@ -1079,6 +1294,11 @@ def generate_dataset(
     strict=True,
     cbc_mix=DEFAULT_CBC_MIX,
     min_detector_snr=None,
+    noise="coloured",
+    relative_sensitivity=None,
+    cbc_population=None,
+    snr_core=None,
+    track_points=64,
 ):
     """Generate and write a complete mock foreground/background data set.
 
@@ -1099,6 +1319,29 @@ def generate_dataset(
     stationary noise. The astrophysical classes are never written into the
     background, so a candidate found there is by construction not a signal.
 
+    ``noise`` is ``"coloured"``, the analytic spectrum named by ``psd_name``,
+    or ``"white"``: unit-variance white Gaussian noise, the stream a perfect
+    whitening would hand the search, with every amplitude scaled against its
+    flat spectrum (:func:`wdf.mock.noise.white_psd`). ``sample_rate`` is then
+    the rate the search runs at, since there is nothing to condition.
+
+    ``relative_sensitivity`` is ``{ifo: factor}``, the amplitude each detector
+    receives of an astrophysical signal relative to a detector at one; a
+    detector left out is at one. In white noise every detector's noise is the
+    same, and a detector whose strain noise is higher by a factor ``1/r`` at
+    every frequency sees, once whitened, the same waveform multiplied by
+    ``r``: its signal-to-noise ratio for one source is ``r`` times the other's
+    at equal antenna response. The network target is then divided between the
+    detectors as their sensitivities and their antenna responses together
+    divide it, and each detector's column is what it received.
+
+    ``cbc_population`` and ``snr_core`` choose how compact binaries are drawn;
+    see :func:`draw_injections`. ``track_points``, when positive, writes each
+    compact binary's time-frequency track (:func:`wdf.mock.waveforms.cbc_track`)
+    to ``tracks.parquet``, one row per point: ``injection_id``, ``time`` in
+    seconds relative to the merger, and ``frequency`` in Hz. A detector's track
+    is that one moved to its own arrival time, ``gps_<ifo> + time``.
+
     :return: pandas.DataFrame -- the foreground truth table. The background's,
         when one is written, is on disk beside it.
     """
@@ -1110,6 +1353,17 @@ def generate_dataset(
     sample_rate = int(sample_rate)
     if sample_rate <= 0 or duration <= 0.0:
         raise ValueError("sample_rate and duration must be positive")
+
+    if noise not in ("coloured", "white"):
+        raise ValueError(f"noise is {noise!r}; expected 'coloured' or 'white'")
+    if relative_sensitivity is not None:
+        unknown = set(relative_sensitivity) - set(detectors)
+        if unknown:
+            raise ValueError(
+                f"relative_sensitivity names {sorted(unknown)}, which are not "
+                f"among the detectors {tuple(detectors)}")
+        if any(float(value) <= 0.0 for value in relative_sensitivity.values()):
+            raise ValueError("relative_sensitivity factors must be positive")
 
     if analysis_sample_rate is None:
         analysis_sample_rate = sample_rate
@@ -1151,7 +1405,21 @@ def generate_dataset(
         strict=strict,
         cbc_mix=cbc_mix,
         min_detector_snr=min_detector_snr,
+        cbc_population=cbc_population,
+        snr_core=snr_core,
+        relative_sensitivity=relative_sensitivity,
     )
+
+    # The spectrum every amplitude is measured against. For coloured noise it
+    # is the analytic model, looked up by name where it is needed; for white
+    # noise it is the flat one the samples were drawn with, on a grid the
+    # measurement interpolates from.
+    psd = None
+    if noise == "white":
+        delta_f = 1.0 / 16.0
+        flat = white_psd(int(0.5 * sample_rate / delta_f) + 1, delta_f,
+                         sample_rate)
+        psd = {ifo: flat for ifo in detectors}
 
     requested = int(n_cbc) + int(n_glitch) + int(n_ccsn)
     if strict and len(injections) != requested:
@@ -1170,14 +1438,22 @@ def generate_dataset(
         for index, ifo in enumerate(detectors):
             if only is not None and ifo not in only:
                 continue
-            series = coloured_noise(
-                start_gps,
-                start_gps + duration,
-                seed=seed + 1000 * (index + 1),
-                sample_rate=sample_rate,
-                low_frequency_cutoff=f_low,
-                psd_name=psd_name,
-            )
+            if noise == "white":
+                series = white_noise(
+                    start_gps,
+                    start_gps + duration,
+                    seed=seed + 1000 * (index + 1),
+                    sample_rate=sample_rate,
+                )
+            else:
+                series = coloured_noise(
+                    start_gps,
+                    start_gps + duration,
+                    seed=seed + 1000 * (index + 1),
+                    sample_rate=sample_rate,
+                    low_frequency_cutoff=f_low,
+                    psd_name=psd_name,
+                )
             values = np.asarray(series, dtype=float)
             if values.size < nsamples:
                 raise RuntimeError(
@@ -1215,6 +1491,7 @@ def generate_dataset(
                     f_low,
                     f_high,
                     psd_name,
+                    psd=psd,
                 )
                 for spec in background_specs
                 if spec["detector"] == ifo
@@ -1234,7 +1511,7 @@ def generate_dataset(
 
         if background_specs:
             pd.DataFrame(background_rows).reindex(
-                columns=GROUND_TRUTH_COLUMNS
+                columns=truth_columns(detectors)
             ).to_parquet(
                 os.path.join(outdir, "background_injections.parquet"),
                 index=False,
@@ -1257,9 +1534,26 @@ def generate_dataset(
             f_low,
             f_high,
             psd_name,
+            psd=psd,
+            relative_sensitivity=relative_sensitivity,
+            track_points=track_points,
         )
         for spec in injections
     ]
+
+    tracks = []
+    for row in rows:
+        track_time = row.pop("track_time", None)
+        track_frequency = row.pop("track_frequency", None)
+        if track_time is not None:
+            tracks.append(pd.DataFrame({
+                "injection_id": int(row["injection_id"]),
+                "time": np.asarray(track_time, dtype=float),
+                "frequency": np.asarray(track_frequency, dtype=float),
+            }))
+    if tracks:
+        pd.concat(tracks, ignore_index=True).to_parquet(
+            os.path.join(outdir, "tracks.parquet"), index=False)
 
     for ifo in detectors:
         _write_frames(
@@ -1274,7 +1568,7 @@ def generate_dataset(
             frame_length,
         )
 
-    table = pd.DataFrame(rows).reindex(columns=GROUND_TRUTH_COLUMNS)
+    table = pd.DataFrame(rows).reindex(columns=truth_columns(detectors))
     table.to_parquet(os.path.join(outdir, "injections.parquet"), index=False)
     return table
  

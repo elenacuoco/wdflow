@@ -45,6 +45,82 @@ def cbc_polarisations(mass1, mass2, spin1z=0.0, spin2z=0.0, distance=100.0,
                            f_lower=f_lower)
 
 
+def cbc_track(hp, hc, sample_rate, start_offset, n_points=64,
+              amplitude_floor=0.1):
+    """The time-frequency track of a compact binary, as its truth.
+
+    The instantaneous frequency is read from the two polarisations together,
+    as the rate the phase of ``hp + i hc`` turns at, which for a binary is the
+    frequency of the dominant mode at every instant. It is kept from the first
+    sample to the point after the peak where the amplitude has fallen to
+    `amplitude_floor` of it: before, it is the inspiral; after, the ringdown
+    fades into what no search could see and the phase of a vanishing signal
+    carries no frequency. The phase is that of ``hp + i hc`` whichever sense it
+    turns in. Numerical jitter is removed by keeping the running
+    maximum, so the track is non-decreasing, and it is returned at `n_points`
+    frequencies spaced evenly in their logarithm between where it starts and
+    where it ends --- a chirp spends most of its time at the low end, and even
+    spacing in time would leave the sweep through the band with a handful of
+    points.
+
+    The polarisations to pass are those of the binary seen face on. Seen at
+    an inclination, ``hp + i hc`` traces an ellipse rather than a circle, and
+    its phase turns fast along the narrow ends and slow along the wide ones:
+    the running maximum would keep the fast parts, and edge on, where the
+    cross polarisation vanishes, the phase carries nothing at all. The
+    dominant mode's frequency does not depend on the inclination, so the
+    face-on one is the track of every orientation.
+
+    The track is the same in every detector up to a shift: projection changes
+    the amplitude and the phase a detector receives but not the rate the phase
+    turns at, so one detector's track is this one moved to its arrival time.
+
+    :type hp: array-like
+    :param hp: plus polarisation.
+    :type hc: array-like
+    :param hc: cross polarisation, on the same samples.
+    :type sample_rate: float
+    :param sample_rate: rate of both, Hz.
+    :type start_offset: float
+    :param start_offset: time of the first sample relative to the merger,
+        seconds; negative for a series that begins before it.
+    :type n_points: int
+    :param n_points: points the track is returned at.
+    :type amplitude_floor: float
+    :param amplitude_floor: fraction of the peak amplitude at which the track
+        ends after the peak.
+    :return: tuple -- ``(time, frequency)``, arrays of `n_points`: seconds
+        relative to the merger, and Hz.
+    """
+    hp = np.asarray(hp, dtype=float)
+    hc = np.asarray(hc, dtype=float)
+    delta_t = 1.0 / float(sample_rate)
+    amplitude = np.hypot(hp, hc)
+    peak = int(np.argmax(amplitude))
+    # Generators pad with zeros, and the phase of zero is noise: the track
+    # begins where the signal does, at a thousandth of the peak.
+    begin = int(np.argmax(amplitude > 1e-3 * amplitude[peak]))
+    after = np.nonzero(amplitude[peak:] < amplitude_floor * amplitude[peak])[0]
+    end = peak + (int(after[0]) if after.size else amplitude.size - peak)
+
+    phase = np.unwrap(np.arctan2(hc[begin:end], hp[begin:end]))
+    rate = np.diff(phase) / (2.0 * np.pi * delta_t)
+    # The sense the phase turns in is a convention of the generator, not a
+    # property of the source.
+    frequency = np.clip(rate if np.median(rate) >= 0.0 else -rate, 0.0, None)
+    times = (float(start_offset)
+             + (begin + np.arange(frequency.size) + 0.5) * delta_t)
+    frequency = np.maximum.accumulate(frequency)
+
+    f_low = max(float(frequency[0]), 1e-3)
+    grid = np.geomspace(f_low, float(frequency[-1]), int(n_points))
+    # First crossing of each grid frequency; a flat stretch of the running
+    # maximum is resolved to where it begins.
+    index = np.searchsorted(frequency, grid, side="left")
+    index = np.clip(index, 0, frequency.size - 1)
+    return times[index], grid
+
+
 def gaussian(sigma_t=0.005, sample_rate=2048, n_sigma=6.0):
     """Gaussian pulse.
 
