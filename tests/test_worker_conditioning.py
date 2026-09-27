@@ -278,6 +278,49 @@ def test_a_stretch_of_the_stream_is_the_stream_the_segment_search_reads(tmp_path
         part.whitened_stretch(segment, GPS0 - 5.0, GPS0 + 5.0)
 
 
+def test_the_stages_of_a_stretch_are_what_the_search_passes_on(tmp_path):
+    """The strain is the frames'; the conditioned stream is the front end's
+    filter over the whole segment at the same instants, decimated on the
+    segment's phase, lines notched; the gated stream is `whitened_stretch`,
+    and the whitened one is it before the gates."""
+    from scipy.signal import sosfiltfilt
+
+    from wdf.processes.gating import gate_weights
+
+    segment = (GPS0, GPS0 + 90.0)
+    gates = np.array([[GPS0 + 44.0, GPS0 + 44.5]])
+    lines = [[60.0, 1.0, 10.0], [300.0, 1.0, 10.0]]
+    part = worker(outdir=str(tmp_path) + "/", learn=20, AREstimationOffset=50.0,
+                  LineNotches=lines)
+    stages = part.stages_stretch(segment, GPS0 + 40.0, GPS0 + 48.0, gates)
+    rate = part.par.resampling
+
+    t0, fs, strain = stages["strain"]
+    assert fs == SAMPLING and t0 == pytest.approx(GPS0 + 40.0, abs=1.0 / SAMPLING)
+    assert np.array_equal(strain, SV_to_array(read(t0, strain.size / SAMPLING)))
+
+    ds = BandPassDownSampling(part.par)
+    assert len(ds.lines) == 2
+    whole = sosfiltfilt(ds.sos, SV_to_array(read(GPS0, 90.0)))[::FACTOR]
+    t0, fs, conditioned = stages["conditioned"]
+    offset = int(round((t0 - GPS0) * rate))
+    expected = whole[offset:offset + conditioned.size]
+    assert fs == rate and t0 == pytest.approx(GPS0 + 40.0, abs=1.0 / rate)
+    assert np.max(np.abs(conditioned - expected)) / np.std(expected) < 1e-9
+
+    again = worker(outdir=str(tmp_path) + "/", learn=20, AREstimationOffset=50.0,
+                   LineNotches=lines)
+    start, gated = again.whitened_stretch(segment, GPS0 + 40.0, GPS0 + 48.0, gates)
+    t0, fs, kept = stages["gated"]
+    assert t0 == pytest.approx(start) and np.allclose(kept, gated, rtol=0, atol=1e-12)
+    t0, fs, whitened = stages["whitened"]
+    weights = gate_weights(t0 + np.arange(whitened.size) / rate, gates, 0.25)
+    assert (weights < 1.0).any()
+    assert np.allclose(whitened * weights, kept, rtol=0, atol=1e-12)
+    assert np.array_equal(stages["lines"], lines)
+    assert stages["sigma"] == part.par.sigma
+
+
 def test_a_later_start_is_checked_as_the_shorter_segment_would_be(tmp_path):
     """Checking the tail of the segment's stream from a later start's warm-up
     is checking the shorter segment: it keeps the fit stretch, so its lines

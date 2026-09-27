@@ -135,3 +135,37 @@ def test_the_later_starts_are_fixed_by_the_segment_and_the_configuration():
     early_fit = later_starts(config, (1000.0, 11000.0), fit_offset=500.0)
     assert len(early_fit) == 0
     assert len(later_starts(config, (1000.0, 2000.0), fit_offset=500.0)) == 0
+
+
+def test_the_stages_are_read_with_or_without_the_lines(tmp_path, monkeypatch):
+    """Notched, the lines are the check's; not notched, `LineThreshold` is zero,
+    nothing is notched and the model is refitted under a run of its own, so the
+    check's directory never holds it."""
+    import glob
+
+    pytest.importorskip("py4tsa")
+    from conftest import GPS0, NOISE_GWF, TEST_PARAMS
+    from wdf.config.Parameters import Parameters
+    from wdf.processes import network_search
+
+    def checked(*_):
+        par = Parameters()
+        par.__dict__.update(TEST_PARAMS, file=NOISE_GWF, sampling=16384,
+                            resampling=4096, learn=20, AREstimationOffset=50.0,
+                            LineNotches=[[60.0, 1.0, 10.0]], outdir=str(tmp_path) + "/",
+                            run=network_search.CHECK_RUN)
+        return (GPS0, GPS0 + 90.0), par, np.array([[GPS0 + 44.0, GPS0 + 44.5]])
+
+    monkeypatch.setattr(network_search, "checked_segment", checked)
+    config = SearchConfig(frames={}, channels={}, quality={})
+    notched = network_search.stages_around(config, 0, 0, "", "H1", GPS0 + 40.0,
+                                           GPS0 + 48.0)
+    plain = network_search.stages_around(config, 0, 0, "", "H1", GPS0 + 40.0,
+                                         GPS0 + 48.0, notched=False)
+
+    assert notched["segment"] == (GPS0, GPS0 + 90.0)
+    assert notched["lines"] == [[60.0, 1.0, 10.0]] and plain["lines"] == []
+    assert glob.glob(str(tmp_path / network_search.UNNOTCHED_RUN / "H1" / "*" / "ARcoeff*"))
+    models = glob.glob(str(tmp_path / network_search.CHECK_RUN / "H1" / "*" / "ARcoeff*"))
+    assert len(models) == 1
+    assert np.array_equal(plain["gates"], notched["gates"])

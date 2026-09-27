@@ -1009,6 +1009,58 @@ def whitened_around(config: SearchConfig, start: float, stop: float, outdir: str
     return wdfUnitDSWorker(par).whitened_stretch(segment, first, last, gates)
 
 
+#: The run a segment's stream without notches is filed under, beside its check,
+#: so that the model it is whitened with is never found in the check's place.
+UNNOTCHED_RUN = CHECK_RUN + "-unnotched"
+
+
+def stages_around(config: SearchConfig, start: float, stop: float, outdir: str,
+                  ifo: str, first: float, last: float, notched: bool = True) -> dict:
+    """Every stage of a detector's chain between two instants, as its search read it.
+
+    From the segment `checked_segment` finds, with the model, the lines, the
+    fit stretch and the gates its check recorded
+    (`wdfUnitDSWorker.stages_stretch`): the strain, the conditioned stream,
+    the whitened stream on the search's noise scale before the gates, and the
+    same after them, which is what `whitened_around` returns.
+
+    With `notched` False the lines are not notched (`LineThreshold` zero, the
+    configuration's own switch, and no `LineNotches` declared) and the model is fitted again on that
+    conditioning, on the same fit stretch, under `UNNOTCHED_RUN`; the gates
+    are still the check's, which it found on the notched stream.
+
+    :type config: SearchConfig
+    :param config: the configuration the stretch was checked with.
+    :type start: float
+    :param start: GPS start of the stretch.
+    :type stop: float
+    :param stop: GPS end of it.
+    :type outdir: str
+    :param outdir: where the stretch was checked.
+    :type ifo: str
+    :param ifo: the detector.
+    :type first: float
+    :param first: GPS time of the first sample wanted.
+    :type last: float
+    :param last: GPS time of the last sample wanted.
+    :type notched: bool
+    :param notched: whether the segment's lines are notched, as the check
+        notched them.
+    :return: dict -- as `wdfUnitDSWorker.stages_stretch`, with `segment`.
+    :raises ValueError: as `checked_segment`.
+    """
+    from wdf.processes.wdfUnitDSWorker import wdfUnitDSWorker
+
+    segment, par, gates = checked_segment(config, start, stop, outdir, ifo, first, last)
+    if not notched:
+        par.LineThreshold = 0.0
+        par.LineNotches = None
+        par.run = UNNOTCHED_RUN
+    stages = wdfUnitDSWorker(par).stages_stretch(segment, first, last, gates)
+    stages["segment"] = segment
+    return stages
+
+
 def windows_around(config: SearchConfig, start: float, stop: float, outdir: str,
                    ifo: str, first: float, last: float):
     """Every window a detector's search reads between two instants, whatever

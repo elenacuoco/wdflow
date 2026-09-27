@@ -907,6 +907,31 @@ class wdfUnitDSWorker(object):
         worker's parameters and a model fitted here is saved beside the
         segment's triggers.
         """
+        times, samples, _ = self._whitened_between(segment, start, stop)
+        taper = float(getattr(self.par, "GateTaper", DEFAULT_GATE_TAPER_S))
+        declared = np.zeros((0, 2)) if gates is None else np.asarray(gates, dtype=float)
+        weights = gate_weights(times, declared.reshape(-1, 2), taper)
+        return float(times[0]), samples * weights / float(self.par.sigma)
+
+    def _whitened_between(self, segment, start, stop):
+        """The whitened stream of a segment between two instants, ungated and unscaled.
+
+        What `whitened_stretch` gates and scales: the segment's lines and model
+        found or loaded, the strain conditioned and whitened from far enough
+        before `start` for both filters to have settled.
+
+        :type segment: tuple[float, float]
+        :param segment: `(gpsStart, gpsEnd)` of the segment.
+        :type start: float
+        :param start: GPS time of the first sample wanted.
+        :type stop: float
+        :param stop: GPS time of the last sample wanted.
+        :return: tuple -- `(times, samples, front end)`: the GPS time of each
+            sample, the whitened samples at the analysed rate before the gates
+            and the scale, and the conditioning front end that produced them.
+        :raises ValueError: as `whitened_stretch`.
+        :raises RuntimeError: as `whitened_stretch`.
+        """
         gpsStart, gpsEnd = float(segment[0]), float(segment[1])
         start, stop = float(start), float(stop)
         if not gpsStart <= start < stop <= gpsEnd:
@@ -943,10 +968,73 @@ class wdfUnitDSWorker(object):
             raise ValueError(
                 f"the search of {gpsStart}-{gpsEnd} reads {times[0]:.3f}-{times[-1]:.3f}, "
                 f"which does not hold {start}-{stop}")
+        return times[keep], samples[keep], ds
+
+    def stages_stretch(self, segment, start, stop, gates=None):
+        """Every stage of the search's chain between two instants.
+
+        The strain as the frames hold it; the strain conditioned by the
+        search's own front end --- the segment's lines notched, band-passed,
+        cut below the detector's search low frequency when it has one, and
+        decimated --- filtered with the front end's settling of real data on
+        each side and decimated on the segment's phase, so it is the stream
+        the whitening is handed at those instants; the whitened stream on the
+        search's noise scale, before the gates; and the same after them, which
+        is what `whitened_stretch` returns. Nothing is computed that the
+        search does not compute: this only keeps what it passes on.
+
+        :type segment: tuple[float, float]
+        :param segment: `(gpsStart, gpsEnd)` of the segment.
+        :type start: float
+        :param start: GPS time of the first sample wanted.
+        :type stop: float
+        :param stop: GPS time of the last sample wanted.
+        :type gates: numpy.ndarray or None
+        :param gates: as `whitened_stretch`; None gates nothing.
+        :return: dict -- `strain`, `conditioned`, `whitened` and `gated`, each
+            `(t0, rate, samples)`; `lines`, the notched lines as
+            `[frequency, bandwidth, height]` rows; `gates`, shape `(n, 2)`;
+            `sigma`, the scale divided out.
+        :raises ValueError: as `whitened_stretch`.
+        :raises RuntimeError: as `whitened_stretch`.
+
+        Side effects: as `whitened_stretch`.
+        """
+        times, samples, ds = self._whitened_between(segment, start, stop)
+        sigma = float(self.par.sigma)
+        rate = float(self.par.resampling)
         taper = float(getattr(self.par, "GateTaper", DEFAULT_GATE_TAPER_S))
-        declared = np.zeros((0, 2)) if gates is None else np.asarray(gates, dtype=float)
-        weights = gate_weights(times[keep], declared.reshape(-1, 2), taper)
-        return float(times[keep][0]), samples[keep] * weights / float(self.par.sigma)
+        declared = (np.zeros((0, 2)) if gates is None
+                    else np.asarray(gates, dtype=float).reshape(-1, 2))
+        whitened = samples / sigma
+        gated = whitened * gate_weights(times, declared, taper)
+
+        # The front end's own filter over the stretch, read from a whole number
+        # of seconds after the segment's start so the decimation keeps its
+        # phase, with the settling on each side in whole seconds.
+        gpsStart, sampling = float(segment[0]), float(self.par.sampling)
+        context_s = float(np.ceil(ds.padlen / sampling))
+        first = gpsStart + np.floor(float(start) - gpsStart)
+        last = gpsStart + np.ceil(float(stop) - gpsStart) + 1.0
+        view = SV()
+        FrameIChannel(self.par.file, self.par.channel, last - first + 2.0 * context_s,
+                      first - context_s).GetData(view)
+        raw = SV_to_array(view)
+        front = BandPassDownSampling(self.par)
+        filtered = front.condition_stretch(view, int(round(context_s * sampling)))
+        conditioned = SV_to_array(filtered)
+
+        def between(t0, fs, values):
+            at = t0 + np.arange(values.size) / fs
+            keep = (at >= float(start) - 0.5 / fs) & (at <= float(stop) + 0.5 / fs)
+            return float(at[keep][0]), fs, values[keep]
+
+        return dict(strain=between(float(view.GetStart()), sampling, raw),
+                    conditioned=between(float(filtered.GetStart()), rate, conditioned),
+                    whitened=between(float(times[0]), rate, whitened),
+                    gated=between(float(times[0]), rate, gated),
+                    lines=[list(line) for line in ds.lines.tolist()],
+                    gates=declared, sigma=sigma)
 
     def _apply_gates(self, view, gates):
         """Multiply a whitened block by the gates' weights, in place.
