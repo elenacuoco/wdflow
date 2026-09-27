@@ -38,6 +38,7 @@ from wdf.processes.zero_phase_whitening import (
     DEFAULT_BAND_BLEND_HZ,
     DEFAULT_RESPONSE_FLOOR,
     DEFAULT_SQRT_ORDER,
+    DEFAULT_TRUNCATION_S,
     MagnitudeWhitening,
     ZeroPhaseWhitening,
 )
@@ -52,8 +53,11 @@ DEFAULT_AR_FIT_CONTEXT_S = 20.0
 #: `ZeroPhaseWhitening`, the fitted square root run forward and backward;
 #: "magnitude" is `MagnitudeWhitening`, the response ``|A|`` itself; "causal" is
 #: `CausalWhitening`, the fitted lattice filter run forward only, at zero
-#: latency and with ``A``'s phase.
-ZERO_PHASE_FILTERS = ("root", "magnitude", "causal")
+#: latency and with ``A``'s phase; "truncated", experimental, is
+#: `MagnitudeWhitening` with a duration, the model's inverse spectrum truncated
+#: to `Parameters.ZeroPhaseDuration` seconds, gwpy's whitening with the Burg
+#: model's ASD.
+ZERO_PHASE_FILTERS = ("root", "magnitude", "causal", "truncated")
 DEFAULT_ZERO_PHASE_FILTER = "root"
 #: Level of the band-pass's ``|H|^2`` that defines the passband the whitening
 #: whitens (`BandPassDownSampling.passband`), dB.
@@ -176,17 +180,24 @@ class wdfUnitDSWorker(object):
         1), so that the stop band exists in the band-pass alone; the search
         then thresholds on the whitened stream's own scale. False, the
         default, is ``|A|`` over the full band: held, the stream is white in
-        the passband only, and on the pure-noise fixture the search, which
-        thresholds as if on a stream white to Nyquist, returns twice the
-        triggers at fifteen times the energy.
-        The whitening is the filter
-        `Parameters.ZeroPhaseFilter` names (`ZERO_PHASE_FILTERS`, default
-        `DEFAULT_ZERO_PHASE_FILTER`): the square root run both ways at order
-        `Parameters.SqrtWhiteningOrder`, the response ``|A|`` kept down to
-        `Parameters.ZeroPhaseResponseFloor` of its peak, or the causal lattice
-        filter. The warm-up `Parameters.preWhite` is lengthened when it is
-        shorter than the filter's past: its latency for the zero-phase filters,
-        the model's order and the band-pass's settling for the causal one. What was used is recorded in the run parameters. The offset skips the beginning of a
+        the passband only, and the search reads the noise scale of each
+        window as the median absolute coefficient over every level
+        (`WaveletThreshold`, p4TSA), which is right on a stream white to
+        Nyquist only. On the pure-noise fixture, whose passband is 36-537 Hz
+        at 4096 Hz, three quarters of the coefficients are empty, the scale
+        read is 13 times low, and the search returns twice the triggers at
+        fifteen times the energy.
+        The whitening is the filter `Parameters.ZeroPhaseFilter` names
+        (`ZERO_PHASE_FILTERS`, default `DEFAULT_ZERO_PHASE_FILTER`): the square
+        root run both ways at order `Parameters.SqrtWhiteningOrder`, the
+        response ``|A|`` kept down to `Parameters.ZeroPhaseResponseFloor` of its
+        peak, the causal lattice filter, or, "truncated" (experimental), the
+        response taken to `Parameters.ZeroPhaseDuration` seconds (default
+        `DEFAULT_TRUNCATION_S`) and read half of it ahead. The warm-up
+        `Parameters.preWhite` is lengthened when it is shorter than the
+        filter's past: its latency for the zero-phase filters, the model's
+        order and the band-pass's settling for the causal one. What was used is
+        recorded in the run parameters. The offset skips the beginning of a
         segment, where noise following lock acquisition can still be settling and
         would bias the noise model; set it to 0 for data known to be in science
         mode throughout. When the segment is too short to hold both the offset and
@@ -248,6 +259,10 @@ class wdfUnitDSWorker(object):
             floor = float(getattr(self.par, "ZeroPhaseResponseFloor",
                                   DEFAULT_RESPONSE_FLOOR))
             self.par.ZeroPhaseResponseFloor = floor
+            if zero_phase == "truncated":
+                duration = float(getattr(self.par, "ZeroPhaseDuration",
+                                         DEFAULT_TRUNCATION_S))
+                self.par.ZeroPhaseDuration = duration
 
             # Coefficients of the square-root model the "root" filter runs in
             # both directions (see wdf.processes.zero_phase_whitening).
@@ -332,6 +347,13 @@ class wdfUnitDSWorker(object):
                     whitening = MagnitudeWhitening.from_spectrum(
                         samples, self.par.resampling, Noutdata, 0, band=band,
                         blend=blend)
+                elif zero_phase == "truncated":
+                    # A Welch estimate on segments of the filter's length and
+                    # a Hann truncation: gwpy's TimeSeries.whiten.
+                    whitening = MagnitudeWhitening.from_spectrum(
+                        samples, self.par.resampling, Noutdata, 0, band=band,
+                        blend=blend, taper=1.0,
+                        nperseg=2 * int(round(0.5 * duration * self.par.resampling)))
                 else:
                     whitening = ZeroPhaseWhitening.from_spectrum(
                         samples, self.par.resampling, Noutdata, 0,
@@ -340,13 +362,19 @@ class wdfUnitDSWorker(object):
                 whitening = MagnitudeWhitening(ar, Noutdata, 0, floor=floor, **held)
             elif zero_phase == "causal":
                 whitening = CausalWhitening(whiten, Noutdata, 0)
+            elif zero_phase == "truncated":
+                whitening = MagnitudeWhitening(
+                    ar, Noutdata, 0, duration=duration,
+                    **dict(held, sampling=self.par.resampling))
             else:
                 whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order,
                                                **held)
-            if model == "spectrum" or hold:
-                # The scale the search thresholds on is the scale of the stream
-                # it is given, and that stream is this filter's output: held,
-                # it carries the power of the band alone, below ar[0].
+            if model == "spectrum" or hold or zero_phase == "truncated":
+                # The scale of the stream the search is given is this filter's
+                # level in band (in_band_scale, whitened_level): the stream
+                # over it is at unit density in band. Only the "cuoco" rule
+                # thresholds on it; "block" and "dohonojohnston" read the
+                # scale of each window from its own coefficients.
                 self.par.sigma = whitening.sigma
             self.par.sigmaWhitened = whitening.sigma
             self.par.ZeroPhaseLatency = int(whitening.latency)

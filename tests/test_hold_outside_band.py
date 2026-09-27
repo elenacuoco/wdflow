@@ -58,6 +58,12 @@ def white_asd(samples, scale):
     return f, np.sqrt(p * FS / 2.0)
 
 
+def band_std(samples, scale, band):
+    """Standard deviation of `samples / scale` over `band`, as if it were all of it."""
+    f, p = welch(samples / scale, fs=FS, nperseg=8192)
+    return float(np.sqrt(np.mean(p[(f >= band[0]) & (f <= band[1])]) * FS / 2.0))
+
+
 def test_the_passband_is_read_off_the_design(front):
     """The edges are where the forward-backward response |H|^2 is -3 dB."""
     low, high = front.passband()
@@ -98,7 +104,11 @@ def test_the_magnitude_filter_whitens_the_band_at_unit_variance(front, condition
     inside = (f >= band[0] + 1.0) & (f <= band[1] - 1.0)
     assert np.median(asd[inside]) == pytest.approx(1.0, abs=0.02)
     assert np.percentile(asd[inside], 95) < 1.08 and np.percentile(asd[inside], 5) > 0.92
-    assert np.std(whitened) == pytest.approx(whitening.sigma, rel=0.01)
+    # The scale is the level in band, ar[0], not the variance over the circle,
+    # which is the band's share of it.
+    assert whitening.sigma == pytest.approx(ar[0], rel=1e-3)
+    assert band_std(whitened, whitening.sigma, band) == pytest.approx(1.0, rel=0.01)
+    assert np.std(whitened) < 0.9 * whitening.sigma
 
 
 def test_the_root_follows_the_held_target_and_whitens_at_unit_variance(front, conditioned):
@@ -116,7 +126,8 @@ def test_the_root_follows_the_held_target_and_whitens_at_unit_variance(front, co
     f, asd = white_asd(whitened, ar[0] * whitening.error)
     inside = (f >= band[0] + 1.0) & (f <= band[1] - 1.0)
     assert np.median(asd[inside]) == pytest.approx(1.0, abs=0.02)
-    assert np.std(whitened) == pytest.approx(whitening.sigma, rel=0.01)
+    assert whitening.sigma == pytest.approx(ar[0] * whitening.error, rel=0.01)
+    assert band_std(whitened, whitening.sigma, band) == pytest.approx(1.0, rel=0.01)
 
 
 @pytest.mark.parametrize("name", ["magnitude", "root"])
