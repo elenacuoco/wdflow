@@ -83,7 +83,11 @@ def test_a_block_matches_the_whole_stream_filtered_at_once():
     """The point of the lookahead. Compared per sample rather than by an
     aggregate: the whitening applies its largest gain at the band edges, where
     the residual lives, so an error invisible in the RMS is not invisible
-    downstream. The edges are held to the same bound as the interior."""
+    downstream. The edges are held to the same bound as the interior.
+
+    The bound is below what a single-precision handover alone would leave,
+    2^-24 of each sample's size, so it also holds the block to the double
+    precision it is computed in."""
     filt = BandPassDownSampling(parameters())
     samples = noise(SAMPLING * 12, seed=1)
     reference = sosfiltfilt(filt.sos, samples)[::FACTOR]
@@ -94,7 +98,19 @@ def test_a_block_matches_the_whole_stream_filtered_at_once():
         offset = int(round(start * RESAMPLING))
         expected = reference[offset:offset + len(block)]
         error = np.abs(block - expected) / np.std(expected)
-        assert error.max() < 1e-5
+        assert error.max() < 1e-9
+
+
+def test_the_conditioned_block_is_handed_over_in_double_precision():
+    """The view the whitening reads stores double precision, so the samples it
+    receives are the samples the filter computed, bit for bit. A narrowing on
+    the way adds a white rounding noise that, in a band the conditioning has
+    emptied, is all the band holds, and the whitening lifts it back up."""
+    filt = BandPassDownSampling(parameters(), estimation=True)
+    samples = noise(SAMPLING * 4, seed=7) * 1e-21
+    expected = sosfiltfilt(filt.sos, samples)[::FACTOR]
+
+    assert np.array_equal(read_back(filt.Process(_Block(samples, 0.0))), expected)
 
 
 def test_the_latency_is_declared():
