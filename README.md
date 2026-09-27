@@ -41,10 +41,17 @@ install and import from.
 
 Changes from the legacy `wdf` package:
 
-- **AR-whitening lookahead is fixed-size, independent of `par.len`.** `DoubleWhitening`'s backward
-  pass needs a lookahead buffer of real future data to settle before producing a good estimate for
-  the current chunk. This lookahead (`WhiteningExtraSize`, default 20 resampled-rate seconds) is
-  now a fixed size, decoupled from `par.len` (the streaming chunk size, an I/O batching/throughput
+- **The whitening is zero phase with response `|A|`.** The default filter
+  (`ZeroPhaseFilter = "magnitude"`) has the modulus of the prediction-error filter as its
+  response, applied by FFT convolution with real past and future data around each block, so its
+  whitened spectrum is the causal one and a transient is not displaced. Its support is measured on
+  its impulse response (`ZeroPhaseResponseFloor`). The square-root filter run forward and backward
+  remains available as `ZeroPhaseFilter = "root"`. See `docs/design/whitening.md`.
+
+- **AR-whitening lookahead is fixed-size, independent of `par.len`.** The zero-phase filter needs
+  a lookahead buffer of real future data before producing the current chunk. This lookahead
+  (`WhiteningExtraSize`, default the longer of 20 resampled-rate seconds and the filter's latency)
+  is a fixed size, decoupled from `par.len` (the streaming chunk size, an I/O batching/throughput
   knob). Set `parameters.WhiteningExtraSize = 0` to reproduce the legacy behavior.
 
 - **The detection loop stops `par.len` seconds before the requested segment end** (unchanged from

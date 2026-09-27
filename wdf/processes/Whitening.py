@@ -6,9 +6,11 @@ start of a run. What the search sees is the residual: a series whose spectrum is
 flat where the model is right, on which one threshold means the same thing at
 every frequency.
 
-The filter estimated here is causal. `zero_phase_whitening` builds the
-square-root filter that removes the same colour without moving the transient in
-time, which is what the reconstruction needs.
+The filter estimated here is causal: its output is ``A(z) x``, with the
+modulus that whitens and the phase of ``A``. `zero_phase_whitening` builds from
+the same model the filter whose response is that modulus alone, which removes
+the same colour without moving the transient in time, as the reconstruction
+needs.
 """
 __author__ = "Elena Cuoco"
 __project__ = "py4tsa"

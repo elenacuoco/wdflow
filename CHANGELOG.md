@@ -17,6 +17,22 @@ and the whitening left that band below white. The context must be at least the
 band-pass's settling length and must be present in the frames; the worker
 refuses a fit stretch the reader did not return whole. The triggers change.
 
+### The zero-phase whitening has the response |A|
+
+`MagnitudeWhitening` is the worker's default (`ZeroPhaseFilter = "magnitude"`):
+the filter whose response is the modulus of the prediction-error polynomial,
+real and so exactly zero phase, with the causal whitening's spectrum bin by bin.
+Its impulse response is measured down to `ZeroPhaseResponseFloor` of its peak
+and applied by FFT convolution with real past and future context around each
+block, which is linear convolution: the stream does not depend on the block
+grid. The square root fitted and run forward and backward stays available as
+`ZeroPhaseFilter = "root"`; where the model has narrow lines it does not follow
+them. The warm-up `preWhite` is lengthened to the filter's latency when shorter,
+and the lookahead defaults to the longer of 20 s and that latency; both, the
+filter and its latency (`ZeroPhaseLatency`) are recorded in the run parameters.
+The whitening from a measured spectrum builds the same filter on the frequencies
+of its own estimate. The triggers change.
+
 ## 1.3.0 --- 2026-09-18
 
 ### The compiled core comes from PyPI
