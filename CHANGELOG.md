@@ -3,6 +3,20 @@
 Versions follow [semantic versioning](https://semver.org). A release records
 what the software does differently, not how it came to.
 
+## Unreleased
+
+### The noise model is fitted on settled samples
+
+The stretch the autoregressive model is fitted on is read with
+`ARFitContext` seconds of real data on each side (default
+`DEFAULT_AR_FIT_CONTEXT_S`), band-passed whole, and the context is dropped
+(`BandPassDownSampling.discard_edges`). Conditioned alone, the stretch began
+and ended on the band-pass's transient from an assumed boundary; a Burg fit
+estimates mean power, so the model absorbed that transient near the band edge
+and the whitening left that band below white. The context must be at least the
+band-pass's settling length and must be present in the frames; the worker
+refuses a fit stretch the reader did not return whole. The triggers change.
+
 ## 1.3.0 --- 2026-09-18
 
 ### The compiled core comes from PyPI

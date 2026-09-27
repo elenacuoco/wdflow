@@ -29,6 +29,7 @@ from wdf.observers.ParameterEstimationObserver import ParameterEstimation
 from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
+                                                discard_edges,
                                                 read_conditioned)
 from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
@@ -38,7 +39,12 @@ from wdf.processes.zero_phase_whitening import (
     ZeroPhaseWhitening,
 )
 
-DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0 
+DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0
+#: Seconds of real data read on each side of the fit stretch and dropped after
+#: the band-pass, so that the model is fitted on samples the filter reached
+#: settled. It must be at least the band-pass's settling length, which is
+#: checked; the default is several settling lengths of the default filter.
+DEFAULT_AR_FIT_CONTEXT_S = 20.0
 import logging
 import os
 
@@ -72,11 +78,25 @@ class wdfUnitDSWorker(object):
         conditioned by the estimation front end -- the same stretch whichever
         way the filter is then fitted, so that the two are comparable.
 
+        The band-pass run over a stretch in one shot starts and ends on an
+        assumed boundary, and its settling there is a transient of the filter
+        at the band edges, where the conditioned data are weakest. A Burg fit
+        estimates mean power, so it absorbs that transient into the model and
+        over-estimates the spectrum near the band edge; the whitening built
+        from the model then leaves that band below white. The stretch is
+        therefore read with `ARFitContext` seconds of real data on each side,
+        conditioned whole, and those sides are dropped: every sample fitted is
+        one the filter reached with real data behind it and ahead of it.
+
         :type gpsStart: float
         :param gpsStart: start of the segment.
         :type gpsEnd: float
         :param gpsEnd: end of the segment.
-        :return: py4tsa.tsa.SeqView_double_t -- the conditioned stretch.
+        :return: py4tsa.tsa.SeqView_double_t -- the conditioned stretch,
+            `learn` seconds, labelled with the time of its first sample.
+        :raises ValueError: if `ARFitContext` is shorter than the band-pass's
+            settling length, or the frames do not return the whole stretch
+            with its context.
         """
         offset = getattr(self.par, "AREstimationOffset",
                          DEFAULT_AR_ESTIMATION_OFFSET_S)
@@ -85,10 +105,30 @@ class wdfUnitDSWorker(object):
         else:
             gpsE = gpsEnd - self.learn
 
-        stream = FrameIChannel(self.par.file, self.par.channel, self.learn, gpsE)
+        front = BandPassDownSampling(self.par, estimation=True)
+        context = float(getattr(self.par, "ARFitContext", DEFAULT_AR_FIT_CONTEXT_S))
+        if context * front.sampling < front.padlen:
+            raise ValueError(
+                f"ARFitContext is {context} s, shorter than the band-pass's "
+                f"settling length of {front.padlen / front.sampling:.3f} s: the "
+                f"fitted stretch would still hold the filter's edge transient")
+        self.par.ARFitContext = context
+
+        first, length = gpsE - context, self.learn + 2.0 * context
+        stream = FrameIChannel(self.par.file, self.par.channel, length, first)
         raw = SV()
         stream.GetData(raw)
-        return BandPassDownSampling(self.par, estimation=True).Process(raw)
+        # The context is only context if it is real data at the times asked
+        # for; a reader that returns a shifted or short stretch would put the
+        # edge transient back inside the fitted samples.
+        expected = round(length / raw.GetSampling())
+        if (abs(raw.GetStart() - first) > 0.5 * raw.GetSampling()
+                or raw.GetSize() != expected):
+            raise ValueError(
+                f"asked for {length} s from GPS {first} for the fit stretch and "
+                f"its context, got {raw.GetSize()} samples from GPS "
+                f"{raw.GetStart()}")
+        return discard_edges(front.Process(raw), context)
 
     def segmentProcess(self, segment, wavThresh=WaveletThreshold.block):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
@@ -112,7 +152,10 @@ class wdfUnitDSWorker(object):
 
         AR parameters are estimated from `Parameters.learn` seconds of data taken
         `Parameters.AREstimationOffset` seconds after the segment start (default
-        `DEFAULT_AR_ESTIMATION_OFFSET_S`). The offset skips the beginning of a
+        `DEFAULT_AR_ESTIMATION_OFFSET_S`), read with `Parameters.ARFitContext`
+        seconds of real data on each side that the band-pass settles over and
+        that are then dropped (default `DEFAULT_AR_FIT_CONTEXT_S`); the frames
+        must hold that context. The offset skips the beginning of a
         segment, where noise following lock acquisition can still be settling and
         would bias the noise model; set it to 0 for data known to be in science
         mode throughout. When the segment is too short to hold both the offset and
