@@ -16,7 +16,7 @@ __project__ = "wdf"
 import logging
 from wdf.structures.array2SeqView import *
 import numpy as np
-from scipy.signal import cheby2, sosfilt
+from scipy.signal import cheby2, sosfilt, sosfreqz
 
 from wdf.filtering import sosfiltfilt
 
@@ -252,6 +252,33 @@ class BandPassDownSampling(object):
 
         y_ds = emitted[::self.ResamplingFactor]
         return self._decimated_view(y_ds, block_start)
+
+    def passband(self, level_db=-3.0, resolution_hz=1.0 / 1024.0):
+        """The band where the conditioning passes the data, read off its design.
+
+        The filter is applied forward and backward, so the response the data
+        receive is ``|H|^2``; the edges are the first and the last frequency of
+        the decimated band at which ``20 log10 |H|^2`` is at least `level_db`.
+        They are measured on the designed sections, not assumed from the
+        corner frequencies the design was given: a Chebyshev type II reaches
+        its attenuation at those corners, and its passband ends inside them.
+        This is the band a whitening built after this stage is to whiten, and
+        outside it the stop band is the conditioning's own and nothing to undo.
+
+        :type level_db: float
+        :param level_db: level of ``|H|^2`` that defines the edges, dB, negative.
+        :type resolution_hz: float
+        :param resolution_hz: spacing of the frequencies the response is read on.
+        :return: tuple -- ``(f_lo, f_hi)`` in hertz.
+        :raises ValueError: if the response nowhere reaches `level_db`.
+        """
+        freq = np.arange(0.0, 0.5 * self.resampling, float(resolution_hz))
+        _, response = sosfreqz(self.sos, worN=freq, fs=self.sampling)
+        gain_db = 20.0 * np.log10(np.abs(response) ** 2 + 1e-300)
+        inside = np.flatnonzero(gain_db >= float(level_db))
+        if inside.size == 0:
+            raise ValueError(f"the band-pass response never reaches {level_db} dB")
+        return float(freq[inside[0]]), float(freq[inside[-1]])
 
     @property
     def latency_s(self):

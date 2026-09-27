@@ -35,6 +35,7 @@ from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
 from wdf.processes.Whitening import CausalWhitening, Whitening
 from wdf.processes.zero_phase_whitening import (
+    DEFAULT_BAND_BLEND_HZ,
     DEFAULT_RESPONSE_FLOOR,
     DEFAULT_SQRT_ORDER,
     MagnitudeWhitening,
@@ -54,6 +55,9 @@ DEFAULT_AR_FIT_CONTEXT_S = 20.0
 #: latency and with ``A``'s phase.
 ZERO_PHASE_FILTERS = ("root", "magnitude", "causal")
 DEFAULT_ZERO_PHASE_FILTER = "root"
+#: Level of the band-pass's ``|H|^2`` that defines the passband the whitening
+#: whitens (`BandPassDownSampling.passband`), dB.
+DEFAULT_PASSBAND_LEVEL_DB = -3.0
 import logging
 import os
 
@@ -164,7 +168,18 @@ class wdfUnitDSWorker(object):
         `DEFAULT_AR_ESTIMATION_OFFSET_S`), read with `Parameters.ARFitContext`
         seconds of real data on each side that the band-pass settles over and
         that are then dropped (default `DEFAULT_AR_FIT_CONTEXT_S`); the frames
-        must hold that context. The whitening is the filter
+        must hold that context. With `Parameters.HoldOutsideBand` (default
+        False) the whitening whitens only the passband of the band-pass, read off
+        its design at `Parameters.PassbandLevel` dB (default -3) and recorded
+        as `Passband`: the model's ``|A|`` inside, held at its edge values
+        outside with a raised cosine of `Parameters.BandEdgeBlend` Hz (default
+        1), so that the stop band exists in the band-pass alone; the search
+        then thresholds on the whitened stream's own scale. False, the
+        default, is ``|A|`` over the full band: held, the stream is white in
+        the passband only, and on the pure-noise fixture the search, which
+        thresholds as if on a stream white to Nyquist, returns twice the
+        triggers at fifteen times the energy.
+        The whitening is the filter
         `Parameters.ZeroPhaseFilter` names (`ZERO_PHASE_FILTERS`, default
         `DEFAULT_ZERO_PHASE_FILTER`): the square root run both ways at order
         `Parameters.SqrtWhiteningOrder`, the response ``|A|`` kept down to
@@ -279,31 +294,60 @@ class wdfUnitDSWorker(object):
             data_ds = SV()
             dataw = SV()
             Noutdata = int(self.par.resampling)
-            band = (self.par.LowFrequencyCut, 0.5 * self.par.resampling)
-            if model == "spectrum" and zero_phase == "causal":
+
+            # The band the whitening whitens. The model is fitted on band-passed
+            # data, so over the full band |A| also inverts the band-pass's stop
+            # band -- a gain up to 1e6 on nothing -- which the whitening must
+            # not undo: the stop band belongs to the band-pass alone. Held, the
+            # target is |A| inside the band-pass's own passband and its edge
+            # values outside it. False keeps the full band, and is the default
+            # until the search is calibrated on a stream white in band only.
+            hold = bool(getattr(self.par, "HoldOutsideBand", False))
+            self.par.HoldOutsideBand = hold
+            if hold:
+                level = float(getattr(self.par, "PassbandLevel",
+                                      DEFAULT_PASSBAND_LEVEL_DB))
+                blend = float(getattr(self.par, "BandEdgeBlend",
+                                      DEFAULT_BAND_BLEND_HZ))
+                band = ds.passband(level)
+                self.par.PassbandLevel, self.par.BandEdgeBlend = level, blend
+                self.par.Passband = list(band)
+                held = dict(band=band, sampling=self.par.resampling, blend=blend)
+                logging.info(f"Whitening held outside the passband "
+                             f"{band[0]:.3f}-{band[1]:.3f} Hz ({level:g} dB), "
+                             f"blend {blend:g} Hz")
+            else:
+                band, blend = (self.par.LowFrequencyCut, 0.5 * self.par.resampling), 0.0
+                held = {}
+            if zero_phase == "causal" and (model == "spectrum" or hold):
                 raise ValueError("ZeroPhaseFilter 'causal' runs the fitted "
-                                 "autoregressive model; it needs WhiteningModel "
-                                 "'burg'")
+                                 "autoregressive model over the full band; it "
+                                 "needs WhiteningModel 'burg' and HoldOutsideBand "
+                                 "False")
             if model == "spectrum":
                 learn = self._learn_stretch(gpsStart, gpsEnd)
                 samples = np.array([learn.GetY(0, i) for i in range(learn.GetSize())])
                 del learn
                 if zero_phase == "magnitude":
                     whitening = MagnitudeWhitening.from_spectrum(
-                        samples, self.par.resampling, Noutdata, 0, band=band)
+                        samples, self.par.resampling, Noutdata, 0, band=band,
+                        blend=blend)
                 else:
                     whitening = ZeroPhaseWhitening.from_spectrum(
                         samples, self.par.resampling, Noutdata, 0,
-                        order=sqrt_order, band=band)
-                # The scale the search thresholds on is the scale of the stream
-                # it is given, and that stream is this filter's output.
-                self.par.sigma = whitening.sigma
+                        order=sqrt_order, band=band, blend=blend)
             elif zero_phase == "magnitude":
-                whitening = MagnitudeWhitening(ar, Noutdata, 0, floor=floor)
+                whitening = MagnitudeWhitening(ar, Noutdata, 0, floor=floor, **held)
             elif zero_phase == "causal":
                 whitening = CausalWhitening(whiten, Noutdata, 0)
             else:
-                whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order)
+                whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order,
+                                               **held)
+            if model == "spectrum" or hold:
+                # The scale the search thresholds on is the scale of the stream
+                # it is given, and that stream is this filter's output: held,
+                # it carries the power of the band alone, below ar[0].
+                self.par.sigma = whitening.sigma
             self.par.sigmaWhitened = whitening.sigma
             self.par.ZeroPhaseLatency = int(whitening.latency)
             logging.info(f"Whitening model: {model}, whitening filter: {zero_phase}")
