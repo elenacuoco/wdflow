@@ -34,7 +34,7 @@ enormous and the output is dominated by a band the search does not analyse.
 non-negative, so zero phase, and of the same modulus as the causal whitening, so
 the whitened spectrum is the causal one bin by bin. Two constructions reach it.
 
-### The magnitude filter (default)
+### The magnitude filter (`ZeroPhaseFilter = "magnitude"`)
 
 `MagnitudeWhitening` applies `|A|` directly. Its impulse response
 
@@ -60,7 +60,7 @@ With `WhiteningModel = "spectrum"` the response is `1/√S` of the measured
 spectrum on the frequencies of its own estimate, which resolves `fs/nperseg`
 and nothing finer; the filter is then `nperseg` taps long.
 
-### The square root (`ZeroPhaseFilter = "root"`)
+### The square root (`ZeroPhaseFilter = "root"`, default)
 
 **Running any filter B forward and then backward** gives `|B|²` at zero phase,
 so the filter that whitens by `|A|` both ways is the one with
@@ -122,11 +122,16 @@ Two off-by-one conventions in the p4TSA containers, both easy to get wrong:
 
 ## Using it
 
-`wdf.processes.zero_phase_whitening.MagnitudeWhitening` is what `wdfUnitDSWorker`
-uses by default; `ZeroPhaseResponseFloor` sets the floor its support is measured
-at. `ZeroPhaseFilter = "root"` selects
-`wdf.processes.zero_phase_whitening.ZeroPhaseWhitening` instead, with
-`SqrtWhiteningOrder` setting `q`. The two share one interface. What ran, and its
+`wdf.processes.zero_phase_whitening.ZeroPhaseWhitening` is what `wdfUnitDSWorker`
+uses by default (`ZeroPhaseFilter = "root"`), with `SqrtWhiteningOrder` setting
+`q`, by default the model's order or 256, whichever is more.
+`ZeroPhaseFilter = "magnitude"` selects
+`wdf.processes.zero_phase_whitening.MagnitudeWhitening` instead, with
+`ZeroPhaseResponseFloor` setting the floor its support is measured at.
+`ZeroPhaseFilter = "causal"` selects `wdf.processes.Whitening.CausalWhitening`,
+the fitted lattice filter run forward only: latency zero, the model's phase, and
+a warm-up lengthened to the model's order plus the band-pass's settling, which
+is the past its first output needs. The three share one interface. What ran, and its
 latency (`ZeroPhaseLatency`), is recorded in the run parameters. See
 `examples/zero_phase_whitening_example.py` for a standalone run of the square
 root.

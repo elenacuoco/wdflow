@@ -17,21 +17,32 @@ and the whitening left that band below white. The context must be at least the
 band-pass's settling length and must be present in the frames; the worker
 refuses a fit stretch the reader did not return whole. The triggers change.
 
-### The zero-phase whitening has the response |A|
+### The whitening can have the response |A|, or be causal
 
-`MagnitudeWhitening` is the worker's default (`ZeroPhaseFilter = "magnitude"`):
-the filter whose response is the modulus of the prediction-error polynomial,
-real and so exactly zero phase, with the causal whitening's spectrum bin by bin.
-Its impulse response is measured down to `ZeroPhaseResponseFloor` of its peak
-and applied by FFT convolution with real past and future context around each
-block, which is linear convolution: the stream does not depend on the block
-grid. The square root fitted and run forward and backward stays available as
-`ZeroPhaseFilter = "root"`; where the model has narrow lines it does not follow
-them. The warm-up `preWhite` is lengthened to the filter's latency when shorter,
-and the lookahead defaults to the longer of 20 s and that latency; both, the
-filter and its latency (`ZeroPhaseLatency`) are recorded in the run parameters.
-The whitening from a measured spectrum builds the same filter on the frequencies
-of its own estimate. The triggers change.
+The default is unchanged: the square root fitted and run forward and backward
+(`ZeroPhaseFilter = "root"`), at order `SqrtWhiteningOrder`, by default the
+model's order or 256, whichever is more. Given the same model it whitens bit
+for bit as before; the triggers of a default run move only by the fit on
+settled samples above.
+
+`ZeroPhaseFilter = "magnitude"` selects `MagnitudeWhitening`: the filter whose
+response is the modulus of the prediction-error polynomial, real and so exactly
+zero phase, with the causal whitening's spectrum bin by bin, where the root
+does not follow narrow lines. Its impulse response is measured down to
+`ZeroPhaseResponseFloor` of its peak and applied by FFT convolution with real
+past and future context around each block, which is linear convolution: the
+stream does not depend on the block grid. The whitening from a measured
+spectrum builds the same filter on the frequencies of its own estimate.
+
+`ZeroPhaseFilter = "causal"` selects `CausalWhitening`: the fitted lattice
+filter `A(z)` run forward only, latency zero, the model's phase, output scale
+`sigma` as the magnitude filter's. It needs `WhiteningModel = "burg"`.
+
+The warm-up `preWhite` is lengthened when shorter than the filter's past -- its
+latency for the zero-phase filters, the model's order plus the band-pass's
+settling for the causal one -- and the lookahead defaults to the longer of 20 s
+and the latency; the filter, the warm-up and the latency (`ZeroPhaseLatency`)
+are recorded in the run parameters.
 
 ## 1.3.0 --- 2026-09-18
 

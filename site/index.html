@@ -399,7 +399,7 @@
       <li>
         <span class="n">Stage 1</span>
         <h3>Condition</h3>
-        <p>An autoregressive lattice filter whitens the data in the time domain, which allows the search to run on streaming data. The filter applied has the modulus of the autoregressive whitening as its response, which is real and so has zero phase: the spectrum is flattened exactly as the causal filter flattens it, without displacing the transient in time.</p>
+        <p>An autoregressive lattice filter whitens the data in the time domain, which allows the search to run on streaming data. The filter is applied as its square root in the forward and backward directions, giving zero phase: the spectrum is flattened without displacing the transient in time.</p>
       </li>
       <li>
         <span class="n">Stage 2</span>

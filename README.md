@@ -41,12 +41,14 @@ install and import from.
 
 Changes from the legacy `wdf` package:
 
-- **The whitening is zero phase with response `|A|`.** The default filter
-  (`ZeroPhaseFilter = "magnitude"`) has the modulus of the prediction-error filter as its
-  response, applied by FFT convolution with real past and future data around each block, so its
-  whitened spectrum is the causal one and a transient is not displaced. Its support is measured on
-  its impulse response (`ZeroPhaseResponseFloor`). The square-root filter run forward and backward
-  remains available as `ZeroPhaseFilter = "root"`. See `docs/design/whitening.md`.
+- **The whitening is zero phase, by one of three filters.** The default
+  (`ZeroPhaseFilter = "root"`) is the square-root filter run forward and backward, of order
+  `SqrtWhiteningOrder`. `ZeroPhaseFilter = "magnitude"` has the modulus of the prediction-error
+  filter as its response, applied by FFT convolution with real past and future data around each
+  block, so its whitened spectrum is the causal one and a transient is not displaced; its support
+  is measured on its impulse response (`ZeroPhaseResponseFloor`). `ZeroPhaseFilter = "causal"`
+  runs the fitted lattice filter forward only, at zero latency and with the model's phase. See
+  `docs/design/whitening.md`.
 
 - **AR-whitening lookahead is fixed-size, independent of `par.len`.** The zero-phase filter needs
   a lookahead buffer of real future data before producing the current chunk. This lookahead

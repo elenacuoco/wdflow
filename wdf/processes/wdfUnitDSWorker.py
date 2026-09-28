@@ -33,7 +33,7 @@ from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 read_conditioned)
 from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
-from wdf.processes.Whitening import Whitening
+from wdf.processes.Whitening import CausalWhitening, Whitening
 from wdf.processes.zero_phase_whitening import (
     DEFAULT_RESPONSE_FLOOR,
     DEFAULT_SQRT_ORDER,
@@ -47,10 +47,13 @@ DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0
 #: settled. It must be at least the band-pass's settling length, which is
 #: checked; the default is several settling lengths of the default filter.
 DEFAULT_AR_FIT_CONTEXT_S = 20.0
-#: The zero-phase filters the worker can run: "magnitude" is
-#: `MagnitudeWhitening`, the response ``|A|`` itself; "root" is
-#: `ZeroPhaseWhitening`, the fitted square root run forward and backward.
-ZERO_PHASE_FILTERS = ("magnitude", "root")
+#: The whitening filters the worker can run: "root", the default, is
+#: `ZeroPhaseWhitening`, the fitted square root run forward and backward;
+#: "magnitude" is `MagnitudeWhitening`, the response ``|A|`` itself; "causal" is
+#: `CausalWhitening`, the fitted lattice filter run forward only, at zero
+#: latency and with ``A``'s phase.
+ZERO_PHASE_FILTERS = ("root", "magnitude", "causal")
+DEFAULT_ZERO_PHASE_FILTER = "root"
 import logging
 import os
 
@@ -161,12 +164,14 @@ class wdfUnitDSWorker(object):
         `DEFAULT_AR_ESTIMATION_OFFSET_S`), read with `Parameters.ARFitContext`
         seconds of real data on each side that the band-pass settles over and
         that are then dropped (default `DEFAULT_AR_FIT_CONTEXT_S`); the frames
-        must hold that context. The whitening is zero phase, by the filter
+        must hold that context. The whitening is the filter
         `Parameters.ZeroPhaseFilter` names (`ZERO_PHASE_FILTERS`, default
-        "magnitude"), whose impulse response is kept down to
-        `Parameters.ZeroPhaseResponseFloor` of its peak; the warm-up
-        `Parameters.preWhite` is lengthened to the filter's latency when it is
-        shorter. What was used is recorded in the run parameters. The offset skips the beginning of a
+        `DEFAULT_ZERO_PHASE_FILTER`): the square root run both ways at order
+        `Parameters.SqrtWhiteningOrder`, the response ``|A|`` kept down to
+        `Parameters.ZeroPhaseResponseFloor` of its peak, or the causal lattice
+        filter. The warm-up `Parameters.preWhite` is lengthened when it is
+        shorter than the filter's past: its latency for the zero-phase filters,
+        the model's order and the band-pass's settling for the causal one. What was used is recorded in the run parameters. The offset skips the beginning of a
         segment, where noise following lock acquisition can still be settling and
         would bias the noise model; set it to 0 for data known to be in science
         mode throughout. When the segment is too short to hold both the offset and
@@ -214,11 +219,13 @@ class wdfUnitDSWorker(object):
             self.par.sigma = whiten.GetSigma()
             logging.info("Estimated sigma= %s" % self.par.sigma)
 
-            # Which zero-phase filter whitens the stream. "magnitude" has the
-            # response |A| itself, so its whitened spectrum is the causal
-            # whitening's; "root" is the square-root model run forward and
-            # backward, which approximates |A| at a finite order.
-            zero_phase = str(getattr(self.par, "ZeroPhaseFilter", "magnitude")).lower()
+            # Which filter whitens the stream. "root" is the square-root model
+            # run forward and backward, which approximates |A| at a finite
+            # order; "magnitude" has the response |A| itself, so its whitened
+            # spectrum is the causal whitening's; "causal" is the lattice filter
+            # A(z) run forward only, at zero latency and with A's phase.
+            zero_phase = str(getattr(self.par, "ZeroPhaseFilter",
+                                     DEFAULT_ZERO_PHASE_FILTER)).lower()
             if zero_phase not in ZERO_PHASE_FILTERS:
                 raise ValueError(f"ZeroPhaseFilter is {zero_phase!r}; expected one "
                                  f"of {ZERO_PHASE_FILTERS}")
@@ -273,6 +280,10 @@ class wdfUnitDSWorker(object):
             dataw = SV()
             Noutdata = int(self.par.resampling)
             band = (self.par.LowFrequencyCut, 0.5 * self.par.resampling)
+            if model == "spectrum" and zero_phase == "causal":
+                raise ValueError("ZeroPhaseFilter 'causal' runs the fitted "
+                                 "autoregressive model; it needs WhiteningModel "
+                                 "'burg'")
             if model == "spectrum":
                 learn = self._learn_stretch(gpsStart, gpsEnd)
                 samples = np.array([learn.GetY(0, i) for i in range(learn.GetSize())])
@@ -289,22 +300,30 @@ class wdfUnitDSWorker(object):
                 self.par.sigma = whitening.sigma
             elif zero_phase == "magnitude":
                 whitening = MagnitudeWhitening(ar, Noutdata, 0, floor=floor)
+            elif zero_phase == "causal":
+                whitening = CausalWhitening(whiten, Noutdata, 0)
             else:
                 whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order)
             self.par.sigmaWhitened = whitening.sigma
             self.par.ZeroPhaseLatency = int(whitening.latency)
-            logging.info(f"Whitening model: {model}, zero-phase filter: {zero_phase}")
+            logging.info(f"Whitening model: {model}, whitening filter: {zero_phase}")
             root = f", square-root order {sqrt_order}" if zero_phase == "root" else ""
-            logging.info(f"Zero-phase whitening latency {whitening.latency} samples "
+            logging.info(f"Whitening latency {whitening.latency} samples "
                          f"({whitening.latency / self.par.resampling:.3f} s){root}")
 
             # The warm-up whitens data that is then discarded, and it has to
-            # last until the filter's past is real data: an output sample
-            # depends on `latency` samples before it, zeros until the stream
-            # has supplied them. `preWhite` is the floor; a longer filter
-            # lengthens the warm-up rather than emitting its start-up transient.
-            pre_white = max(int(self.par.preWhite),
-                            int(np.ceil(whitening.latency / self.par.resampling)))
+            # last until the filter's past is real data: a zero-phase output
+            # sample depends on `latency` samples before it, zeros until the
+            # stream has supplied them; a causal one on the model's `ARorder`
+            # samples before it, which have to be conditioned samples the
+            # band-pass reached settled. `preWhite` is the floor; a longer past
+            # lengthens the warm-up rather than emitting a start-up transient.
+            if zero_phase == "causal":
+                past_s = (self.par.ARorder / self.par.resampling
+                          + ds.padlen / ds.sampling)
+            else:
+                past_s = whitening.latency / self.par.resampling
+            pre_white = max(int(self.par.preWhite), int(np.ceil(past_s)))
             if pre_white > int(self.par.preWhite):
                 logging.info(f"Warm-up lengthened from {self.par.preWhite} to "
                              f"{pre_white} s to cover the whitening's past")

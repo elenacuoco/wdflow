@@ -213,7 +213,7 @@ def test_the_spectral_response_whitens_what_it_was_measured_on():
     assert np.std(np.log10(white[band])) < 0.05
 
 
-@pytest.mark.parametrize("name", ["magnitude", "root"])
+@pytest.mark.parametrize("name", ["magnitude", "root", "causal"])
 def test_the_worker_records_the_filter_it_ran(tmp_outdir, name):
     """Either filter runs, and the run parameters say which, with its latency,
     a warm-up that covers the filter's past and a lookahead that covers its
@@ -236,4 +236,4 @@ def test_the_worker_refuses_an_unknown_filter(tmp_outdir):
     from conftest import run_segment_process
 
     with pytest.raises(ValueError, match="ZeroPhaseFilter"):
-        run_segment_process(tmp_outdir, ZeroPhaseFilter="causal")
+        run_segment_process(tmp_outdir, ZeroPhaseFilter="minimum")

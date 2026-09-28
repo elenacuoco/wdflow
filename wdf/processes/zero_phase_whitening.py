@@ -6,23 +6,23 @@ The lattice filter `ArBurgEstimator` fits whitens with magnitude ``|A|`` but
 carries ``A``'s phase, which displaces the reconstructed waveform. Two filters
 here remove the same colour at zero phase.
 
-`MagnitudeWhitening`, the one the worker uses unless told otherwise, is the
-filter whose frequency response *is* ``|A(e^{iw})|``. A real, non-negative
-response has zero phase exactly, so nothing is fitted and nothing is
-approximated in the band: the whitened spectrum is the causal one, bin by bin.
-Its impulse response is symmetric and, when ``A`` has zeros close to the unit
-circle -- the narrow lines of a detector -- long; it is measured from the
-response itself, like the settling of the band-pass, and applied by FFT
-convolution with real past and future data on each side of the block.
+`MagnitudeWhitening`, which the worker runs when asked for it (`ZeroPhaseFilter
+= "magnitude"`), is the filter whose frequency response *is* ``|A(e^{iw})|``. A
+real, non-negative response has zero phase exactly, so nothing is fitted and
+nothing is approximated in the band: the whitened spectrum is the causal one,
+bin by bin. Its impulse response is symmetric and, when ``A`` has zeros close
+to the unit circle -- the narrow lines of a detector -- long; it is measured
+from the response itself, like the settling of the band-pass, and applied by
+FFT convolution with real past and future data on each side of the block.
 
-`ZeroPhaseWhitening` is the earlier construction and stays available: applying
-any filter forward and then backward gives magnitude ``|B|^2`` and zero phase,
-so the filter that whitens at zero phase when run in both directions is the
-one whose magnitude response is the square root of ``|A|``. That filter is
-fitted as an AR model of the pseudo-spectrum ``1/|A(w)|`` and returned as a
-`LatticeView`, the form the lattice recursion consumes. The fit is an
-approximation of ``|A|`` at a finite order, and where ``A`` has deep narrow
-zeros the root does not follow them.
+`ZeroPhaseWhitening` is the earlier construction and the worker's default:
+applying any filter forward and then backward gives magnitude ``|B|^2`` and
+zero phase, so the filter that whitens at zero phase when run in both
+directions is the one whose magnitude response is the square root of ``|A|``.
+That filter is fitted as an AR model of the pseudo-spectrum ``1/|A(w)|`` and
+returned as a `LatticeView`, the form the lattice recursion consumes. The fit
+is an approximation of ``|A|`` at a finite order, and where ``A`` has deep
+narrow zeros the root does not follow them.
 """
 from __future__ import annotations
 
