@@ -23,10 +23,10 @@ import numpy as np
 import pandas as pd
 
 from wdf.mock.dataset import (
-    GROUND_TRUTH_COLUMNS,
     _inject_one,
     _write_frames,
     draw_injections,
+    truth_columns,
 )
 
 
@@ -204,7 +204,7 @@ def inject_into_strain(
         rows.append(_inject_one(
             spec, foreground, start_gps, sample_rate, detectors,
             low_frequency_cutoff, f_high, psd_name=None, psd=psd))
-    truth = pd.DataFrame(rows, columns=GROUND_TRUTH_COLUMNS)
+    truth = pd.DataFrame(rows, columns=truth_columns(detectors))
 
     from gwpy.timeseries import TimeSeries
 

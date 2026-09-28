@@ -24,4 +24,5 @@ design/event-candidates
 design/sky-localisation
 design/whitening
 design/warm-up
+design/benchmark
 ```

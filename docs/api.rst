@@ -344,3 +344,15 @@ wdf.mock.real_data
 
 .. automodule:: wdf.mock.real_data
    :members:
+
+wdf.mock.validation
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.mock.validation
+   :members:
+
+wdf.mock.benchmark
+~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.mock.benchmark
+   :members:
