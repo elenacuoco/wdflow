@@ -71,11 +71,18 @@ class array2SeqView(object):
         """
         self.SV.SetStart(start)
 
-        # The view stores single precision, so the array is narrowed once and
-        # handed over as plain floats. Narrowing each sample on its own built a
-        # NumPy scalar per point, which for a block of coefficients cost more
-        # than the transform it was feeding.
-        values = np.asarray(array, dtype=np.float32).tolist()
+        # The view is `SeqView<double>` and keeps every sample in double
+        # precision, so the samples are handed over as they are. Narrowing them
+        # to single precision on the way in adds a rounding noise 2^-24 below
+        # each sample's own size, and that noise is white: in a band the
+        # conditioning has attenuated by more than the single-precision range,
+        # such as the stop band of the band-pass, it becomes the whole content
+        # of the band, and the whitening lifts it back up as though it were the
+        # detector's noise. The array is converted to plain floats once, since
+        # converting each sample on its own builds a NumPy scalar per point,
+        # which for a block of coefficients costs more than the transform it
+        # feeds.
+        values = np.asarray(array, dtype=np.float64).tolist()
         fill_point = self.SV.FillPoint
         for i, value in enumerate(values):
             fill_point(0, i, value)
