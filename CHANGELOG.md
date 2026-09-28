@@ -3,6 +3,47 @@
 Versions follow [semantic versioning](https://semver.org). A release records
 what the software does differently, not how it came to.
 
+## Unreleased
+
+### The noise model is fitted on settled samples
+
+The stretch the autoregressive model is fitted on is read with
+`ARFitContext` seconds of real data on each side (default
+`DEFAULT_AR_FIT_CONTEXT_S`), band-passed whole, and the context is dropped
+(`BandPassDownSampling.discard_edges`). Conditioned alone, the stretch began
+and ended on the band-pass's transient from an assumed boundary; a Burg fit
+estimates mean power, so the model absorbed that transient near the band edge
+and the whitening left that band below white. The context must be at least the
+band-pass's settling length and must be present in the frames; the worker
+refuses a fit stretch the reader did not return whole. The triggers change.
+
+### The whitening can have the response |A|, or be causal
+
+The default is unchanged: the square root fitted and run forward and backward
+(`ZeroPhaseFilter = "root"`), at order `SqrtWhiteningOrder`, by default the
+model's order or 256, whichever is more. Given the same model it whitens bit
+for bit as before; the triggers of a default run move only by the fit on
+settled samples above.
+
+`ZeroPhaseFilter = "magnitude"` selects `MagnitudeWhitening`: the filter whose
+response is the modulus of the prediction-error polynomial, real and so exactly
+zero phase, with the causal whitening's spectrum bin by bin, where the root
+does not follow narrow lines. Its impulse response is measured down to
+`ZeroPhaseResponseFloor` of its peak and applied by FFT convolution with real
+past and future context around each block, which is linear convolution: the
+stream does not depend on the block grid. The whitening from a measured
+spectrum builds the same filter on the frequencies of its own estimate.
+
+`ZeroPhaseFilter = "causal"` selects `CausalWhitening`: the fitted lattice
+filter `A(z)` run forward only, latency zero, the model's phase, output scale
+`sigma` as the magnitude filter's. It needs `WhiteningModel = "burg"`.
+
+The warm-up `preWhite` is lengthened when shorter than the filter's past -- its
+latency for the zero-phase filters, the model's order plus the band-pass's
+settling for the causal one -- and the lookahead defaults to the longer of 20 s
+and the latency; the filter, the warm-up and the latency (`ZeroPhaseLatency`)
+are recorded in the run parameters.
+
 ## 1.3.0 --- 2026-09-18
 
 ### The compiled core comes from PyPI

@@ -69,6 +69,35 @@ def settling_length(sos, sampling, floor=1e-12, limit_s=8.0):
     return int(above[-1]) + 1 if above.size else 1
 
 
+def discard_edges(view, seconds):
+    """A view without `seconds` of samples at each end.
+
+    What a filter run over a stretch in one shot leaves at the stretch's two
+    ends is its own settling, not data: the band-pass started from an assumed
+    boundary rather than from the samples that preceded it. When the stretch
+    was read with real data on each side of the part that is wanted, dropping
+    those sides leaves only samples the filter reached already settled.
+
+    :type view: py4tsa.tsa.SeqView_double_t
+    :param view: the filtered stretch.
+    :type seconds: float
+    :param seconds: seconds dropped at each end.
+    :return: py4tsa.tsa.SeqView_double_t -- the remaining samples, starting at
+        the time of the first one kept, taken from `view`'s own start.
+    :raises ValueError: if nothing would remain.
+    """
+    interval = view.GetSampling()
+    drop = round(float(seconds) / interval)
+    size = view.GetSize()
+    if 2 * drop >= size:
+        raise ValueError(f"dropping {drop} samples at each end of {size} leaves nothing")
+    kept = SV_to_array(view)[drop:size - drop]
+    start = view.GetStart() + drop * interval
+    out = array2SeqView(start, 1.0 / interval, kept.size)
+    out.Fill(start, kept)
+    return out.SV
+
+
 class BandPassDownSampling(object):
     """
     Band-pass with zero phase, then decimate.
@@ -158,9 +187,12 @@ class BandPassDownSampling(object):
         """
         The method for the downsampling the data.
 
-        With `estimation=True` the block is complete in itself -- it is the
-        stretch the autoregressive fit is handed -- so it is band-passed with
-        `sosfiltfilt` and decimated in one shot.
+        With `estimation=True` the block is complete in itself, so it is
+        band-passed with `sosfiltfilt` and decimated in one shot. Its two ends
+        then carry the filter's settling from an odd extension of a few dozen
+        samples rather than from real data; a caller that needs settled samples
+        reads real data on each side and drops it with `discard_edges`, as the
+        worker does for the stretch the noise model is fitted on.
 
         Otherwise a block is filtered only once `padlen` samples of what follows
         it have been read. `sosfiltfilt` is then applied to the block together

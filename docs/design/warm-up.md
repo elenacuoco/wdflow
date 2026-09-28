@@ -59,10 +59,14 @@ With the defaults this comes to a few seconds at the head of each segment.
 
 Offline, yes, and nothing about the data itself is bad -- it is discarded
 because the filters have not settled *going forward*, not because the strain is
-unusable. Reading the segment backward, or filtering it as one array with
-`sosfiltfilt`, would condition those seconds correctly; this is what the
-`estimation=True` path already does for the learning stretch, which is complete
-in itself and needs no warm-up.
+unusable. Filtering it as one array with `sosfiltfilt` conditions a stretch
+correctly everywhere except at the stretch's own two ends, where the filter
+starts from an assumed boundary; so those seconds could be recovered by reading
+real data before them and dropping it. That is what the worker does for the
+stretch the noise model is fitted on: it reads `ARFitContext` seconds of real
+data on each side, conditions the whole with the `estimation=True` path, and
+drops the context with `discard_edges`. A stretch conditioned alone would carry
+the filter's edge transient at both ends, and the fit would take it for noise.
 
 Recovering them is not currently done, for two reasons worth stating plainly.
 The seconds recovered are a negligible fraction of any real observing segment,

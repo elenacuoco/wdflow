@@ -29,16 +29,31 @@ from wdf.observers.ParameterEstimationObserver import ParameterEstimation
 from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
+                                                discard_edges,
                                                 read_conditioned)
 from wdf.config.Parameters import Parameters, window_schedule
 from wdf.processes.wdf import wdf
-from wdf.processes.Whitening import Whitening
+from wdf.processes.Whitening import CausalWhitening, Whitening
 from wdf.processes.zero_phase_whitening import (
+    DEFAULT_RESPONSE_FLOOR,
     DEFAULT_SQRT_ORDER,
+    MagnitudeWhitening,
     ZeroPhaseWhitening,
 )
 
-DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0 
+DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0
+#: Seconds of real data read on each side of the fit stretch and dropped after
+#: the band-pass, so that the model is fitted on samples the filter reached
+#: settled. It must be at least the band-pass's settling length, which is
+#: checked; the default is several settling lengths of the default filter.
+DEFAULT_AR_FIT_CONTEXT_S = 20.0
+#: The whitening filters the worker can run: "root", the default, is
+#: `ZeroPhaseWhitening`, the fitted square root run forward and backward;
+#: "magnitude" is `MagnitudeWhitening`, the response ``|A|`` itself; "causal" is
+#: `CausalWhitening`, the fitted lattice filter run forward only, at zero
+#: latency and with ``A``'s phase.
+ZERO_PHASE_FILTERS = ("root", "magnitude", "causal")
+DEFAULT_ZERO_PHASE_FILTER = "root"
 import logging
 import os
 
@@ -72,11 +87,25 @@ class wdfUnitDSWorker(object):
         conditioned by the estimation front end -- the same stretch whichever
         way the filter is then fitted, so that the two are comparable.
 
+        The band-pass run over a stretch in one shot starts and ends on an
+        assumed boundary, and its settling there is a transient of the filter
+        at the band edges, where the conditioned data are weakest. A Burg fit
+        estimates mean power, so it absorbs that transient into the model and
+        over-estimates the spectrum near the band edge; the whitening built
+        from the model then leaves that band below white. The stretch is
+        therefore read with `ARFitContext` seconds of real data on each side,
+        conditioned whole, and those sides are dropped: every sample fitted is
+        one the filter reached with real data behind it and ahead of it.
+
         :type gpsStart: float
         :param gpsStart: start of the segment.
         :type gpsEnd: float
         :param gpsEnd: end of the segment.
-        :return: py4tsa.tsa.SeqView_double_t -- the conditioned stretch.
+        :return: py4tsa.tsa.SeqView_double_t -- the conditioned stretch,
+            `learn` seconds, labelled with the time of its first sample.
+        :raises ValueError: if `ARFitContext` is shorter than the band-pass's
+            settling length, or the frames do not return the whole stretch
+            with its context.
         """
         offset = getattr(self.par, "AREstimationOffset",
                          DEFAULT_AR_ESTIMATION_OFFSET_S)
@@ -85,10 +114,30 @@ class wdfUnitDSWorker(object):
         else:
             gpsE = gpsEnd - self.learn
 
-        stream = FrameIChannel(self.par.file, self.par.channel, self.learn, gpsE)
+        front = BandPassDownSampling(self.par, estimation=True)
+        context = float(getattr(self.par, "ARFitContext", DEFAULT_AR_FIT_CONTEXT_S))
+        if context * front.sampling < front.padlen:
+            raise ValueError(
+                f"ARFitContext is {context} s, shorter than the band-pass's "
+                f"settling length of {front.padlen / front.sampling:.3f} s: the "
+                f"fitted stretch would still hold the filter's edge transient")
+        self.par.ARFitContext = context
+
+        first, length = gpsE - context, self.learn + 2.0 * context
+        stream = FrameIChannel(self.par.file, self.par.channel, length, first)
         raw = SV()
         stream.GetData(raw)
-        return BandPassDownSampling(self.par, estimation=True).Process(raw)
+        # The context is only context if it is real data at the times asked
+        # for; a reader that returns a shifted or short stretch would put the
+        # edge transient back inside the fitted samples.
+        expected = round(length / raw.GetSampling())
+        if (abs(raw.GetStart() - first) > 0.5 * raw.GetSampling()
+                or raw.GetSize() != expected):
+            raise ValueError(
+                f"asked for {length} s from GPS {first} for the fit stretch and "
+                f"its context, got {raw.GetSize()} samples from GPS "
+                f"{raw.GetStart()}")
+        return discard_edges(front.Process(raw), context)
 
     def segmentProcess(self, segment, wavThresh=WaveletThreshold.block):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
@@ -112,7 +161,17 @@ class wdfUnitDSWorker(object):
 
         AR parameters are estimated from `Parameters.learn` seconds of data taken
         `Parameters.AREstimationOffset` seconds after the segment start (default
-        `DEFAULT_AR_ESTIMATION_OFFSET_S`). The offset skips the beginning of a
+        `DEFAULT_AR_ESTIMATION_OFFSET_S`), read with `Parameters.ARFitContext`
+        seconds of real data on each side that the band-pass settles over and
+        that are then dropped (default `DEFAULT_AR_FIT_CONTEXT_S`); the frames
+        must hold that context. The whitening is the filter
+        `Parameters.ZeroPhaseFilter` names (`ZERO_PHASE_FILTERS`, default
+        `DEFAULT_ZERO_PHASE_FILTER`): the square root run both ways at order
+        `Parameters.SqrtWhiteningOrder`, the response ``|A|`` kept down to
+        `Parameters.ZeroPhaseResponseFloor` of its peak, or the causal lattice
+        filter. The warm-up `Parameters.preWhite` is lengthened when it is
+        shorter than the filter's past: its latency for the zero-phase filters,
+        the model's order and the band-pass's settling for the causal one. What was used is recorded in the run parameters. The offset skips the beginning of a
         segment, where noise following lock acquisition can still be settling and
         would bias the noise model; set it to 0 for data known to be in science
         mode throughout. When the segment is too short to hold both the offset and
@@ -160,8 +219,23 @@ class wdfUnitDSWorker(object):
             self.par.sigma = whiten.GetSigma()
             logging.info("Estimated sigma= %s" % self.par.sigma)
 
-            # Coefficients of the square-root model the zero-phase whitening
-            # runs in both directions (see wdf.processes.zero_phase_whitening).
+            # Which filter whitens the stream. "root" is the square-root model
+            # run forward and backward, which approximates |A| at a finite
+            # order; "magnitude" has the response |A| itself, so its whitened
+            # spectrum is the causal whitening's; "causal" is the lattice filter
+            # A(z) run forward only, at zero latency and with A's phase.
+            zero_phase = str(getattr(self.par, "ZeroPhaseFilter",
+                                     DEFAULT_ZERO_PHASE_FILTER)).lower()
+            if zero_phase not in ZERO_PHASE_FILTERS:
+                raise ValueError(f"ZeroPhaseFilter is {zero_phase!r}; expected one "
+                                 f"of {ZERO_PHASE_FILTERS}")
+            self.par.ZeroPhaseFilter = zero_phase
+            floor = float(getattr(self.par, "ZeroPhaseResponseFloor",
+                                  DEFAULT_RESPONSE_FLOOR))
+            self.par.ZeroPhaseResponseFloor = floor
+
+            # Coefficients of the square-root model the "root" filter runs in
+            # both directions (see wdf.processes.zero_phase_whitening).
             # Unset means the model's own order: a lower one costs accuracy
             # twice over, since the response is the square of the filter's
             # magnitude.
@@ -205,22 +279,55 @@ class wdfUnitDSWorker(object):
             data_ds = SV()
             dataw = SV()
             Noutdata = int(self.par.resampling)
+            band = (self.par.LowFrequencyCut, 0.5 * self.par.resampling)
+            if model == "spectrum" and zero_phase == "causal":
+                raise ValueError("ZeroPhaseFilter 'causal' runs the fitted "
+                                 "autoregressive model; it needs WhiteningModel "
+                                 "'burg'")
             if model == "spectrum":
                 learn = self._learn_stretch(gpsStart, gpsEnd)
-                whitening = ZeroPhaseWhitening.from_spectrum(
-                    np.array([learn.GetY(0, i) for i in range(learn.GetSize())]),
-                    self.par.resampling, Noutdata, 0, order=sqrt_order,
-                    band=(self.par.LowFrequencyCut, 0.5 * self.par.resampling))
+                samples = np.array([learn.GetY(0, i) for i in range(learn.GetSize())])
                 del learn
+                if zero_phase == "magnitude":
+                    whitening = MagnitudeWhitening.from_spectrum(
+                        samples, self.par.resampling, Noutdata, 0, band=band)
+                else:
+                    whitening = ZeroPhaseWhitening.from_spectrum(
+                        samples, self.par.resampling, Noutdata, 0,
+                        order=sqrt_order, band=band)
                 # The scale the search thresholds on is the scale of the stream
                 # it is given, and that stream is this filter's output.
                 self.par.sigma = whitening.sigma
+            elif zero_phase == "magnitude":
+                whitening = MagnitudeWhitening(ar, Noutdata, 0, floor=floor)
+            elif zero_phase == "causal":
+                whitening = CausalWhitening(whiten, Noutdata, 0)
             else:
                 whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order)
             self.par.sigmaWhitened = whitening.sigma
-            logging.info("Whitening model: %s" % model)
-            logging.info("Zero-phase whitening, square-root order %s, "
-                         "latency %s samples" % (sqrt_order, whitening.latency))
+            self.par.ZeroPhaseLatency = int(whitening.latency)
+            logging.info(f"Whitening model: {model}, whitening filter: {zero_phase}")
+            root = f", square-root order {sqrt_order}" if zero_phase == "root" else ""
+            logging.info(f"Whitening latency {whitening.latency} samples "
+                         f"({whitening.latency / self.par.resampling:.3f} s){root}")
+
+            # The warm-up whitens data that is then discarded, and it has to
+            # last until the filter's past is real data: a zero-phase output
+            # sample depends on `latency` samples before it, zeros until the
+            # stream has supplied them; a causal one on the model's `ARorder`
+            # samples before it, which have to be conditioned samples the
+            # band-pass reached settled. `preWhite` is the floor; a longer past
+            # lengthens the warm-up rather than emitting a start-up transient.
+            if zero_phase == "causal":
+                past_s = (self.par.ARorder / self.par.resampling
+                          + ds.padlen / ds.sampling)
+            else:
+                past_s = whitening.latency / self.par.resampling
+            pre_white = max(int(self.par.preWhite), int(np.ceil(past_s)))
+            if pre_white > int(self.par.preWhite):
+                logging.info(f"Warm-up lengthened from {self.par.preWhite} to "
+                             f"{pre_white} s to cover the whitening's past")
+            self.par.preWhite = pre_white
             for i in range(100):
                 try:
                     streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
@@ -238,19 +345,20 @@ class wdfUnitDSWorker(object):
                 whitening.Process(data_ds,dataw)
                
                 
-            # Fixed, len-independent lookahead window for whitening.
-            # DoubleWhitening's backward pass needs a buffer of real *future*
-            # data to settle its lattice-filter state before it can produce a
-            # good backward-pass estimate for the current output chunk (see
-            # DoubleWhitening::GetData in p4TSA). That lookahead ("ExtraSize")
-            # is a FIXED size, decoupled from par.len (an I/O batching/perf
-            # knob), mirroring BandPassDownSampling's own padlen convention.
-            # Default: 20 seconds of resampled-rate data, large enough for
-            # AR orders up to a few thousand to settle. Set
-            # parameters.WhiteningExtraSize explicitly to override, or to 0
-            # to make the lookahead scale with par.len instead (legacy
-            # behavior).
-            extra_size = int(getattr(self.par, "WhiteningExtraSize", 20 * self.par.resampling))
+            # Fixed, len-independent lookahead window for whitening: real
+            # *future* data buffered beyond the output block. The "root"
+            # filter's backward pass settles its lattice state over it (see
+            # DoubleWhitening::GetData in p4TSA); the "magnitude" filter reads
+            # its support of it. It is a FIXED size, decoupled from par.len
+            # (an I/O batching/perf knob), mirroring BandPassDownSampling's
+            # own padlen convention. Default: 20 seconds of resampled-rate
+            # data or the filter's latency, whichever is longer, so that the
+            # future a sample depends on is always read rather than assumed.
+            # Set parameters.WhiteningExtraSize explicitly to override; the
+            # filter refuses a positive value below its latency. 0 makes the
+            # lookahead scale with par.len instead (legacy behavior).
+            extra_size = int(getattr(self.par, "WhiteningExtraSize",
+                                     max(20 * self.par.resampling, whitening.latency)))
             self.par.WhiteningExtraSize = extra_size
 
             # The chain reads ahead of what it emits, and the segment has to end

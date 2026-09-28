@@ -30,7 +30,40 @@ the phase is `arg A`, which varies with frequency, so a transient comes out smea
 by `√S(f)`: where the front-end band-pass has emptied the spectrum, `|A|²` is
 enormous and the output is dominated by a band the search does not analyse.
 
-**The filter that satisfies both** is therefore the one with
+**The filter that satisfies both** has the response `|A(f)|` itself: real and
+non-negative, so zero phase, and of the same modulus as the causal whitening, so
+the whitened spectrum is the causal one bin by bin. Two constructions reach it.
+
+### The magnitude filter (`ZeroPhaseFilter = "magnitude"`)
+
+`MagnitudeWhitening` applies `|A|` directly. Its impulse response
+
+    h[n] = IFFT{ |A(f)| }[n]
+
+is real and even. `|A|` is not a polynomial, so `h` is not finite: near a zero of
+`A` close to the unit circle -- a narrow line -- `|A|` has a corner rather than a
+smooth minimum, and the coefficients of a corner fall as the inverse square of
+the lag. The support `K` is therefore measured on `h`, as the settling of the
+band-pass is measured on its impulse response: the last lag at which `|h|` is
+above `ZeroPhaseResponseFloor` of its peak. A truncation at a few times the
+model's order, which a smooth spectrum would allow, leaves a narrow line far
+above white. The taps kept, `-K … K`, are tapered at their ends and are exactly
+even.
+
+The filter is applied by FFT convolution over each output block together with
+`K` samples of the real stream before it and `K` after it. That is linear
+convolution with a fixed filter, so a stream whitened block by block is the
+stream whitened at once, and no output sample depends on where a block began.
+Its output has standard deviation `σ`, the causal whitening's.
+
+With `WhiteningModel = "spectrum"` the response is `1/√S` of the measured
+spectrum on the frequencies of its own estimate, which resolves `fs/nperseg`
+and nothing finer; the filter is then `nperseg` taps long.
+
+### The square root (`ZeroPhaseFilter = "root"`, default)
+
+**Running any filter B forward and then backward** gives `|B|²` at zero phase,
+so the filter that whitens by `|A|` both ways is the one with
 
     |B(f)|² = |A(f)|
 
@@ -45,33 +78,37 @@ gives `|A₁ᐟ₂|² ≈ e|A|`. Forward-backward with `A₁ᐟ₂` then yields
 
     y = e · |A| · x
 
-flat, zero phase, with standard deviation `e·σ`.
+flat, zero phase, with standard deviation `e·σ`. The fit is an approximation of
+`|A|` at order `q`, and where `A` has deep narrow zeros it does not follow them:
+the error is paid twice, since the response is the square of the fitted
+magnitude.
 
 ## Latency
 
-Zero phase and strict causality are incompatible — a zero-phase filter has a
-symmetric impulse response. What the construction gives instead is a **fixed
-latency**, and it is exact rather than approximate: `A₁ᐟ₂` is an FIR polynomial of
-order `q`, so the backward output at sample `i` is
+Zero phase and strict causality are incompatible -- a zero-phase filter has a
+symmetric impulse response. What both constructions give instead is a **fixed
+latency**, known before the filter runs:
 
-    z[i] = Σₖ₌₀..q aₖ · y₁[i+k]
+- the magnitude filter reads exactly `K` future samples, its measured support;
+- the square root is an FIR polynomial of order `q`, so its backward output at
+  sample `i` is `z[i] = Σₖ₌₀..q aₖ · y₁[i+k]`, a finite sum over `q` future
+  samples.
 
-a finite sum over exactly `q` future samples. Nothing beyond `q` changes the
-answer, so the latency is `q / fs` seconds and is known before the filter runs.
-
-The order can be small because `|A|` is far smoother than `|A|²`: the square
-root needs only enough order to follow that smoother magnitude, not the order of
-the model it comes from. `DEFAULT_SQRT_ORDER` is what the pipeline uses.
+The same length is needed in the past, which is why the warm-up `preWhite` is
+lengthened to the filter's latency when it is shorter, and why the lookahead
+`WhiteningExtraSize` defaults to the longer of twenty seconds and the latency.
+For the magnitude filter the latency is set by the narrowest line the model
+holds, and the floor trades the residual left at that line against it.
 
 ## What runs where
 
 | Step | When | Cost |
 |---|---|---|
 | Burg fit of `A` | once per segment | seconds |
-| FFT/IFFT + Levinson for `A₁ᐟ₂` | once per segment | negligible beside the fit |
-| Lattice recursion, both directions | per sample, streaming | — |
-
-No transform ever runs inside the detection loop.
+| FFT of `A`, IFFT of `|A|`, support measured | once per segment | negligible beside the fit |
+| FFT convolution of each block with its context (magnitude) | per block, streaming | one transform of block plus twice the support |
+| Levinson for `A₁ᐟ₂` (root) | once per segment | negligible beside the fit |
+| Lattice recursion, both directions (root) | per sample, streaming | — |
 
 ## Storage conventions
 
@@ -85,15 +122,27 @@ Two off-by-one conventions in the p4TSA containers, both easy to get wrong:
 
 ## Using it
 
-`wdf.processes.zero_phase_whitening.ZeroPhaseWhitening` wraps the whole thing and is
-what `wdfUnitDSWorker` uses; `SqrtWhiteningOrder` sets `q`. See
-`examples/zero_phase_whitening_example.py` for a standalone run.
+`wdf.processes.zero_phase_whitening.ZeroPhaseWhitening` is what `wdfUnitDSWorker`
+uses by default (`ZeroPhaseFilter = "root"`), with `SqrtWhiteningOrder` setting
+`q`, by default the model's order or 256, whichever is more.
+`ZeroPhaseFilter = "magnitude"` selects
+`wdf.processes.zero_phase_whitening.MagnitudeWhitening` instead, with
+`ZeroPhaseResponseFloor` setting the floor its support is measured at.
+`ZeroPhaseFilter = "causal"` selects `wdf.processes.Whitening.CausalWhitening`,
+the fitted lattice filter run forward only: latency zero, the model's phase, and
+a warm-up lengthened to the model's order plus the band-pass's settling, which
+is the past its first output needs. The three share one interface. What ran, and its
+latency (`ZeroPhaseLatency`), is recorded in the run parameters. See
+`examples/zero_phase_whitening_example.py` for a standalone run of the square
+root.
 
 ## Verifying a change
 
-Any change to the conditioning should be checked against all four:
+Any change to the conditioning should be checked against all five:
 
 - `std / σ ≈ 1`
 - kurtosis ≈ 3
 - spectral flatness ≈ 1 across the analysis band
 - zero lag between an injection and its reconstruction
+- the whitened spectrum against the causal whitening's, bin by bin at the
+  resolution of the narrowest line, not only its average over a band

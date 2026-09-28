@@ -1,17 +1,28 @@
-"""Zero-phase AR whitening coefficients.
+"""Zero-phase AR whitening.
 
 .. moduleauthor:: Elena Cuoco <elena.cuoco@unibo.it>
 
 The lattice filter `ArBurgEstimator` fits whitens with magnitude ``|A|`` but
-carries ``A``'s phase, which displaces the reconstructed waveform. Applying any
-filter forward and then backward gives magnitude ``|B|^2`` and zero phase, so
-the filter that whitens at zero phase when run in both directions is the one
-whose magnitude response is the square root of ``|A|``.
+carries ``A``'s phase, which displaces the reconstructed waveform. Two filters
+here remove the same colour at zero phase.
 
-That filter is fitted here as an AR model of the pseudo-spectrum ``1/|A(w)|``
-and returned as a `LatticeView`, the same form the existing whitening already
-consumes: the online filtering stays a time-domain lattice recursion, and the
-transforms below run once per segment, next to the Burg fit itself.
+`MagnitudeWhitening`, which the worker runs when asked for it (`ZeroPhaseFilter
+= "magnitude"`), is the filter whose frequency response *is* ``|A(e^{iw})|``. A
+real, non-negative response has zero phase exactly, so nothing is fitted and
+nothing is approximated in the band: the whitened spectrum is the causal one,
+bin by bin. Its impulse response is symmetric and, when ``A`` has zeros close
+to the unit circle -- the narrow lines of a detector -- long; it is measured
+from the response itself, like the settling of the band-pass, and applied by
+FFT convolution with real past and future data on each side of the block.
+
+`ZeroPhaseWhitening` is the earlier construction and the worker's default:
+applying any filter forward and then backward gives magnitude ``|B|^2`` and
+zero phase, so the filter that whitens at zero phase when run in both
+directions is the one whose magnitude response is the square root of ``|A|``.
+That filter is fitted as an AR model of the pseudo-spectrum ``1/|A(w)|`` and
+returned as a `LatticeView`, the form the lattice recursion consumes. The fit
+is an approximation of ``|A|`` at a finite order, and where ``A`` has deep
+narrow zeros the root does not follow them.
 """
 from __future__ import annotations
 
@@ -422,12 +433,13 @@ class ZeroPhaseWhitening(object):
         self.filter.Output(dataw)
 
     def DataNeeded(self):
-        """How many more input samples are needed before output is available.
+        """Buffered samples beyond what the next output block needs.
 
-        Zero or less means a whitened block can be read out without feeding
-        anything in, which is what tells a drain when the buffer is empty.
+        `DoubleWhitening::GetDataNeeded`: the samples buffered minus the output
+        size plus the lookahead. Zero or more means a whitened block can be read
+        out without feeding anything in; negative means it cannot.
 
-        :return: int -- samples still needed.
+        :return: int
         """
         return int(self.filter.GetDataNeeded())
 
@@ -447,3 +459,394 @@ class ZeroPhaseWhitening(object):
                 f"block join. Set WhiteningExtraSize to at least "
                 f"SqrtWhiteningOrder.")
         self.filter.SetOutputSize(output_size, extra_size)
+
+
+#: Fraction of the impulse response's peak below which its tail is spent. The
+#: tail beyond this is what the truncation removes from the response, and it
+#: matters where the conditioned data are loud: at a narrow line the whitened
+#: output is the line's amplitude times the response's error there, so the
+#: floor is set by the dynamic range of the lines, not by what looks negligible
+#: in the response alone. Near a zero of ``A`` on the unit circle ``|A|``
+#: has a corner rather than a smooth minimum, and the Fourier coefficients of
+#: a corner fall as the inverse square of the lag: the support grows about as the
+#: inverse square root of the floor, and the error left at the line falls about
+#: as the inverse of the support. The floor is therefore a trade between the
+#: residual of the narrowest lines and the latency, which is the support; it
+#: is an empirical choice, to be validated on the detector's own lines.
+DEFAULT_RESPONSE_FLOOR = 1e-8
+#: FFT length on which ``|A|`` is sampled to obtain its impulse response. The
+#: response found is one period of the true one; the support is refused when it
+#: reaches a quarter of this length, so the period is never what ends it.
+DEFAULT_RESPONSE_GRID = 1 << 23
+#: Fraction of the kept support over which its two ends are tapered, so that
+#: truncating a tail already below the floor does not leave a step.
+RESPONSE_TAPER = 0.1
+
+
+def prediction_error_polynomial(ar):
+    """The prediction-error polynomial ``A`` of an `ArBurgEstimator` model.
+
+    :type ar: numpy.ndarray
+    :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
+        scale in ``ar[0]`` and the prediction coefficients in ``ar[1:]``.
+    :return: numpy.ndarray -- ``[1, -ar[1], ..., -ar[p]]``, the taps of
+        ``A(z) = 1 - sum_k ar[k] z^-k``.
+    :raises ValueError: if `ar` holds no prediction coefficient.
+    """
+    ar = np.asarray(ar, dtype=float).reshape(-1)
+    if ar.size < 2:
+        raise ValueError("ar must hold a noise scale and at least one coefficient")
+    return np.concatenate([[1.0], -ar[1:]])
+
+
+def response_support(impulse, floor=DEFAULT_RESPONSE_FLOOR):
+    """Half-length of a symmetric impulse response, measured on the response.
+
+    The length is not read off the model's order: a zero of ``A`` at radius
+    ``r`` from the origin contributes a term decaying as ``r^n``, so a zero
+    close to the unit circle -- a narrow line -- makes ``|A|`` ring for many
+    times the order. The support is the last lag at which the response is still
+    above `floor` of its peak.
+
+    :type impulse: numpy.ndarray
+    :param impulse: one period of a real, even impulse response, lag zero
+        first, as `numpy.fft.irfft` of a real response returns it.
+    :type floor: float
+    :param floor: fraction of the peak below which the response is spent.
+    :return: int -- the support ``K`` in samples, at least 1; the taps kept are
+        the lags ``-K ... K``.
+    :raises ValueError: if the response has not decayed below `floor` within a
+        quarter of the period, where the period would start to fold its own
+        tail back onto the lags kept.
+    """
+    impulse = np.asarray(impulse, dtype=float).reshape(-1)
+    half = np.abs(impulse[:impulse.size // 2 + 1])
+    above = np.flatnonzero(half > float(floor) * half.max())
+    support = int(above[-1]) if above.size else 0
+    limit = impulse.size // 4
+    if support >= limit:
+        raise ValueError(
+            f"the impulse response is still above {floor:g} of its peak at "
+            f"lag {limit}, a quarter of the {impulse.size}-point grid it was "
+            f"sampled on; use a longer grid or a higher floor")
+    return max(support, 1)
+
+
+def symmetric_taps(response, floor=DEFAULT_RESPONSE_FLOOR, support=None):
+    """The symmetric FIR filter whose frequency response is `response`.
+
+    A real, non-negative response has an even impulse response and zero phase.
+    It is taken to the support `response_support` measures, or to the one
+    stated, and its two ends are tapered over `RESPONSE_TAPER` of that support.
+
+    :type response: numpy.ndarray
+    :param response: the response on the non-negative frequencies of an FFT
+        grid, ``grid // 2 + 1`` points from zero to Nyquist.
+    :type floor: float
+    :param floor: fraction of the peak below which the response is spent.
+    :type support: int or None
+    :param support: half-length in samples; None to measure it.
+    :return: numpy.ndarray -- ``2 K + 1`` taps, lag zero at index ``K``.
+    :raises ValueError: if the stated support does not fit in the grid.
+    """
+    from scipy.signal.windows import tukey
+
+    response = np.asarray(response, dtype=float).reshape(-1)
+    grid = 2 * (response.size - 1)
+    impulse = np.fft.irfft(response, grid)
+    if support is None:
+        support = response_support(impulse, floor)
+    support = int(support)
+    if not 0 < support < grid // 2:
+        raise ValueError(f"support {support} does not fit in a {grid}-point grid")
+    taps = np.concatenate([impulse[grid - support:], impulse[:support + 1]])
+    taps = taps * tukey(2 * support + 1, RESPONSE_TAPER)
+    # Even to the last bit, so that the response is real and the phase zero
+    # exactly, not to the rounding of the inverse transform and the taper.
+    return 0.5 * (taps + taps[::-1])
+
+
+def magnitude_taps(ar, floor=DEFAULT_RESPONSE_FLOOR, grid=DEFAULT_RESPONSE_GRID,
+                   support=None):
+    """The zero-phase filter with response ``|A(e^{iw})|`` of an AR model.
+
+    Applied to data whose spectrum the model describes, its output has the
+    spectrum of the causal whitening ``A(z) x`` -- the same modulus -- and the
+    same variance, ``ar[0]**2``, while leaving every transient at the time the
+    data put it.
+
+    :type ar: numpy.ndarray
+    :param ar: AR coefficients as `ArBurgEstimator` holds them.
+    :type floor: float
+    :param floor: fraction of the peak below which the impulse response is spent.
+    :type grid: int
+    :param grid: FFT length ``|A|`` is sampled on.
+    :type support: int or None
+    :param support: half-length in samples; None to measure it.
+    :return: numpy.ndarray -- ``2 K + 1`` symmetric taps, lag zero at ``K``.
+    :raises ValueError: if the grid is shorter than twice the model, or the
+        response does not decay within it.
+    """
+    polynomial = prediction_error_polynomial(ar)
+    if grid < 2 * polynomial.size:
+        raise ValueError(f"grid {grid} is too short for an order "
+                         f"{polynomial.size - 1} model")
+    return symmetric_taps(np.abs(np.fft.rfft(polynomial, int(grid))), floor, support)
+
+
+def magnitude_taps_from_spectrum(freq, psd, band=None):
+    """The zero-phase filter with response ``1 / sqrt(S)`` of a measured spectrum.
+
+    The same filter as `magnitude_taps`, with the measured spectrum in place of
+    the model's ``ar[0]**2 / |A|**2``. The response is scaled so that noise
+    with spectrum `psd` comes out white with unit variance.
+
+    A spectrum estimated on segments of ``n`` samples resolves ``fs / n`` and
+    nothing finer, so the filter it defines is the one whose transform on
+    those ``n`` points is the response: ``n`` taps, the support half a
+    segment. Nothing is interpolated -- an interpolated estimate has a corner
+    at every bin, and its impulse response the slow tail of a corner -- and
+    nothing is measured, since the support is set by the estimate itself.
+
+    :type freq: numpy.ndarray
+    :param freq: frequencies of `psd`, hertz, the non-negative frequencies of
+        an FFT of even length, zero to Nyquist, as `scipy.signal.welch`
+        returns them.
+    :type psd: numpy.ndarray
+    :param psd: one-sided power spectral density at those frequencies.
+    :type band: tuple or None
+    :param band: ``(low, high)`` in hertz outside which the spectrum is held
+        flat (`held_outside`); the whole spectrum when None.
+    :return: numpy.ndarray -- ``2 K + 1`` symmetric taps, lag zero at ``K``,
+        with ``K`` one less than half the segment.
+    :raises ValueError: if the spectrum is not positive where it is used, or
+        its frequencies are not such a grid.
+    """
+    freq = np.asarray(freq, dtype=float).reshape(-1)
+    psd = np.asarray(psd, dtype=float).reshape(-1)
+    if freq.size != psd.size:
+        raise ValueError("the spectrum and its frequencies differ in length")
+    if freq.size < 3 or freq[0] != 0.0 or not np.allclose(np.diff(freq), freq[1]):
+        raise ValueError("the spectrum is not on the frequencies of an FFT, "
+                         "zero to Nyquist")
+    if band is not None:
+        psd = held_outside(freq, psd, band)
+    if np.any(psd <= 0.0):
+        raise ValueError("the spectrum is not positive everywhere it is used")
+    sampling = 2.0 * freq[-1]
+    # White noise of unit variance has the one-sided density 2 / sampling.
+    response = np.sqrt(2.0 / (sampling * psd))
+    return symmetric_taps(response, support=freq.size - 2)
+
+
+class MagnitudeWhitening:
+    """Whiten a stream by the modulus of its prediction-error filter.
+
+    The response is ``|A(e^{iw})|``, real and non-negative, so the phase is
+    zero at every frequency and the whitened spectrum is the causal
+    whitening's, bin by bin: the two differ in phase and in nothing else. The
+    impulse response is the symmetric `magnitude_taps`, applied by FFT
+    convolution over each output block together with ``K`` samples of the real
+    stream before it and ``K`` after it, ``K`` the support. That is linear
+    convolution with a fixed filter, so the output does not depend on where the
+    blocks begin: a stream whitened block by block is the stream whitened at
+    once.
+
+    The interface is `ZeroPhaseWhitening`'s, so the worker drives either the
+    same way. The output of a block is ready once ``output_size +
+    extra_size`` samples are buffered; with ``extra_size`` at least ``K``, all
+    of its future is real data. The past is the ``K`` input samples preceding
+    the block, zeros before the stream has supplied them, so the first ``K``
+    samples a stream emits are not whitened data and are to be discarded as
+    the warm-up is. The latency is ``K`` samples.
+    """
+
+    def __init__(self, ar, output_size, extra_size=0, floor=DEFAULT_RESPONSE_FLOOR,
+                 grid=DEFAULT_RESPONSE_GRID, support=None):
+        """
+        :type ar: numpy.ndarray
+        :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
+            scale in ``ar[0]`` and the prediction coefficients in ``ar[1:]``.
+        :type output_size: int
+        :param output_size: whitened samples produced per `Output` call.
+        :type extra_size: int
+        :param extra_size: samples buffered beyond the output block before it
+            is produced. Zero, or at least the support; a positive value below
+            the support is refused, since it would replace real future data by
+            zeros at every block join.
+        :type floor: float
+        :param floor: fraction of the peak below which the impulse response
+            is spent (`response_support`).
+        :type grid: int
+        :param grid: FFT length ``|A|`` is sampled on.
+        :type support: int or None
+        :param support: half-length of the filter in samples; None to measure it.
+        :raises ValueError: if `extra_size` is positive and below the support,
+            or the response does not decay within the grid.
+        """
+        taps = magnitude_taps(ar, floor=floor, grid=grid, support=support)
+        self._install(taps, float(np.asarray(ar, dtype=float).reshape(-1)[0]),
+                      output_size, extra_size)
+
+    def _install(self, taps, sigma, output_size, extra_size):
+        """Hold the filter and an empty stream.
+
+        Shared by the two ways of obtaining the response -- from an
+        autoregressive model and from a measured spectrum -- so that the two
+        differ in the response and in nothing else.
+        """
+        self.taps = np.asarray(taps, dtype=float)
+        self.support = (self.taps.size - 1) // 2
+        self.sigma = float(sigma)
+        self._check_lookahead(extra_size)
+        self.output_size, self.extra_size = int(output_size), int(extra_size)
+        self._buffer = np.zeros(0)
+        self._history = np.zeros(self.support)
+        self._start = None
+        self._interval = None
+
+    @classmethod
+    def from_spectrum(cls, samples, sampling, output_size, extra_size=0, band=None,
+                      nperseg=8192, average="median"):
+        """Build the whitening from the spectrum of a stretch, without Burg.
+
+        The spectrum is measured on the stretch, held flat outside `band`, and
+        the filter is `magnitude_taps_from_spectrum`, whose support is half of
+        `nperseg`; the noise scale is then read on that same stretch, whitened,
+        as its robust scale (median absolute value over 0.6745), the statistic
+        every stage downstream uses.
+
+        :type samples: numpy.ndarray
+        :param samples: the conditioned stretch to measure.
+        :type sampling: float
+        :param sampling: its sampling frequency, hertz.
+        :type output_size: int
+        :param output_size: whitened samples produced per `Output` call.
+        :type extra_size: int
+        :param extra_size: samples buffered beyond the output block.
+        :type band: tuple or None
+        :param band: ``(low, high)`` outside which the spectrum is held flat.
+        :type nperseg: int
+        :param nperseg: segment length of the spectral estimate, even; it is
+            also the length of the filter.
+        :type average: str
+        :param average: how the periodograms are combined, "median" or "mean".
+        :return: MagnitudeWhitening
+        :raises ValueError: if the stretch is shorter than one segment, or
+            than the filter it would be read through.
+        """
+        from scipy.signal import fftconvolve, welch
+
+        samples = np.asarray(samples, dtype=float).reshape(-1)
+        if samples.size < nperseg:
+            raise ValueError(
+                f"the stretch holds {samples.size} samples, fewer than the "
+                f"{nperseg} one segment of the spectral estimate needs")
+        freq, psd = welch(samples, fs=float(sampling), nperseg=int(nperseg),
+                          average=average)
+        taps = magnitude_taps_from_spectrum(freq, psd, band=band)
+        if samples.size <= taps.size:
+            raise ValueError(
+                f"the stretch holds {samples.size} samples, no more than the "
+                f"{taps.size} taps of the filter it is whitened through")
+        whitened = fftconvolve(samples, taps, mode="valid")
+        self = cls.__new__(cls)
+        self._install(taps, float(np.median(np.abs(whitened)) / 0.6745),
+                      output_size, extra_size)
+        return self
+
+    @property
+    def latency(self):
+        """Samples of future data an output sample depends on: the support."""
+        return self.support
+
+    def _check_lookahead(self, extra_size):
+        """Refuse a lookahead that would put zeros in place of the future."""
+        if 0 < extra_size < self.support:
+            raise ValueError(
+                f"the lookahead is {extra_size} samples but the filter reads "
+                f"{self.support} ahead: the future would be zeros at every "
+                f"block join. Set WhiteningExtraSize to at least the filter's "
+                f"support.")
+
+    def Input(self, data):
+        """Append one chunk to the stream without producing output.
+
+        The stream's time is taken from the first chunk it is given, and every
+        later chunk is taken to follow the previous one.
+
+        :type data: py4tsa.tsa.SeqView_double_t
+        :param data: input chunk, band-passed and decimated.
+        :return: None
+        """
+        values = np.array([data.GetY(0, i) for i in range(data.GetSize())])
+        if self._start is None:
+            self._start, self._interval = data.GetStart(), data.GetSampling()
+        self._buffer = np.concatenate([self._buffer, values * data.GetScale()])
+
+    def Output(self, dataw):
+        """Whiten the next `output_size` samples of the stream.
+
+        :type dataw: py4tsa.tsa.SeqView_double_t
+        :param dataw: output view, replaced by the whitened block, labelled
+            with the time of its first sample.
+        :return: None
+        :raises RuntimeError: if fewer than ``output_size + extra_size``
+            samples are buffered.
+        """
+        from scipy.signal import fftconvolve
+
+        from wdf.structures.array2SeqView import array2SeqView
+
+        n, k = self.output_size, self.support
+        if self._buffer.size < n + self.extra_size:
+            raise RuntimeError(
+                f"MagnitudeWhitening: {self._buffer.size} samples buffered, "
+                f"{n + self.extra_size} needed")
+        future = self._buffer[n:n + k]
+        future = np.concatenate([future, np.zeros(k - future.size)])
+        joined = np.concatenate([self._history, self._buffer[:n], future])
+        whitened = fftconvolve(joined, self.taps, mode="valid")
+        self._history = joined[n:n + k]
+        self._buffer = self._buffer[n:]
+
+        view = array2SeqView(self._start, 1.0 / self._interval, n)
+        view.Fill(self._start, whitened)
+        view.SV.SetScale(1.0)
+        dataw.assign(view.SV)
+        self._start += self._interval * n
+
+    def Process(self, data, dataw):
+        """Append one chunk and whiten the next block.
+
+        :type data: py4tsa.tsa.SeqView_double_t
+        :param data: input chunk, band-passed and decimated.
+        :type dataw: py4tsa.tsa.SeqView_double_t
+        :param dataw: output view, replaced by the whitened block.
+        :return: None
+        """
+        self.Input(data)
+        self.Output(dataw)
+
+    def DataNeeded(self):
+        """Buffered samples beyond what the next output block needs.
+
+        The quantity `ZeroPhaseWhitening.DataNeeded` returns, with the same
+        sign: negative means the next block cannot be produced yet.
+
+        :return: int
+        """
+        return int(self._buffer.size - (self.output_size + self.extra_size))
+
+    def SetOutputSize(self, output_size, extra_size):
+        """Change the output block size and the lookahead.
+
+        :type output_size: int
+        :param output_size: whitened samples produced per `Output` call.
+        :type extra_size: int
+        :param extra_size: samples buffered beyond the output block.
+        :return: None
+        :raises ValueError: if `extra_size` is positive and below the support.
+        """
+        self._check_lookahead(extra_size)
+        self.output_size, self.extra_size = int(output_size), int(extra_size)
