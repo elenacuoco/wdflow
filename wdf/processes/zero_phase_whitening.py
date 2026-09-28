@@ -15,6 +15,11 @@ to the unit circle -- the narrow lines of a detector -- long; it is measured
 from the response itself, like the settling of the band-pass, and applied by
 FFT convolution with real past and future data on each side of the block.
 
+Given a duration, `MagnitudeWhitening` is instead the inverse-spectrum
+truncation gwpy whitens with (`truncated_taps`): the model's spectrum at the
+resolution of the filter, inverted, held, and Hann-truncated to that duration,
+read half of it ahead.
+
 `ZeroPhaseWhitening` is the earlier construction and the worker's default:
 applying any filter forward and then backward gives magnitude ``|B|^2`` and
 zero phase, so the filter that whitens at zero phase when run in both
@@ -23,6 +28,15 @@ That filter is fitted as an AR model of the pseudo-spectrum ``1/|A(w)|`` and
 returned as a `LatticeView`, the form the lattice recursion consumes. The fit
 is an approximation of ``|A|`` at a finite order, and where ``A`` has deep
 narrow zeros the root does not follow them.
+
+Both whiten the band the conditioning passes and nothing else. The model is
+fitted on band-passed data, so ``|A|`` also inverts the band-pass's stop band,
+a gain of up to 1e6 where there is nothing to whiten; that gain is what makes
+the magnitude filter's support hundreds of seconds and the root's fit ripple
+in the band. Given the passband, both build their target from the held
+modulus `held_modulus`: ``|A|`` inside, its edge values outside, joined by a
+raised cosine a fixed number of hertz wide. The stop band stays the band-pass's
+alone; the whitening no longer undoes it.
 """
 from __future__ import annotations
 
@@ -41,6 +55,11 @@ from py4tsa.tsa import DoubleWhitening, LatticeView
 #: exactly where they were.
 DEFAULT_SQRT_ORDER = 256
 DEFAULT_GRID = 1 << 15
+#: Width in hertz of the raised cosine that joins the held modulus to ``|A|``
+#: inside each passband edge (`held_modulus`): wide enough that the target
+#: has no corner, whose impulse response would decay slowly, and narrow
+#: enough to leave the band ``|A|`` itself.
+DEFAULT_BAND_BLEND_HZ = 1.0
 
 
 def _order_for(ar, order):
@@ -94,7 +113,8 @@ def levinson(autocorrelation, order):
     return a, error, reflection
 
 
-def sqrt_ar_polynomial(ar, order=None, grid=DEFAULT_GRID):
+def sqrt_ar_polynomial(ar, order=None, grid=DEFAULT_GRID, band=None,
+                       sampling=None, blend=DEFAULT_BAND_BLEND_HZ):
     """Fit the prediction polynomial whose magnitude response is ``|A|^(1/2)``.
 
     Applied forward and then backward this polynomial whitens by ``|A|`` at
@@ -113,8 +133,18 @@ def sqrt_ar_polynomial(ar, order=None, grid=DEFAULT_GRID):
         order of ``ar`` itself.
     :type grid: int
     :param grid: FFT length the response is evaluated on.
+    :type band: tuple or None
+    :param band: ``(f_lo, f_hi)`` in hertz: the root is fitted to the held
+        modulus `held_modulus` of ``|A|`` instead of ``|A|`` itself, so that
+        the forward-backward response follows ``|A|`` in the band and is flat
+        outside it. None fits the full band.
+    :type sampling: float or None
+    :param sampling: sampling frequency of the model, hertz; needed with `band`.
+    :type blend: float
+    :param blend: width of the raised cosine inside each edge, hertz.
     :return: the prediction polynomial with ``a[0] = 1``, the final prediction
-        error, and the reflection coefficients.
+        error, and the reflection coefficients. The response of the polynomial
+        is ``|B|^2 ~ error * G``, ``G`` the target.
     """
     ar = np.asarray(ar, dtype=float).reshape(-1)
     order = _order_for(ar, order)
@@ -124,8 +154,7 @@ def sqrt_ar_polynomial(ar, order=None, grid=DEFAULT_GRID):
     if grid < 2 * ar.size:
         raise ValueError(f"grid {grid} is too short for an order {ar.size - 1} model")
 
-    polynomial = np.concatenate([[1.0], -ar[1:]])
-    response = np.abs(np.fft.rfft(polynomial, grid))
+    _, response = held_response(ar, grid, band, sampling, blend)
 
     if np.any(response <= 0.0):
         raise ValueError("AR model has a zero on the unit circle")
@@ -170,7 +199,146 @@ def held_outside(freq, psd, band):
     return held
 
 
-def sqrt_polynomial_from_spectrum(freq, psd, order, grid=DEFAULT_GRID, band=None):
+def held_modulus(freq, modulus, band, blend=DEFAULT_BAND_BLEND_HZ):
+    """A whitening gain inside `band`, held at its edge values outside it, no corners.
+
+    The one target every zero-phase whitening here is built from, whatever it
+    is measured on: ``|A|`` of an autoregressive model, or ``1/sqrt(S)`` of a
+    measured spectrum. Outside the band it is `held_outside`'s edge value, so
+    the conditioning's stop band is not whitened. Inside each edge, over
+    `blend` hertz, it rises from the held value to `modulus` along a raised
+    cosine, so the target is continuous with a continuous slope at the edge
+    rather than cornered there.
+
+    :type freq: numpy.ndarray
+    :param freq: frequencies of `modulus`, hertz, ascending.
+    :type modulus: numpy.ndarray
+    :param modulus: the gain at those frequencies.
+    :type band: tuple
+    :param band: ``(f_lo, f_hi)`` in hertz, the band the gain is kept in.
+    :type blend: float
+    :param blend: width of each raised cosine, hertz; zero for none.
+    :return: numpy.ndarray -- the held gain ``G``, ``modulus`` on
+        ``[f_lo + blend, f_hi - blend]``.
+    :raises ValueError: if the band is not inside the frequencies, or the two
+        blends would overlap.
+    """
+    freq = np.asarray(freq, dtype=float).reshape(-1)
+    modulus = np.asarray(modulus, dtype=float).reshape(-1)
+    low, high = float(band[0]), float(band[1])
+    blend = float(blend)
+    if blend < 0.0 or 2.0 * blend > high - low:
+        raise ValueError(f"a blend of {blend} Hz does not fit in the band {band}")
+    held = held_outside(freq, modulus, band)
+    if blend > 0.0:
+        edge_low, edge_high = held[0], held[-1]
+        rising = (freq >= low) & (freq < low + blend)
+        weight = 0.5 * (1.0 - np.cos(np.pi * (freq[rising] - low) / blend))
+        held[rising] = edge_low + weight * (modulus[rising] - edge_low)
+        falling = (freq > high - blend) & (freq <= high)
+        weight = 0.5 * (1.0 - np.cos(np.pi * (high - freq[falling]) / blend))
+        held[falling] = edge_high + weight * (modulus[falling] - edge_high)
+    return held
+
+
+def held_response(ar, grid, band=None, sampling=None, blend=DEFAULT_BAND_BLEND_HZ):
+    """``|A|`` of a model on an FFT grid, and the target the whitening applies.
+
+    :type ar: numpy.ndarray
+    :param ar: AR coefficients as `ArBurgEstimator` holds them.
+    :type grid: int
+    :param grid: FFT length ``|A|`` is sampled on.
+    :type band: tuple or None
+    :param band: ``(f_lo, f_hi)`` in hertz; None for the full band, where the
+        target is ``|A|`` itself.
+    :type sampling: float or None
+    :param sampling: sampling frequency of the model, hertz; needed with `band`.
+    :type blend: float
+    :param blend: width of the raised cosine inside each edge, hertz.
+    :return: tuple -- ``|A|`` and the target ``G`` on the ``grid // 2 + 1``
+        non-negative frequencies.
+    :raises ValueError: if `band` is given without `sampling`.
+    """
+    modulus = np.abs(np.fft.rfft(prediction_error_polynomial(ar), int(grid)))
+    if band is None:
+        return modulus, modulus
+    if sampling is None:
+        raise ValueError("a band in hertz needs the sampling frequency")
+    freq = np.fft.rfftfreq(int(grid), 1.0 / float(sampling))
+    return modulus, held_modulus(freq, modulus, band, blend)
+
+
+def in_band_scale(scale, response, modulus, freq=None, band=None):
+    """The level of the whitened output in band, on noise the model describes.
+
+    The model's spectrum is ``scale**2 / |A|**2``; through a zero-phase filter
+    of response `response` it becomes ``scale**2 (response / |A|)**2``. The
+    scale returned is the square root of the median of that over the band,
+    in units of white noise: the output divided by it has unit density in
+    band, whatever the stop band holds and whatever lines the filter leaves.
+
+    It is the level in band and not the variance over the circle. Held, the
+    stream carries power in the passband alone, and the variance over the
+    circle is the band's share of it: dividing by that put the whitened level
+    in band at ``1/sqrt(share)``, 1.17 on GW150914 with a 16-744 Hz passband at
+    2048 Hz, where it has to be 1. The median, and not the mean, so that a
+    line the filter does not follow sets nothing: on the band the response
+    is ``|A|``, the ratio is 1 and the median is exact.
+
+    :type scale: float
+    :param scale: the model's noise scale, ``ar[0]``.
+    :type response: numpy.ndarray
+    :param response: the response the filter applies, on the non-negative
+        frequencies of an FFT grid, zero to Nyquist.
+    :type modulus: numpy.ndarray
+    :param modulus: ``|A|`` on the same frequencies.
+    :type freq: numpy.ndarray or None
+    :param freq: those frequencies, hertz; needed with `band`.
+    :type band: tuple or None
+    :param band: ``(f_lo, f_hi)`` in hertz, the band the level is read on;
+        None for the whole grid.
+    :return: float
+    """
+    ratio = (np.asarray(response, dtype=float) / np.asarray(modulus, dtype=float)) ** 2
+    if band is not None:
+        freq = np.asarray(freq, dtype=float)
+        ratio = ratio[(freq >= float(band[0])) & (freq <= float(band[1]))]
+    return float(scale) * float(np.sqrt(np.median(ratio)))
+
+
+def whitened_level(whitened, sampling, band=None, nperseg=8192):
+    """The level in band of a whitened stretch, read on the stretch itself.
+
+    The median over the band of its median-averaged spectrum, in units of the
+    density ``2 / sampling`` of unit-variance white noise, square-rooted: the
+    measured counterpart of `in_band_scale`, for the filters fitted to a
+    measured spectrum. The robust scale of the samples in time is not it: a
+    line the filter leaves raises it, and on GW150914 L1 it read 1.68 on a
+    stretch whose spectrum is 1.00 in band, which put the whitened level at
+    0.6.
+
+    :type whitened: numpy.ndarray
+    :param whitened: the whitened stretch.
+    :type sampling: float
+    :param sampling: its sampling frequency, hertz.
+    :type band: tuple or None
+    :param band: ``(f_lo, f_hi)`` in hertz; None for zero to Nyquist.
+    :type nperseg: int
+    :param nperseg: segment length of the spectral estimate.
+    :return: float
+    """
+    from scipy.signal import welch
+
+    whitened = np.asarray(whitened, dtype=float).reshape(-1)
+    freq, psd = welch(whitened, fs=float(sampling),
+                      nperseg=int(min(nperseg, whitened.size)), average="median")
+    if band is not None:
+        psd = psd[(freq >= float(band[0])) & (freq <= float(band[1]))]
+    return float(np.sqrt(np.median(psd) * float(sampling) / 2.0))
+
+
+def sqrt_polynomial_from_spectrum(freq, psd, order, grid=DEFAULT_GRID, band=None,
+                                  blend=DEFAULT_BAND_BLEND_HZ):
     """Fit the square-root filter to a measured spectrum rather than to a model.
 
     `sqrt_ar_polynomial` is Levinson on the autocorrelation of ``1/|A|``, and
@@ -198,6 +366,9 @@ def sqrt_polynomial_from_spectrum(freq, psd, order, grid=DEFAULT_GRID, band=None
     :type band: tuple or None
     :param band: ``(low, high)`` outside which the spectrum is held flat; the
         whole spectrum is used when None.
+    :type blend: float
+    :param blend: width of the raised cosine inside each edge of `band`,
+        hertz (`held_modulus`).
     :return: the prediction polynomial with ``a[0] = 1``, the final prediction
         error, and the reflection coefficients.
     :raises ValueError: if the spectrum is not positive where it is fitted.
@@ -214,6 +385,8 @@ def sqrt_polynomial_from_spectrum(freq, psd, order, grid=DEFAULT_GRID, band=None
     sampling = 2.0 * freq[-1]
     grid_freq = np.fft.rfftfreq(int(grid), 1.0 / sampling)
     amplitude = np.sqrt(np.interp(grid_freq, freq, psd))
+    if band is not None:
+        amplitude = 1.0 / held_modulus(grid_freq, 1.0 / amplitude, band, blend)
     autocorrelation = np.fft.irfft(amplitude, int(grid))
 
     return levinson(autocorrelation, int(order))
@@ -287,7 +460,8 @@ class ZeroPhaseWhitening(object):
     """
 
     def __init__(self, ar, output_size, extra_size=0,
-                 order=None, grid=DEFAULT_GRID):
+                 order=None, grid=DEFAULT_GRID, band=None, sampling=None,
+                 blend=DEFAULT_BAND_BLEND_HZ):
         """
         :type ar: numpy.ndarray
         :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
@@ -305,12 +479,32 @@ class ZeroPhaseWhitening(object):
         :param order: order of the square-root model.
         :type grid: int
         :param grid: FFT length the response is evaluated on.
+        :type band: tuple or None
+        :param band: ``(f_lo, f_hi)`` in hertz, the passband of the
+            conditioning: the root is fitted to the held modulus
+            (`held_modulus`) and `sigma` is the in-band scale of the response
+            obtained (`in_band_scale`). None fits ``|A|`` over the full band,
+            with `sigma` the model's ``ar[0] * error``.
+        :type sampling: float or None
+        :param sampling: sampling frequency of the model, hertz; needed with `band`.
+        :type blend: float
+        :param blend: width of the raised cosine inside each edge, hertz.
         """
         order = _order_for(ar, order)
         polynomial, error, reflection = sqrt_ar_polynomial(
-            ar, order=order, grid=grid)
+            ar, order=order, grid=grid, band=band, sampling=sampling, blend=blend)
         scale = float(np.asarray(ar, dtype=float)[0])
-        self._install(polynomial, error, reflection, order, scale * error,
+        if band is None:
+            sigma = scale * error
+        else:
+            # The response the lattice applies both ways is |B|^2, measured
+            # here rather than taken as the target it approximates.
+            modulus, _ = held_response(ar, grid)
+            applied = np.abs(np.fft.rfft(polynomial, int(grid))) ** 2
+            sigma = in_band_scale(scale, applied, modulus,
+                                  np.fft.rfftfreq(int(grid), 1.0 / float(sampling)), band)
+        self.band = None if band is None else (float(band[0]), float(band[1]))
+        self._install(polynomial, error, reflection, order, sigma,
                       scale, output_size, extra_size)
 
     def _install(self, polynomial, error, reflection, order, sigma, scale,
@@ -341,14 +535,14 @@ class ZeroPhaseWhitening(object):
     @classmethod
     def from_spectrum(cls, samples, sampling, output_size, extra_size=0,
                       order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID, band=None,
-                      nperseg=8192, average="median"):
+                      nperseg=8192, average="median", blend=DEFAULT_BAND_BLEND_HZ):
         """Build the whitening from the spectrum of a stretch, without Burg.
 
         The stretch is the one the model would have been fitted on. Its
         spectrum is measured, held flat outside `band`, and the filter is
         fitted to it by `sqrt_polynomial_from_spectrum`; the noise scale is
-        then read on that same stretch, whitened, as the robust scale of the
-        result, which is the statistic every stage downstream uses.
+        then read on that same stretch, whitened, as its level in band
+        (`whitened_level`).
 
         `average` is how the periodograms are combined: the median is the
         default because a transient in the stretch moves it far less than it
@@ -386,14 +580,15 @@ class ZeroPhaseWhitening(object):
         freq, psd = welch(samples, fs=float(sampling), nperseg=int(nperseg),
                           average=average)
         polynomial, error, reflection = sqrt_polynomial_from_spectrum(
-            freq, psd, order, grid=grid, band=band)
+            freq, psd, order, grid=grid, band=band, blend=blend)
 
         whitened = _both_ways(polynomial, samples)
         edge = min(int(order), whitened.size // 4)
         inside = whitened[edge:whitened.size - edge] if edge else whitened
-        sigma = float(np.median(np.abs(inside)) / 0.6745)
+        sigma = whitened_level(inside, sampling, band, nperseg)
 
         self = cls.__new__(cls)
+        self.band = None if band is None else (float(band[0]), float(band[1]))
         self._install(polynomial, error, reflection, order, sigma, 1.0,
                       output_size, extra_size)
         return self
@@ -481,6 +676,9 @@ DEFAULT_RESPONSE_GRID = 1 << 23
 #: Fraction of the kept support over which its two ends are tapered, so that
 #: truncating a tail already below the floor does not leave a step.
 RESPONSE_TAPER = 0.1
+#: Length in seconds of the truncated filter (`truncated_taps`), gwpy's
+#: ``fduration`` default: the whitening reads half of it ahead.
+DEFAULT_TRUNCATION_S = 4.0
 
 
 def prediction_error_polynomial(ar):
@@ -532,7 +730,8 @@ def response_support(impulse, floor=DEFAULT_RESPONSE_FLOOR):
     return max(support, 1)
 
 
-def symmetric_taps(response, floor=DEFAULT_RESPONSE_FLOOR, support=None):
+def symmetric_taps(response, floor=DEFAULT_RESPONSE_FLOOR, support=None,
+                   taper=RESPONSE_TAPER):
     """The symmetric FIR filter whose frequency response is `response`.
 
     A real, non-negative response has an even impulse response and zero phase.
@@ -546,6 +745,10 @@ def symmetric_taps(response, floor=DEFAULT_RESPONSE_FLOOR, support=None):
     :param floor: fraction of the peak below which the response is spent.
     :type support: int or None
     :param support: half-length in samples; None to measure it.
+    :type taper: float
+    :param taper: fraction of the taps inside the Tukey window's tapers;
+        1 is a Hann window over the whole support, the truncation of
+        `truncated_taps`.
     :return: numpy.ndarray -- ``2 K + 1`` taps, lag zero at index ``K``.
     :raises ValueError: if the stated support does not fit in the grid.
     """
@@ -560,14 +763,14 @@ def symmetric_taps(response, floor=DEFAULT_RESPONSE_FLOOR, support=None):
     if not 0 < support < grid // 2:
         raise ValueError(f"support {support} does not fit in a {grid}-point grid")
     taps = np.concatenate([impulse[grid - support:], impulse[:support + 1]])
-    taps = taps * tukey(2 * support + 1, RESPONSE_TAPER)
+    taps = taps * tukey(2 * support + 1, float(taper))
     # Even to the last bit, so that the response is real and the phase zero
     # exactly, not to the rounding of the inverse transform and the taper.
     return 0.5 * (taps + taps[::-1])
 
 
 def magnitude_taps(ar, floor=DEFAULT_RESPONSE_FLOOR, grid=DEFAULT_RESPONSE_GRID,
-                   support=None):
+                   support=None, band=None, sampling=None, blend=DEFAULT_BAND_BLEND_HZ):
     """The zero-phase filter with response ``|A(e^{iw})|`` of an AR model.
 
     Applied to data whose spectrum the model describes, its output has the
@@ -583,6 +786,13 @@ def magnitude_taps(ar, floor=DEFAULT_RESPONSE_FLOOR, grid=DEFAULT_RESPONSE_GRID,
     :param grid: FFT length ``|A|`` is sampled on.
     :type support: int or None
     :param support: half-length in samples; None to measure it.
+    :type band: tuple or None
+    :param band: ``(f_lo, f_hi)`` in hertz: the response is the held modulus
+        (`held_modulus`) of ``|A|``, flat outside the band. None for ``|A|``.
+    :type sampling: float or None
+    :param sampling: sampling frequency of the model, hertz; needed with `band`.
+    :type blend: float
+    :param blend: width of the raised cosine inside each edge, hertz.
     :return: numpy.ndarray -- ``2 K + 1`` symmetric taps, lag zero at ``K``.
     :raises ValueError: if the grid is shorter than twice the model, or the
         response does not decay within it.
@@ -591,10 +801,12 @@ def magnitude_taps(ar, floor=DEFAULT_RESPONSE_FLOOR, grid=DEFAULT_RESPONSE_GRID,
     if grid < 2 * polynomial.size:
         raise ValueError(f"grid {grid} is too short for an order "
                          f"{polynomial.size - 1} model")
-    return symmetric_taps(np.abs(np.fft.rfft(polynomial, int(grid))), floor, support)
+    _, target = held_response(ar, grid, band, sampling, blend)
+    return symmetric_taps(target, floor, support)
 
 
-def magnitude_taps_from_spectrum(freq, psd, band=None):
+def magnitude_taps_from_spectrum(freq, psd, band=None, blend=DEFAULT_BAND_BLEND_HZ,
+                                 taper=RESPONSE_TAPER):
     """The zero-phase filter with response ``1 / sqrt(S)`` of a measured spectrum.
 
     The same filter as `magnitude_taps`, with the measured spectrum in place of
@@ -617,6 +829,12 @@ def magnitude_taps_from_spectrum(freq, psd, band=None):
     :type band: tuple or None
     :param band: ``(low, high)`` in hertz outside which the spectrum is held
         flat (`held_outside`); the whole spectrum when None.
+    :type blend: float
+    :param blend: width of the raised cosine inside each edge of `band`,
+        hertz (`held_modulus`).
+    :type taper: float
+    :param taper: Tukey fraction of the truncation (`symmetric_taps`); 1,
+        a Hann window, is gwpy's ``TimeSeries.whiten``.
     :return: numpy.ndarray -- ``2 K + 1`` symmetric taps, lag zero at ``K``,
         with ``K`` one less than half the segment.
     :raises ValueError: if the spectrum is not positive where it is used, or
@@ -636,7 +854,93 @@ def magnitude_taps_from_spectrum(freq, psd, band=None):
     sampling = 2.0 * freq[-1]
     # White noise of unit variance has the one-sided density 2 / sampling.
     response = np.sqrt(2.0 / (sampling * psd))
-    return symmetric_taps(response, support=freq.size - 2)
+    if band is not None:
+        response = held_modulus(freq, response, band, blend)
+    return symmetric_taps(response, support=freq.size - 2, taper=taper)
+
+
+def spectrum_at_resolution(ar, length, grid=DEFAULT_RESPONSE_GRID):
+    """The model's spectrum as a segment of `length` samples resolves it.
+
+    ``1/|A|**2`` averaged over frequency by the spectral window of a Hann
+    segment of `length` samples: what a Welch estimate with that segment would
+    measure, in expectation, on data the model describes. In lags it is the
+    model's autocorrelation times the Hann window's own, normalised, which is
+    zero from `length` on, so the result is exact on any grid of at least
+    twice that.
+
+    A filter truncated to `length` samples cannot follow ``|A|`` closer than
+    this. Truncating ``|A|`` itself smears each narrow notch into a shallow
+    one while the line it faces keeps its power, and the line comes through:
+    with an order-3000 model and 4 s at 2048 Hz, GW150914 L1 whitened that
+    way has a standard deviation of 4.3. The line's power spread over the
+    resolution, as here, is what a filter of that length can whiten.
+
+    :type ar: numpy.ndarray
+    :param ar: AR coefficients as `ArBurgEstimator` holds them.
+    :type length: int
+    :param length: segment length in samples, even.
+    :type grid: int
+    :param grid: FFT length ``|A|`` is sampled on to obtain the
+        autocorrelation; long enough that its period does not fold the
+        lags kept.
+    :return: tuple -- the frequencies as fractions of the sampling rate and
+        the spectrum, in units of ``ar[0]**2`` two-sided per unit of those, on
+        the ``4 length // 2 + 1`` non-negative frequencies of a ``4 length``
+        grid.
+    """
+    from scipy.signal.windows import hann
+
+    length = int(length)
+    modulus = np.abs(np.fft.rfft(prediction_error_polynomial(ar), int(grid)))
+    autocorrelation = np.fft.irfft(1.0 / modulus ** 2, int(grid))[:length]
+    window = hann(length, sym=False)
+    lag_window = np.correlate(window, window, "full")[length - 1:] / np.dot(window, window)
+    kept = autocorrelation * lag_window
+    size = 4 * length
+    lags = np.zeros(size)
+    lags[:length] = kept
+    lags[size - length + 1:] = kept[1:][::-1]
+    spectrum = np.fft.rfft(lags).real
+    # Positive by construction (a positive spectrum smoothed by a positive
+    # window); rounding, where the stop band is 1e-12 of the band, is not.
+    spectrum = np.maximum(spectrum, np.finfo(float).eps * spectrum.max())
+    return np.fft.rfftfreq(size), spectrum
+
+
+def truncated_taps(ar, duration, sampling, band=None, blend=DEFAULT_BAND_BLEND_HZ):
+    """Inverse-spectrum truncation of an AR model: gwpy's whitening filter.
+
+    The response is ``1 / sqrt(S_T)``, ``S_T`` the model's spectrum at the
+    resolution of the filter (`spectrum_at_resolution`), held outside `band`
+    (`held_modulus`), taken to `duration` seconds and truncated there by a Hann
+    window: ``TimeSeries.whiten(asd=..., fduration=duration)`` with the ASD of
+    the Burg model in place of a Welch estimate. The response is in units of
+    ``1 / ar[0]``, like ``|A|``, whose smoothed counterpart it is.
+
+    :type ar: numpy.ndarray
+    :param ar: AR coefficients as `ArBurgEstimator` holds them.
+    :type duration: float
+    :param duration: length of the filter, seconds; the support is half of it.
+    :type sampling: float
+    :param sampling: sampling frequency of the model, hertz.
+    :type band: tuple or None
+    :param band: ``(f_lo, f_hi)`` in hertz outside which the response is held;
+        None for the full band.
+    :type blend: float
+    :param blend: width of the raised cosine inside each edge, hertz.
+    :return: numpy.ndarray -- ``2 K + 1`` symmetric taps, lag zero at ``K``,
+        ``K = duration * sampling / 2``.
+    :raises ValueError: if the filter would hold fewer than four taps.
+    """
+    length = 2 * int(round(0.5 * float(duration) * float(sampling)))
+    if length < 4:
+        raise ValueError(f"a {duration} s filter at {sampling} Hz holds fewer than four taps")
+    freq, spectrum = spectrum_at_resolution(ar, length)
+    response = 1.0 / np.sqrt(spectrum)
+    if band is not None:
+        response = held_modulus(freq * float(sampling), response, band, blend)
+    return symmetric_taps(response, support=length // 2, taper=1.0)
 
 
 class MagnitudeWhitening:
@@ -662,7 +966,8 @@ class MagnitudeWhitening:
     """
 
     def __init__(self, ar, output_size, extra_size=0, floor=DEFAULT_RESPONSE_FLOOR,
-                 grid=DEFAULT_RESPONSE_GRID, support=None):
+                 grid=DEFAULT_RESPONSE_GRID, support=None, band=None, sampling=None,
+                 blend=DEFAULT_BAND_BLEND_HZ, duration=None):
         """
         :type ar: numpy.ndarray
         :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
@@ -681,12 +986,49 @@ class MagnitudeWhitening:
         :param grid: FFT length ``|A|`` is sampled on.
         :type support: int or None
         :param support: half-length of the filter in samples; None to measure it.
+        :type band: tuple or None
+        :param band: ``(f_lo, f_hi)`` in hertz, the passband of the
+            conditioning: the response is the held modulus ``G``
+            (`held_modulus`) and `sigma` its level in band (`in_band_scale`),
+            ``ar[0]``. None for ``|A|`` over the full band, with `sigma`
+            ``ar[0]``.
+        :type sampling: float or None
+        :param sampling: sampling frequency of the model, hertz; needed with `band`.
+        :type blend: float
+        :param blend: width of the raised cosine inside each edge, hertz.
+        :type duration: float or None
+        :param duration: seconds; the filter is then `truncated_taps`, the
+            model's inverse spectrum at the resolution of `duration`,
+            Hann-truncated to it, with support and latency half of it, and
+            `sigma` the level in band of the response it applies
+            (`in_band_scale`; the full band when `band` is None). Needs
+            `sampling`; `floor` and `support` are not used.
         :raises ValueError: if `extra_size` is positive and below the support,
             or the response does not decay within the grid.
         """
-        taps = magnitude_taps(ar, floor=floor, grid=grid, support=support)
-        self._install(taps, float(np.asarray(ar, dtype=float).reshape(-1)[0]),
-                      output_size, extra_size)
+        polynomial = prediction_error_polynomial(ar)
+        if grid < 2 * polynomial.size:
+            raise ValueError(f"grid {grid} is too short for an order "
+                             f"{polynomial.size - 1} model")
+        scale = float(np.asarray(ar, dtype=float).reshape(-1)[0])
+        if duration is not None:
+            if sampling is None:
+                raise ValueError("a duration in seconds needs the sampling frequency")
+            taps = truncated_taps(ar, duration, sampling, band, blend)
+            modulus, _ = held_response(ar, grid)
+            applied = np.abs(np.fft.rfft(taps, int(grid)))
+            freq = np.fft.rfftfreq(int(grid), 1.0 / float(sampling))
+            sigma = in_band_scale(scale, applied, modulus, freq, band)
+            self.duration = float(duration)
+        else:
+            modulus, target = held_response(ar, grid, band, sampling, blend)
+            taps = symmetric_taps(target, floor, support)
+            sigma = scale if band is None else in_band_scale(
+                scale, target, modulus,
+                np.fft.rfftfreq(int(grid), 1.0 / float(sampling)), band)
+            self.duration = None
+        self.band = None if band is None else (float(band[0]), float(band[1]))
+        self._install(taps, sigma, output_size, extra_size)
 
     def _install(self, taps, sigma, output_size, extra_size):
         """Hold the filter and an empty stream.
@@ -707,14 +1049,15 @@ class MagnitudeWhitening:
 
     @classmethod
     def from_spectrum(cls, samples, sampling, output_size, extra_size=0, band=None,
-                      nperseg=8192, average="median"):
+                      nperseg=8192, average="median", blend=DEFAULT_BAND_BLEND_HZ,
+                      taper=RESPONSE_TAPER):
         """Build the whitening from the spectrum of a stretch, without Burg.
 
         The spectrum is measured on the stretch, held flat outside `band`, and
         the filter is `magnitude_taps_from_spectrum`, whose support is half of
         `nperseg`; the noise scale is then read on that same stretch, whitened,
-        as its robust scale (median absolute value over 0.6745), the statistic
-        every stage downstream uses.
+        as its level in band (`whitened_level`). With `taper` 1 and `nperseg`
+        four seconds of data this is gwpy's ``TimeSeries.whiten``.
 
         :type samples: numpy.ndarray
         :param samples: the conditioned stretch to measure.
@@ -731,6 +1074,8 @@ class MagnitudeWhitening:
             also the length of the filter.
         :type average: str
         :param average: how the periodograms are combined, "median" or "mean".
+        :type taper: float
+        :param taper: Tukey fraction of the truncation (`symmetric_taps`).
         :return: MagnitudeWhitening
         :raises ValueError: if the stretch is shorter than one segment, or
             than the filter it would be read through.
@@ -744,14 +1089,17 @@ class MagnitudeWhitening:
                 f"{nperseg} one segment of the spectral estimate needs")
         freq, psd = welch(samples, fs=float(sampling), nperseg=int(nperseg),
                           average=average)
-        taps = magnitude_taps_from_spectrum(freq, psd, band=band)
+        taps = magnitude_taps_from_spectrum(freq, psd, band=band, blend=blend,
+                                            taper=taper)
         if samples.size <= taps.size:
             raise ValueError(
                 f"the stretch holds {samples.size} samples, no more than the "
                 f"{taps.size} taps of the filter it is whitened through")
         whitened = fftconvolve(samples, taps, mode="valid")
         self = cls.__new__(cls)
-        self._install(taps, float(np.median(np.abs(whitened)) / 0.6745),
+        self.band = None if band is None else (float(band[0]), float(band[1]))
+        self.duration = None
+        self._install(taps, whitened_level(whitened, sampling, band, nperseg),
                       output_size, extra_size)
         return self
 
