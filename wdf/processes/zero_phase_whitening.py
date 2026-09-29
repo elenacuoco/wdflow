@@ -20,8 +20,8 @@ truncation gwpy whitens with (`truncated_taps`): the model's spectrum at the
 resolution of the filter, inverted, held, and Hann-truncated to that duration,
 read half of it ahead.
 
-`ZeroPhaseWhitening` is the earlier construction and the worker's default:
-applying any filter forward and then backward gives magnitude ``|B|^2`` and
+`ZeroPhaseWhitening` is the worker's default. Applying any filter forward and
+then backward gives magnitude ``|B|^2`` and
 zero phase, so the filter that whitens at zero phase when run in both
 directions is the one whose magnitude response is the square root of ``|A|``.
 That filter is fitted as an AR model of the pseudo-spectrum ``1/|A(w)|`` and
@@ -36,7 +36,7 @@ the magnitude filter's support hundreds of seconds and the root's fit ripple
 in the band. Given the passband, both build their target from the held
 modulus `held_modulus`: ``|A|`` inside, its edge values outside, joined by a
 raised cosine a fixed number of hertz wide. The stop band stays the band-pass's
-alone; the whitening no longer undoes it.
+alone; the whitening does not undo it.
 """
 from __future__ import annotations
 
@@ -48,11 +48,7 @@ from py4tsa.tsa import DoubleWhitening, LatticeView
 #: order used is this or the order of the model, whichever is larger: a root
 #: far below the model it is taken of cannot follow it, and the error is paid
 #: twice, since the filter runs both ways and the response is the square of its
-#: magnitude. Measured against the causal whitening on O4b data with an
-#: order-3000 model, a root of order 256 leaves the whitened spectrum 0.21 dex
-#: away and a factor 63 out at the worst line; at order 3000, 0.044 dex and a
-#: factor 2.1. The floor keeps the small, smooth models this was adequate for
-#: exactly where they were.
+#: magnitude.
 DEFAULT_SQRT_ORDER = 256
 DEFAULT_GRID = 1 << 15
 #: Width in hertz of the raised cosine that joins the held modulus to ``|A|``
@@ -65,9 +61,7 @@ DEFAULT_BAND_BLEND_HZ = 1.0
 def _order_for(ar, order):
     """The square-root order: the floor, or the model's own, whichever is more.
 
-    Stating an order overrides both. Twice the model's order buys a further
-    factor three on the worst line and costs twice the latency; the default
-    does not spend it.
+    Stating an order overrides both. The latency of the filter is its order.
     """
     if order is not None:
         return int(order)
@@ -119,10 +113,8 @@ def sqrt_ar_polynomial(ar, order=None, grid=DEFAULT_GRID, band=None,
 
     Applied forward and then backward this polynomial whitens by ``|A|`` at
     zero phase. ``|A|`` is smoother than ``|A|^2``, but not smooth enough to be
-    fitted at an order well below it: measured against the causal whitening on
-    O4b data, an order-256 root of an order-3000 model leaves the whitened
-    spectrum a factor 63 out at the worst line, and the model's own order
-    leaves it a factor 2.1.
+    fitted at an order well below the model's: the narrow lines of the model
+    need an order comparable to its own.
 
     :type ar: numpy.ndarray
     :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
@@ -348,12 +340,8 @@ def sqrt_polynomial_from_spectrum(freq, psd, order, grid=DEFAULT_GRID, band=None
     change of input rather than of method. What it removes is the Burg fit that
     produced the model: one fit instead of two, and an error weighed in decibels
     across the band instead of in absolute power, which is dominated by
-    whichever octave carries the most of it.
-
-    Measured on O4b strain conditioned above 6 Hz, the autoregressive path
-    leaves the whitened spectrum a factor 2.9 low at 8-32 Hz in H1 and L1 --
-    Burg has no incentive to fit a region 60 dB down -- while this path is flat
-    to a tenth in every octave from 8 Hz to Nyquist.
+    whichever octave carries the most of it, so that a region tens of decibels
+    below the rest of the band is fitted as closely as the rest.
 
     :type freq: numpy.ndarray
     :param freq: frequencies of `psd`, hertz, ascending.
