@@ -257,30 +257,34 @@ def scale_maximum(pixels: pd.DataFrame,
     t_mid = 0.5 * (out["t_lo"].to_numpy(dtype=float)
                    + out["t_hi"].to_numpy(dtype=float))
     scale = out["scale"].to_numpy(dtype=int)
-    band = out["f_lo"].to_numpy(dtype=float)
+    band_lo = out["f_lo"].to_numpy(dtype=float)
+    band_hi = out["f_hi"].to_numpy(dtype=float)
 
     # Within one window length and one band the tiles partition time exactly,
     # so the tile covering an instant is found by searching the band's own
-    # sorted edges rather than by testing every tile.
+    # sorted edges rather than by testing every tile. A band is both its
+    # edges, as in `unique_tiles`: a packet band and an octave can share a
+    # lower edge.
     lookup = {}
-    for key, rows in out.groupby(["scale", "f_lo"], sort=False).indices.items():
+    for key, rows in out.groupby(["scale", "f_lo", "f_hi"], sort=False).indices.items():
         rows = np.asarray(rows)
         order = rows[np.argsort(out["t_lo"].to_numpy(dtype=float)[rows])]
-        lookup[(int(key[0]), float(key[1]))] = (
+        lookup[(int(key[0]), float(key[1]), float(key[2]))] = (
             out["t_lo"].to_numpy(dtype=float)[order],
             out["t_hi"].to_numpy(dtype=float)[order],
             own[order],
         )
 
     scales = np.unique(scale)
+    bands = np.unique(np.column_stack([band_lo, band_hi]), axis=0)
     reachable = np.zeros((len(out), len(scales)))
     seen = np.zeros((len(out), len(scales)), dtype=bool)
     for column, other in enumerate(scales):
-        for this_band in np.unique(band):
-            key = (int(other), float(this_band))
+        for lo, hi in bands:
+            key = (int(other), float(lo), float(hi))
             if key not in lookup:
                 continue
-            rows = np.flatnonzero(band == this_band)
+            rows = np.flatnonzero((band_lo == lo) & (band_hi == hi))
             t_lo, t_hi, values = lookup[key]
             slot = np.searchsorted(t_lo, t_mid[rows], side="right") - 1
             inside = (slot >= 0) & (t_mid[rows] < t_hi[np.maximum(slot, 0)])

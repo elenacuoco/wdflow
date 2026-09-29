@@ -430,7 +430,9 @@ def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
     """Each event's wavegram, rendered from the tiles the event owns.
 
     The map is the event itself on a band by time grid: one row per band of the
-    shared ladder, one column per `bin_seconds`, and a cell carrying the
+    shared ladder, a packet tile in the row holding it
+    (`wdf.analysis.wavelets.ladder_rows`), one column per `bin_seconds`, and a
+    cell carrying the
     coefficient magnitude on its own window's noise scale. Nothing outside the
     cluster is drawn --- a tile the neighbouring window kept but that the
     grouping did not join is not part of this event and does not appear.
@@ -453,6 +455,7 @@ def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
     """
     from wdf.analysis.detector_graph import EventWavegram, band_grid
     from wdf.analysis.scale import normalised_energy
+    from wdf.analysis.wavelets import ladder_rows
 
     nodes = graph.nodes
     if nodes.empty:
@@ -472,10 +475,7 @@ def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
     amplitude = np.where(np.isfinite(amplitude), amplitude, 0.0)
 
     bands = band_grid(scale, float(np.median(rate[np.isfinite(rate)])))
-    row_of = {(round(lo, 9), round(hi, 9)): row
-              for row, (lo, hi) in enumerate(bands)}
-    rows = np.array([row_of.get((round(a, 9), round(b, 9)), -1)
-                     for a, b in zip(f_lo, f_hi)])
+    rows = ladder_rows(f_lo, f_hi, bands)
 
     width = np.maximum(t_hi - t_lo, 0.0)
     if bin_seconds is None:

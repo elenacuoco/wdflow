@@ -145,6 +145,13 @@ def band_grid(scales, fs: float) -> np.ndarray:
     it, so the bands of several window lengths share their edges exactly and
     their union is itself a ladder.
 
+    The ladder is the octaves of the pyramid whatever basis each window won. A
+    wavelet-packet tile, narrower than an octave, is drawn in the octave that
+    holds it (`wdf.analysis.wavelets.ladder_rows`): the rows are then the same
+    for every detector and every run of one configuration, whichever bases
+    won, and a pyramid tile and a packet tile of one transient are compared on
+    the same row.
+
     :param scales: the window lengths, in samples.
     :type fs: float
     :param fs: sampling frequency, Hz.
