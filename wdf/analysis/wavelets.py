@@ -214,28 +214,33 @@ def coeff_time_bounds(n_coeff: int, fs: float, wave=None) -> tuple[np.ndarray, n
 def ladder_rows(f_lo, f_hi, bands) -> np.ndarray:
     """The row of a band ladder each tile is drawn in, -1 outside it.
 
-    A tile belongs to the row holding its representative frequency
-    (`tile_frequency`). A pyramid tile's band is a row of the ladder of its
-    window length, and its representative frequency lies inside it, so it
-    lands on its own row; a packet tile, narrower than an octave, lands on the
-    octave it lies in, and the band from zero on the octave holding half its
-    upper edge.
+    A tile whose band is a row of the ladder is drawn in that row: every
+    pyramid tile, including the band from zero of each window length, which
+    is a row of its own. A tile whose band is not a row, a packet tile
+    narrower than an octave, is drawn in the row holding its representative
+    frequency (`tile_frequency`).
 
     :param f_lo: lower band edge of each tile, Hz.
     :param f_hi: upper band edge of each tile, Hz.
     :param bands: the ladder, `(n_bands, 2)` of `(f_lo, f_hi)` ordered by
         lower edge, as `wdf.analysis.detector_graph.band_grid` returns it.
-    :return: numpy.ndarray -- one row per tile, -1 where the representative
-        frequency lies outside every row.
+    :return: numpy.ndarray -- one row per tile, -1 where the band is not a
+        row and its representative frequency lies outside every row.
     """
+    f_lo = np.asarray(f_lo, dtype=float)
+    f_hi = np.asarray(f_hi, dtype=float)
     bands = np.asarray(bands, dtype=float).reshape(-1, 2)
-    centre = tile_frequencies(f_lo, f_hi)
     if not len(bands):
-        return np.full(centre.shape, -1, dtype=int)
+        return np.full(f_lo.shape, -1, dtype=int)
+    row_of = {(round(lo, 9), round(hi, 9)): row for row, (lo, hi) in enumerate(bands)}
+    exact = np.array([row_of.get((round(lo, 9), round(hi, 9)), -1)
+                      for lo, hi in zip(f_lo.ravel().tolist(), f_hi.ravel().tolist())],
+                     dtype=int).reshape(f_lo.shape)
+    centre = tile_frequencies(f_lo, f_hi)
     row = np.searchsorted(bands[:, 0], centre, side="right") - 1
     clipped = np.clip(row, 0, len(bands) - 1)
     inside = (row >= 0) & (centre < bands[clipped, 1])
-    return np.where(inside, row, -1).astype(int)
+    return np.where(exact >= 0, exact, np.where(inside, row, -1)).astype(int)
 
 
 def wavelet_coeff_tiles(wt: np.ndarray, fs: float,

@@ -80,6 +80,21 @@ def test_the_wavegram_places_a_band_on_the_same_row_at_every_scale():
     assert (grids >= 0).all()
 
 
+def test_every_pyramid_band_is_drawn_on_its_own_row():
+    """The band from zero of each window length is a row of its own, and a
+    tile of it is drawn there, not on the octave holding its centre."""
+    from wdf.analysis.wavelets import coeff_freq_bands, ladder_rows
+
+    bands = band_grid([256, 1024], FS)
+    row_of = {(round(lo, 9), round(hi, 9)): row for row, (lo, hi) in enumerate(bands)}
+    for scale in (256, 1024):
+        f_lo, f_hi = coeff_freq_bands(scale, FS)
+        expected = [row_of[round(lo, 9), round(hi, 9)] for lo, hi in zip(f_lo, f_hi)]
+        assert ladder_rows(f_lo, f_hi, bands).tolist() == expected
+    assert ladder_rows([0.0], [FS / 256 / 2], bands).tolist() == [1]
+    assert ladder_rows([0.0], [FS / 1024 / 2], bands).tolist() == [0]
+
+
 def test_triggers_of_different_window_lengths_are_joined():
     triggers = _triggers([256, 512], 10)
     graph = build_detector_graph(triggers)
