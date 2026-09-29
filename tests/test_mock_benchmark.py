@@ -1,4 +1,5 @@
 """The white three-detector benchmark set and the pieces it is built from."""
+import importlib.util
 import json
 import os
 
@@ -15,6 +16,12 @@ from wdf.mock.noise import white_noise, white_psd
 FS = 2048
 NETWORK = ("H1", "L1", "V1")
 
+# The noise, the waveforms and the frames of the set are made with pycbc and
+# gwpy, which the CI jobs do not install.
+waveform_code = pytest.mark.skipif(
+    importlib.util.find_spec("pycbc") is None or importlib.util.find_spec("gwpy") is None,
+    reason="the mock set is written with pycbc and gwpy")
+
 
 def small_white_set(outdir, **overrides):
     settings = dict(duration=1200.0, start_gps=1400000000.0, sample_rate=FS,
@@ -27,6 +34,7 @@ def small_white_set(outdir, **overrides):
     return generate_dataset(str(outdir), **settings)
 
 
+@waveform_code
 def test_white_noise_is_unit_variance_and_reproducible():
     a = np.asarray(white_noise(0.0, 64.0, seed=3, sample_rate=FS))
     b = np.asarray(white_noise(0.0, 64.0, seed=3, sample_rate=FS))
@@ -35,6 +43,7 @@ def test_white_noise_is_unit_variance_and_reproducible():
     assert a.var() == pytest.approx(1.0, abs=0.02)
 
 
+@waveform_code
 def test_the_flat_spectrum_makes_the_snr_the_norm_of_the_samples():
     """In unit-variance white noise the optimal SNR is the plain sample norm."""
     psd = white_psd(int(0.5 * FS * 16) + 1, 1.0 / 16.0, FS)
@@ -76,6 +85,7 @@ def test_an_snr_core_outside_the_range_is_refused():
         draw_injections(n_cbc=1, n_glitch=0, snr_core=(7.0, 12.0, 0.5))
 
 
+@waveform_code
 def test_the_chirp_mass_population_stays_in_its_range():
     specs = draw_injections(n_cbc=40, n_glitch=0, duration=40000.0,
                             edge_pad=100.0, seed=2, detectors=NETWORK,
@@ -86,6 +96,7 @@ def test_the_chirp_mass_population_stays_in_its_range():
     assert all(s["approximant"] == "IMRPhenomD" for s in specs)
 
 
+@waveform_code
 def test_the_track_rises_through_the_band_and_ends_at_the_merger():
     hp, hc = w.cbc_polarisations(12.0, 8.0, inclination=0.0, f_lower=20.0)
     time, frequency = w.cbc_track(hp, hc, FS, float(hp.start_time), 32)
@@ -95,6 +106,7 @@ def test_the_track_rises_through_the_band_and_ends_at_the_merger():
     assert time[0] < -1.0 and abs(time[-1]) < 0.05
 
 
+@waveform_code
 def test_virgo_receives_its_sensitivity_and_nothing_else(tmp_path):
     """Sensitivity scales V1's amplitude relative to the LIGOs and moves
     nothing: not the draw, not the arrival times, not the H1-L1 ratio."""
@@ -112,11 +124,13 @@ def test_virgo_receives_its_sensitivity_and_nothing_else(tmp_path):
     assert np.allclose(scaled["network_snr"], scaled["target_snr"], rtol=1e-3)
 
 
+@waveform_code
 def test_an_unknown_detector_sensitivity_is_refused(tmp_path):
     with pytest.raises(ValueError):
         small_white_set(tmp_path, relative_sensitivity={"K1": 0.1})
 
 
+@waveform_code
 def test_the_benchmark_validates_on_the_frames_it_wrote(tmp_path):
     # The benchmark writes and validates frames through the compiled core.
     pytest.importorskip("py4tsa")
@@ -148,6 +162,7 @@ def test_the_benchmark_validates_on_the_frames_it_wrote(tmp_path):
     assert set(tracks["injection_id"]) == set(truth["injection_id"])
 
 
+@waveform_code
 def test_the_background_holds_no_injection(tmp_path):
     from wdf.mock.validation import read_ffl
 
@@ -163,6 +178,7 @@ def test_the_background_holds_no_injection(tmp_path):
     assert np.any(fg[inside] != bg[inside])
 
 
+@waveform_code
 def test_a_set_above_the_search_rate_records_the_band_it_is_searched_in(tmp_path):
     # The benchmark writes and validates frames through the compiled core.
     pytest.importorskip("py4tsa")
