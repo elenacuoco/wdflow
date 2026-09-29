@@ -1,6 +1,11 @@
 import numpy as np
 import pytest
+
+# The conditioning and whitening stages are built on the compiled core.
+pytest.importorskip("py4tsa")
+
 from py4tsa.tsa import SeqView_double_t as SV
+
 from scipy.signal import fftconvolve, lfilter, welch
 
 from wdf.processes.zero_phase_whitening import (

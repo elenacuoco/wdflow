@@ -11,6 +11,10 @@ import json
 
 import numpy as np
 import pytest
+
+# The conditioning and whitening stages are built on the compiled core.
+pytest.importorskip("py4tsa")
+
 from scipy.signal import fftconvolve, lfilter
 
 from test_hold_outside_band import FACTOR, FS, SAMPLING, _Parameters, band_std, white_asd
