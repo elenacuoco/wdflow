@@ -374,18 +374,16 @@ def test_the_comparison_bin_resolves_the_delay_and_the_shortest_tile():
     assert np.allclose(step, prepared["profile_bin"])
 
 
-def test_the_match_is_asked_only_of_a_pair_already_coincident_in_time():
-    """A pair admitted on its extents is not thereby coincident in its instants.
+@pytest.mark.parametrize("gate", ["admitted", "instant"])
+def test_a_pair_whose_maps_never_meet_within_the_tolerance_has_no_match(gate):
+    """A pair admitted on its extents is compared only at physical displacements.
 
     Admission is on the events' stretches of time, so two long events that
-    overlap are candidates even when their instants are a second apart --- a
-    transient longer than one analysis window is assembled as several events
-    and the two detectors need not keep the same one. No displacement the
-    tolerance permits brings those two instants together, so a search over
-    those displacements would report the agreement between the tail of one and
-    the head of the other and pay a trials factor for it. The pair keeps its
-    edge and every statistic that needs no displacement; its wavegram match is
-    no agreement.
+    overlap are candidates even when their tiles are a second apart. Whatever
+    pairs the match is asked of, the displacements searched are absolute ones
+    within the tolerance, so no agreement is found between the tail of one
+    event and the head of the other. The pair keeps its edge and every
+    statistic that needs no displacement; its wavegram match is no agreement.
     """
     import pandas as pd
 
@@ -426,7 +424,7 @@ def test_the_match_is_asked_only_of_a_pair_already_coincident_in_time():
     clustered = {ifo: events(t) for ifo, t in times.items()}
     comparison = {ifo: {int(k): Rendered(t) for k, t in enumerate(times[ifo])}
                   for ifo in times}
-    builder = TriggerGraphBuilder(ifos=["H1", "L1"])
+    builder = TriggerGraphBuilder(ifos=["H1", "L1"], match_gate=gate)
     graph = builder.build(clustered, comparison, comparison=comparison)
     table = graph.candidate_table()
 
@@ -447,6 +445,94 @@ def test_the_match_is_asked_only_of_a_pair_already_coincident_in_time():
     # displacement: the match is withheld, the candidate is not.
     assert float(far.network_morphology.iloc[0]) >= 0.0
     assert float(far.network_min_enwdf.iloc[0]) > 0.0
+
+
+def _chirp_pair(gate, lag, peak_gap):
+    """Two detectors see the same 0.3 s row of tiles, L1 earlier by `lag`.
+
+    Each event's instant is put `peak_gap` away from where the same part of
+    the transient sits in the other detector, as happens when the loudest
+    tile of a chirp is a different one in each detector.
+    """
+    import pandas as pd
+
+    from wdf.analysis.network_graph import TriggerGraphBuilder
+
+    ladder = np.array([[64.0, 128.0], [128.0, 256.0]])
+    n = 40
+    row = np.arange(n) % 2
+    amplitude = np.linspace(1.0, 3.0, n) * np.where(np.arange(n) % 3 == 0, 1.0, 0.5)
+
+    class Rendered:
+        bin_seconds = 0.05
+        block_tiles = None
+        bands = ladder
+
+        def __init__(self, start):
+            lo = start + np.arange(n) / 128.0
+            self.tiles = (lo, lo + np.where(row == 0, 1.0 / 128, 1.0 / 256),
+                          ladder[row, 0], ladder[row, 1], amplitude ** 2, amplitude)
+
+        def wavegram(self, n_time_bins):
+            return np.zeros((4, 8))
+
+    def events(start, peak):
+        return pd.DataFrame({
+            "cluster_id": [0], "gpsPeak": [peak], "gpsStart": [start],
+            "duration": [0.32], "tSpread": [0.002],
+            "freqMin": [64.0], "freqMax": [256.0],
+            "EnWDF": [12.0], "n_coeff": [512],
+        })
+
+    start = 100.0
+    clustered = {"H1": events(start, start + 0.2),
+                 "L1": events(start - lag, start + 0.2 - lag - peak_gap)}
+    comparison = {"H1": {0: Rendered(start)}, "L1": {0: Rendered(start - lag)}}
+    builder = TriggerGraphBuilder(ifos=["H1", "L1"], match_gate=gate)
+    prepared = builder.prepare(clustered, comparison, comparison)
+    table = builder.build_from_prepared(clustered, prepared).candidate_table()
+    assert len(table) == 1
+    return table.iloc[0], prepared["profile_bin"]
+
+
+def test_the_whole_event_decides_the_match_not_one_instant():
+    """A lag of 8 ms with the two instants 88 ms apart, as in GW170814 H1-L1.
+
+    Gated on the instants the pair is never compared; over the events' whole
+    duration the two maps agree at the displacement the transient has.
+    """
+    row, _ = _chirp_pair("instant", lag=0.008, peak_gap=0.080)
+    assert abs(float(row.dt_s)) > 0.08
+    assert float(row.network_wavegram_match) == 0.0
+    assert not bool(row.network_wavegram_matched)
+    assert not np.isfinite(float(row.network_wavegram_match_dt))
+
+    row, profile_bin = _chirp_pair("admitted", lag=0.008, peak_gap=0.080)
+    assert float(row.network_wavegram_match) > 0.9
+    assert bool(row.network_wavegram_matched)
+    assert abs(float(row.network_wavegram_match_dt) - 0.008) <= profile_bin
+
+
+def test_comparing_every_admitted_pair_keeps_the_displacement_physical():
+    """A true lag beyond the tolerance is never the displacement reported.
+
+    The row of tiles repeats itself, so it agrees with a shifted copy of
+    itself inside the tolerance; what is reported is that displacement, not
+    the 60 ms the geometry forbids.
+    """
+    row, profile_bin = _chirp_pair("admitted", lag=0.060, peak_gap=0.0)
+    dt = float(row.network_wavegram_match_dt)
+    tolerance = float(row.dt_s) / float(row.dt_over_tolerance)
+    assert np.isfinite(dt)
+    assert abs(dt) <= abs(tolerance) + 0.5 * profile_bin
+    assert abs(dt - 0.060) > abs(tolerance)
+
+
+def test_an_unknown_match_gate_is_refused():
+    from wdf.analysis.network_graph import TriggerGraphBuilder
+
+    with pytest.raises(ValueError):
+        TriggerGraphBuilder(match_gate="peak")
 
 
 def test_a_long_event_does_not_fix_the_grid_of_a_short_pair():
