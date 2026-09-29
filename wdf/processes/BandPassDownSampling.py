@@ -175,11 +175,12 @@ class BandPassDownSampling(object):
             # the low-pass's roll-off above the decimated Nyquist, which the
             # low-pass order and corner must leave deep enough there.
             self.highpass_order = int(getattr(Parameters, "HighPassOrder", None) or 4)
-            self.lowpass_order = int(getattr(Parameters, "LowPassOrder", None) or 8)
-            # 800 Hz at 2048 Hz: an order 8 there is 75 dB down at 1148 Hz, the
-            # lowest input frequency that folds below 900 Hz.
+            self.lowpass_order = int(getattr(Parameters, "LowPassOrder", None) or 20)
+            # 920 Hz at 2048 Hz: an order 20 there passes the data to 906 Hz at
+            # -3 dB and is 122 dB down from 1148 Hz, the lowest input frequency
+            # that folds below 900 Hz, as deep as the Chebyshev.
             corner = getattr(Parameters, "LowPassCorner", None)
-            self.cutoff_frequency = (0.78125 * 0.5 * self.resampling if corner is None
+            self.cutoff_frequency = (0.8984375 * 0.5 * self.resampling if corner is None
                                      else float(corner))
             if not self.low_freq_hp < self.cutoff_frequency < 0.5 * self.resampling:
                 raise ValueError(

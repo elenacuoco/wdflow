@@ -77,10 +77,10 @@ def test_there_is_no_notch_inside_the_decimated_band():
 
 def test_the_corners_are_where_the_data_lose_half_their_amplitude():
     filt = BandPassDownSampling(parameters())
-    assert filt.cutoff_frequency == pytest.approx(800.0)
-    assert response_db(filt, np.array([12.0, 800.0])) == pytest.approx([-6.02, -6.02], abs=0.05)
+    assert filt.cutoff_frequency == pytest.approx(920.0)
+    assert response_db(filt, np.array([12.0, 920.0])) == pytest.approx([-6.02, -6.02], abs=0.05)
     low, high = filt.passband()
-    assert 13.0 < low < 14.0 and 760.0 < high < 770.0
+    assert 12.5 < low < 13.5 and 900.0 < high < 910.0
 
 
 def test_what_folds_back_into_the_band_is_attenuated():
@@ -88,8 +88,8 @@ def test_what_folds_back_into_the_band_is_attenuated():
     third violin harmonics at 1450-1510 Hz stand up to 200 times above the
     floor in the strain."""
     filt = BandPassDownSampling(parameters())
-    assert response_db(filt, np.arange(1148.0, 0.5 * SAMPLING, 1.0)).max() < -70.0
-    assert response_db(filt, np.arange(1450.0, 1510.0, 1.0)).max() < -140.0
+    assert response_db(filt, np.arange(1148.0, 0.5 * SAMPLING, 1.0)).max() < -120.0
+    assert response_db(filt, np.arange(1450.0, 1510.0, 1.0)).max() < -290.0
 
 
 def test_a_tone_inside_the_band_survives():
