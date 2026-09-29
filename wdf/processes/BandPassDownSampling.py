@@ -16,7 +16,7 @@ __project__ = "wdf"
 import logging
 from wdf.structures.array2SeqView import *
 import numpy as np
-from scipy.signal import cheby2, sosfilt, sosfreqz
+from scipy.signal import butter, cheby2, sosfilt, sosfreqz
 
 from wdf.filtering import sosfiltfilt
 
@@ -153,14 +153,46 @@ class BandPassDownSampling(object):
             order = getattr(Parameters, "FilterOrder", None)
         self.order = 10 if order is None else int(order)
         self.stopband_attenuation_db = float(stopband_attenuation_db)
+        self.family = str(getattr(Parameters, "BandPassFilter", None) or "cheby2")
 
-         # Apply a low-pass filter to the data to prevent aliasing. Chebyshev
-         # type II is flat in the pass band, with its ripple confined to the
-         # stop band where nothing is read, and it reaches full attenuation at
-         # the edges given here rather than merely starting to roll off there.
-        self.sos = cheby2(self.order, self.stopband_attenuation_db,
-                          [self.low_freq_hp, self.cutoff_frequency],
-                          fs=self.sampling, btype='bandpass', output='sos')
+        if self.family == "cheby2":
+            # Apply a low-pass filter to the data to prevent aliasing. Chebyshev
+            # type II is flat in the pass band, with its ripple confined to the
+            # stop band where nothing is read, and it reaches full attenuation at
+            # the edges given here rather than merely starting to roll off there.
+            self.sos = cheby2(self.order, self.stopband_attenuation_db,
+                              [self.low_freq_hp, self.cutoff_frequency],
+                              fs=self.sampling, btype='bandpass', output='sos')
+        elif self.family == "butterworth":
+            # A Butterworth high-pass cascaded with a Butterworth low-pass. The
+            # Chebyshev's zeros lie on the unit circle inside the decimated band
+            # (below the low edge and between its high edge and the decimated
+            # Nyquist); an all-pole noise model cannot follow a spectral zero,
+            # so each one comes out of the whitening as a notch. Here the only
+            # zeros are at DC and at the input Nyquist, the corners are -3 dB
+            # points of each pass (-6 dB of the |H|^2 the data receive), and the
+            # response settles in a third of the time. Aliasing is kept out by
+            # the low-pass's roll-off above the decimated Nyquist, which the
+            # low-pass order and corner must leave deep enough there.
+            self.highpass_order = int(getattr(Parameters, "HighPassOrder", None) or 4)
+            self.lowpass_order = int(getattr(Parameters, "LowPassOrder", None) or 8)
+            # 800 Hz at 2048 Hz: an order 8 there is 75 dB down at 1148 Hz, the
+            # lowest input frequency that folds below 900 Hz.
+            corner = getattr(Parameters, "LowPassCorner", None)
+            self.cutoff_frequency = (0.78125 * 0.5 * self.resampling if corner is None
+                                     else float(corner))
+            if not self.low_freq_hp < self.cutoff_frequency < 0.5 * self.resampling:
+                raise ValueError(
+                    f"low-pass corner {self.cutoff_frequency} Hz must lie between the "
+                    f"high-pass corner {self.low_freq_hp} Hz and the decimated Nyquist "
+                    f"{0.5 * self.resampling} Hz")
+            self.sos = np.vstack([
+                butter(self.highpass_order, self.low_freq_hp, btype='highpass',
+                       fs=self.sampling, output='sos'),
+                butter(self.lowpass_order, self.cutoff_frequency, btype='lowpass',
+                       fs=self.sampling, output='sos')])
+        else:
+            raise ValueError(f"BandPassFilter {self.family!r}: use 'cheby2' or 'butterworth'")
         self.estimation=estimation
         
 
@@ -176,11 +208,17 @@ class BandPassDownSampling(object):
         self.pending = []
         self.history = np.zeros(0)
 
+        if self.family == "cheby2":
+            design = (f"cheby2 order {self.order}, {self.stopband_attenuation_db:.0f} dB "
+                      f"at {self.low_freq_hp:.1f}-{self.cutoff_frequency:.1f} Hz")
+        else:
+            design = (f"butterworth high-pass {self.highpass_order} at {self.low_freq_hp:.1f} Hz, "
+                      f"low-pass {self.lowpass_order} at {self.cutoff_frequency:.1f} Hz")
+        low, high = self.passband()
         logging.info(
-            "BandPassDownSampling: %d -> %d Hz, band %.1f-%.1f Hz, order %d, "
-            "%.0f dB, settling %d samples (%.3f s)",
-            self.sampling, self.resampling, self.low_freq_hp,
-            self.cutoff_frequency, self.order, self.stopband_attenuation_db,
+            "BandPassDownSampling: %d -> %d Hz, %s, -3 dB passband %.1f-%.1f Hz, "
+            "settling %d samples (%.3f s)",
+            self.sampling, self.resampling, design, low, high,
             self.padlen, self.padlen / self.sampling)
 
     def Process(self, data):
