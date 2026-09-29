@@ -6,6 +6,10 @@ passband the band-pass's design defines and its edge values outside it.
 """
 import numpy as np
 import pytest
+
+# The conditioning and whitening stages are built on the compiled core.
+pytest.importorskip("py4tsa")
+
 from scipy.signal import fftconvolve, lfilter, sosfreqz, welch
 
 from wdf.filtering import sosfiltfilt

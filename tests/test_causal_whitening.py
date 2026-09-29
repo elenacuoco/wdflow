@@ -6,6 +6,9 @@ import json
 import numpy as np
 import pytest
 
+# The causal whitening runs on the compiled core.
+pytest.importorskip("py4tsa")
+
 from conftest import TEST_PARAMS, run_segment_process
 
 

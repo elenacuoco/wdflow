@@ -4,6 +4,10 @@ import os
 
 import numpy as np
 import pytest
+
+# The conditioning and whitening stages are built on the compiled core.
+pytest.importorskip("py4tsa")
+
 from conftest import GPS0, NOISE_GWF, TEST_PARAMS
 
 from wdf.config.Parameters import Parameters

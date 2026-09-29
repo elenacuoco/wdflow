@@ -118,6 +118,8 @@ def test_an_unknown_detector_sensitivity_is_refused(tmp_path):
 
 
 def test_the_benchmark_validates_on_the_frames_it_wrote(tmp_path):
+    # The benchmark writes and validates frames through the compiled core.
+    pytest.importorskip("py4tsa")
     from wdf.mock.benchmark import BENCHMARK_CONFIG, write_benchmark
 
     config = dict(BENCHMARK_CONFIG, duration=1200.0, n_cbc=5, edge_pad=100.0,
@@ -162,6 +164,8 @@ def test_the_background_holds_no_injection(tmp_path):
 
 
 def test_a_set_above_the_search_rate_records_the_band_it_is_searched_in(tmp_path):
+    # The benchmark writes and validates frames through the compiled core.
+    pytest.importorskip("py4tsa")
     from wdf.mock.benchmark import BENCHMARK_CONFIG, worker_band, write_benchmark
 
     assert worker_band(4096, 2) == worker_band(2048, 1) == (12.0, 921.6)
