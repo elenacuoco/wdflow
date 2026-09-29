@@ -30,6 +30,7 @@ requirements:
     - matplotlib >=3.7
     - pyarrow
     - h5py
+    - threadpoolctl
 
 test:
   imports:

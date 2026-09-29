@@ -41,6 +41,7 @@ alone; the whitening no longer undoes it.
 from __future__ import annotations
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from py4tsa.tsa import DoubleWhitening, LatticeView
 
@@ -895,7 +896,13 @@ def spectrum_at_resolution(ar, length, grid=DEFAULT_RESPONSE_GRID):
     modulus = np.abs(np.fft.rfft(prediction_error_polynomial(ar), int(grid)))
     autocorrelation = np.fft.irfft(1.0 / modulus ** 2, int(grid))[:length]
     window = hann(length, sym=False)
-    lag_window = np.correlate(window, window, "full")[length - 1:] / np.dot(window, window)
+    # `np.correlate` makes one BLAS dot product per lag. Above ten thousand
+    # samples OpenBLAS runs each of them on all its threads, and the cost of
+    # starting them on every lag makes a 16 s filter at 2048 Hz take minutes
+    # of wall time and hours of CPU; on one thread it takes a fraction of a
+    # second, with the same result.
+    with threadpool_limits(1, user_api="blas"):
+        lag_window = np.correlate(window, window, "full")[length - 1:] / np.dot(window, window)
     kept = autocorrelation * lag_window
     size = 4 * length
     lags = np.zeros(size)
