@@ -137,3 +137,29 @@ def test_the_pixel_map_of_an_event_keeps_its_packet_tiles():
     row = octave_row(rendered.bands)
     assert rendered.grid.sum() == pytest.approx(6.0)
     assert rendered.grid[row].sum() == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("bases", [["Coif1P6"], ["DaubC8", "Coif1P6"]], ids=["packet", "mixed"])
+def test_a_search_over_packet_bases_runs_through_to_the_detector_events(tmp_outdir, bases):
+    import glob
+    import json
+
+    from _synth import packets_or_skip
+    from conftest import run_segment_process
+
+    packets_or_skip()
+    triggers = run_segment_process(tmp_outdir, window=512, overlap=128, bases=bases)
+
+    assert len(triggers)
+    assert set(triggers.wave) <= set(bases)
+    assert PACKET in set(triggers.wave)
+    [used] = glob.glob(f"{tmp_outdir}**/parametersUsed-Win512.json", recursive=True)
+    with open(used) as fh:
+        assert json.load(fh)["bases"] == bases
+
+    graph = build_detector_graph(triggers.assign(ifo="H1"))
+    events = detector_events(graph)
+    assert len(events) and np.isfinite(events.EnWDF).all()
+    widths = {round(float(w), 9) for m in event_coefficients(graph).values()
+              for w in m.tiles[3] - m.tiles[2]}
+    assert float(triggers.fs.iloc[0]) / 2 ** 7 in widths
