@@ -244,3 +244,37 @@ def test_the_two_fits_agree_where_the_model_is_a_good_one():
 
     assert np.std(np.log10(ratio)) < 0.05
 
+
+
+def test_the_lag_window_of_a_long_filter_runs_on_one_blas_thread(monkeypatch):
+    """The Hann window's autocorrelation is one BLAS call per lag.
+
+    On many threads each call pays for starting them, which for a 16 s filter
+    turns a fraction of a second into minutes. The correlation runs on one
+    thread whatever the process allows, and the process's setting is left
+    as it was.
+    """
+    from threadpoolctl import threadpool_info, threadpool_limits
+
+    from wdf.processes import zero_phase_whitening as zpw
+
+    seen = []
+    correlate = np.correlate
+
+    def recording(*args, **kwargs):
+        seen.append([pool["num_threads"] for pool in threadpool_info()
+                     if pool["user_api"] == "blas"])
+        return correlate(*args, **kwargs)
+
+    monkeypatch.setattr(zpw.np, "correlate", recording)
+    ar = np.array([1.0, 0.9, -0.2])
+    before = [pool["num_threads"] for pool in threadpool_info() if pool["user_api"] == "blas"]
+    zpw.spectrum_at_resolution(ar, 64)
+    after = [pool["num_threads"] for pool in threadpool_info() if pool["user_api"] == "blas"]
+
+    assert seen and all(threads == 1 for threads in seen[0])
+    assert after == before
+    monkeypatch.setattr(zpw.np, "correlate", correlate)
+    with threadpool_limits(1, user_api="blas"):
+        reference = zpw.spectrum_at_resolution(ar, 64)
+    assert np.array_equal(zpw.spectrum_at_resolution(ar, 64)[1], reference[1])

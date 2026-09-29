@@ -12,6 +12,7 @@ dependencies = [
   'matplotlib>=3.7',
   'pyarrow',
   'h5py',
+  'threadpoolctl',
 ]
 description = "WDF (Wavelet Detection Filter): real-time trigger generation for transient signals, with the downstream analysis that turns triggers into candidate events"
 readme = "README.md"
