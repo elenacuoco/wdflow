@@ -301,7 +301,11 @@ class wdfUnitDSWorker(object):
             ######################
             # self.parameter for sequence of data and the resampling
         
-            ds = BandPassDownSampling(self.par)        
+            ds = BandPassDownSampling(self.par)
+            # What the conditioning was, recorded with the rest of the run's
+            # parameters: its family decides where the band edges are.
+            self.par.BandPassFilter = ds.family
+            self.par.BandPassPassband = list(ds.passband())
             
             #Perform operation to intialite the detection loop    
             #gpsStart = gpsStart - self.par.preWhite            
