@@ -246,6 +246,7 @@ class TriggerGraphBuilder:
         ifos: list[str] | None = None,
         wavegram_time_bins: int = WAVEGRAM_TIME_BINS,
         match_wavegrams: bool = True,
+        match_gate: str = "admitted",
     ):
         """
         :type intra_ifo_window_s: float
@@ -258,6 +259,14 @@ class TriggerGraphBuilder:
         :param ifos: detector order; default, the order of the events given.
         :type wavegram_time_bins: int
         :param wavegram_time_bins: time bins per octave in a node's wavegram.
+        :type match_wavegrams: bool
+        :param match_wavegrams: whether the renderings of a candidate pair are
+            compared.
+        :type match_gate: str
+        :param match_gate: which candidate pairs the wavegram match is asked
+            of. ``"admitted"``: every admitted pair, so the whole duration of
+            the two events decides. ``"instant"``: only the pairs whose
+            instants (`INSTANT_COLUMNS`) are within the timing tolerance.
         """
         self.intra_ifo_window_s = intra_ifo_window_s
         self.coincidence = CoincidenceConfig() if coincidence is None else coincidence
@@ -270,6 +279,17 @@ class TriggerGraphBuilder:
         # then read. With it off `network_wavegram_matched` says the pair was
         # not compared, rather than a zero standing in for a measurement.
         self.match_wavegrams = bool(match_wavegrams)
+        # A single instant does not say where a long event is: the loudest
+        # tile of a chirp can sit tens of milliseconds from the loudest tile
+        # of the same chirp in another detector. With "admitted" the match
+        # is asked of every admitted pair and the displacements searched are
+        # still the tolerance's, in absolute time, so the lag stays physical
+        # and the trials per pair are the same as for a pair whose instants
+        # agree. "instant" compares only the pairs whose instants are within
+        # the tolerance.
+        if match_gate not in ("admitted", "instant"):
+            raise ValueError(f"match_gate must be 'admitted' or 'instant', got {match_gate!r}")
+        self.match_gate = match_gate
         self.ifos = ifos
         self.wavegram_time_bins = wavegram_time_bins
 
@@ -647,19 +667,16 @@ class TriggerGraphBuilder:
             tolerance = self.coincidence.timing_tolerance(
                 spread[i_sel], spread[j_sel], (ifo_a, ifo_b))
             # The wavegram match is a comparison of two morphologies at a
-            # displacement, and it is asked only of pairs that are already
-            # coincident: the events' own instants within the tolerance the
-            # geometry and their own timing spreads allow. A pair whose
-            # instants are further apart than that is admitted --- a transient
-            # longer than one analysis window is assembled as several events
-            # and the two detectors need not keep the same one --- but no
-            # displacement the tolerance permits brings its two instants
-            # together, so what a search over those displacements would find is
-            # the agreement between the tail of one event and the head of the
-            # other, at the price of a trials factor, and not what the
-            # statistic means. It is reported as no agreement, and the pair is
-            # ranked on the statistics that do not require a displacement.
-            coincident = np.abs(local[:, 2]) <= tolerance
+            # displacement. Each event's window holds all of its tiles, and the
+            # displacements searched are absolute ones within the tolerance
+            # (`correlation_profiles`), whatever the two instants are: a pair
+            # whose maps never meet within them reports no agreement. With
+            # `match_gate="instant"` only the pairs whose instants are already
+            # within the tolerance are compared.
+            if self.match_gate == "admitted":
+                coincident = np.ones(len(i_sel), dtype=bool)
+            else:
+                coincident = np.abs(local[:, 2]) <= tolerance
             matched = np.flatnonzero(coincident)
             # The displacements searched are the tolerance's. Each map is laid
             # on its own event's instant and the whole bins of the difference
