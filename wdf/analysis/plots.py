@@ -176,10 +176,16 @@ def plot_trigger_statistics(fig, triggers, fs=None):
     axes[1, 0].set_xlabel("triggers")
     axes[1, 0].set_title("winning basis")
 
-    level, _ = coeff_levels(window_length(triggers))
-    index = np.concatenate([np.asarray(v, dtype=np.int64)
-                            for v in triggers["wt_index"]]) if len(triggers) else np.empty(0, int)
-    occupancy = np.bincount(level[index] + 1, minlength=int(level.max()) + 2)
+    n_coeff = window_length(triggers)
+    pyramid, _ = coeff_levels(n_coeff)
+    occupancy = np.zeros(int(pyramid.max()) + 2, dtype=np.int64)
+    waves = (triggers["wave"].astype(str) if "wave" in triggers
+             else pd.Series("", index=triggers.index))
+    for wave, group in triggers.groupby(waves, sort=False):
+        # A packet tile is counted on the octave that holds it.
+        level, _ = coeff_levels(n_coeff, wave or None)
+        index = np.concatenate([np.asarray(v, dtype=np.int64) for v in group["wt_index"]])
+        occupancy += np.bincount(level[index] + 1, minlength=len(occupancy))
     axes[1, 1].bar(np.arange(len(occupancy)) - 1, occupancy)
     axes[1, 1].set_yscale("log")
     axes[1, 1].set_xlabel("octave level (-1 is the scaling coefficient)")

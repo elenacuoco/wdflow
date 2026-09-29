@@ -43,7 +43,8 @@ from wdf.analysis.metaparameters import energy_quantile
 from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import EPS, _UnionFind
-from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds
+from wdf.analysis.wavelets import (coeff_freq_bands, coeff_time_bounds, ladder_rows,
+                                   packet_depths)
 
 TRIGGER_EDGE_FEATURES = [
     "dt_s", "time_overlap", "frequency_overlap", "log_scale_ratio",
@@ -119,6 +120,22 @@ def _one_rate(rate) -> float:
             "the band ladder needs one analysis rate, and these triggers "
             f"carry {np.unique(usable).tolist()}")
     return float(usable[0])
+
+
+def layout_depths(triggers: pd.DataFrame) -> np.ndarray:
+    """The packet depth of each trigger's winning basis, 0 for the pyramid.
+
+    A coefficient index is placed in the plane by the layout of the basis that
+    produced it, which the trigger records as `wave`; a table without that
+    column is read as the pyramid.
+
+    :type triggers: pandas.DataFrame
+    :param triggers: triggers, carrying `wave` where the search recorded it.
+    :return: numpy.ndarray -- one integer per trigger.
+    """
+    if "wave" not in triggers:
+        return np.zeros(len(triggers), dtype=int)
+    return packet_depths(triggers["wave"].to_numpy())
 
 
 def band_grid(scales, fs: float) -> np.ndarray:
@@ -256,22 +273,21 @@ def trigger_wavegrams(triggers: pd.DataFrame, bands: np.ndarray,
     if triggers.empty:
         return np.zeros((0, cells))
 
-    band_of = {(round(lo, 9), round(hi, 9)): row
-               for row, (lo, hi) in enumerate(bands)}
     positions = np.arange(len(triggers))
     sigma = _positive_sigma(triggers)
+    depth = pd.Series(layout_depths(triggers), index=triggers.index)
 
     # One accumulation over every coefficient of every trigger at once. Walking
     # the triggers instead costs a Python iteration and a scattered add each,
     # which at a search's trigger rate is where the grouping spends its time.
     flat_cell, flat_value = [], []
-    for (n_coeff, fs), group in triggers.groupby(["n_coeff", "fs"], sort=False):
-        n_coeff, fs = int(n_coeff), float(fs)
-        t_lo, t_hi = coeff_time_bounds(n_coeff, fs)
-        f_lo, f_hi = coeff_freq_bands(n_coeff, fs)
+    for (n_coeff, fs, layout), group in triggers.groupby(
+            [triggers["n_coeff"], triggers["fs"], depth], sort=False):
+        n_coeff, fs, wave = int(n_coeff), float(fs), int(layout)
+        t_lo, t_hi = coeff_time_bounds(n_coeff, fs, wave)
+        f_lo, f_hi = coeff_freq_bands(n_coeff, fs, wave)
         span = n_coeff / fs
-        row_of = np.array([band_of.get((round(lo, 9), round(hi, 9)), -1)
-                           for lo, hi in zip(f_lo, f_hi)])
+        row_of = ladder_rows(f_lo, f_hi, bands)
         column_of = np.clip(
             (0.5 * (t_lo + t_hi) / span * time_bins).astype(int), 0, time_bins - 1)
 
@@ -324,13 +340,12 @@ def occupied_bands(triggers: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
             f"{len(bands)} bands do not fit one integer; the ladder spans "
             "sampling rate over window length and should not reach this")
 
-    row_of_band = {(round(lo, 9), round(hi, 9)): row
-                   for row, (lo, hi) in enumerate(bands)}
     position = np.arange(len(triggers))
-    for (n_coeff, fs), group in triggers.groupby(["n_coeff", "fs"], sort=False):
-        f_lo, f_hi = coeff_freq_bands(int(n_coeff), float(fs))
-        row_of = np.array([row_of_band.get((round(lo, 9), round(hi, 9)), -1)
-                           for lo, hi in zip(f_lo, f_hi)])
+    depth = pd.Series(layout_depths(triggers), index=triggers.index)
+    for (n_coeff, fs, layout), group in triggers.groupby(
+            [triggers["n_coeff"], triggers["fs"], depth], sort=False):
+        f_lo, f_hi = coeff_freq_bands(int(n_coeff), float(fs), int(layout))
+        row_of = ladder_rows(f_lo, f_hi, bands)
         bit_of = np.where(row_of >= 0,
                           np.left_shift(np.uint64(1), np.maximum(row_of, 0)
                                         .astype(np.uint64)),
@@ -564,6 +579,7 @@ def tile_context(nodes):
         "sigma": nodes["sigma"].to_numpy(dtype=float),
         "index_of": nodes["wt_index"].to_numpy(),
         "value_of": nodes["wt_value"].to_numpy(),
+        "depth": layout_depths(nodes),
         "geometry": {},
     }
 
@@ -592,16 +608,18 @@ def event_tiles(nodes, members, context=None):
     context = tile_context(nodes) if context is None else context
     geometry = context["geometry"]
     gps, scale, rate = context["gps"], context["scale"], context["rate"]
+    depth = context["depth"]
     sigma = context["sigma"]
     index_of, value_of = context["index_of"], context["value_of"]
     t_lo, t_hi, f_lo, f_hi, energy, amplitude = [], [], [], [], [], []
 
     for row in members:
-        n = int(scale[row])
-        if n not in geometry:
-            geometry[n] = (coeff_time_bounds(n, float(rate[row])),
-                           coeff_freq_bands(n, float(rate[row])))
-        (lo, hi), (flo, fhi) = geometry[n]
+        n, layout = int(scale[row]), int(depth[row])
+        if (n, layout) not in geometry:
+            wave = int(layout)
+            geometry[n, layout] = (coeff_time_bounds(n, float(rate[row]), wave),
+                                   coeff_freq_bands(n, float(rate[row]), wave))
+        (lo, hi), (flo, fhi) = geometry[n, layout]
         index = np.asarray(index_of[row], dtype=int)
         if not index.size:
             continue
@@ -978,16 +996,15 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     scale = nodes["n_coeff"].to_numpy(dtype=int)
     gps = nodes["gps"].to_numpy(dtype=float)
     bands = band_grid(scale, _one_rate(fs))
-    row_of = {(round(lo, 9), round(hi, 9)): row for row, (lo, hi) in enumerate(bands)}
+    depth = layout_depths(nodes)
 
     geometry = {}
-    for length in np.unique(scale):
+    for length, layout in {(int(a), int(b)) for a, b in zip(scale, depth)}:
         rate = _one_rate(fs)
-        t_lo, t_hi = coeff_time_bounds(int(length), rate)
-        f_lo, f_hi = coeff_freq_bands(int(length), rate)
-        rows = np.array([row_of.get((round(a, 9), round(b, 9)), -1)
-                         for a, b in zip(f_lo, f_hi)])
-        geometry[int(length)] = (0.5 * (t_lo + t_hi), rows)
+        wave = int(layout)
+        t_lo, t_hi = coeff_time_bounds(length, rate, wave)
+        f_lo, f_hi = coeff_freq_bands(length, rate, wave)
+        geometry[length, layout] = (0.5 * (t_lo + t_hi), ladder_rows(f_lo, f_hi, bands))
 
     order = np.argsort(labels, kind="stable")
     grouped = labels[order]
@@ -1037,15 +1054,16 @@ def event_coefficients(graph: DetectorGraph, labels=None,
             [np.atleast_1d(np.asarray(value_of[n], dtype=float))
              for n in range(len(labels))])
 
-        # Band row and tile centre depend only on the window length, of which
-        # there are a handful, so each is resolved for all its coefficients at
-        # once rather than trigger by trigger.
+        # Band row and tile centre depend only on the window length and the
+        # layout of the winning basis, of which there are a handful, so each is
+        # resolved for all its coefficients at once rather than trigger by
+        # trigger.
         flat_row = np.full(flat_node.shape, -1, dtype=int)
         flat_centre = np.zeros(flat_node.shape, dtype=float)
         node_scale = scale[flat_node]
-        for length in np.unique(scale):
-            tile_centre, rows = geometry[int(length)]
-            here = node_scale == int(length)
+        node_depth = depth[flat_node]
+        for (length, layout), (tile_centre, rows) in geometry.items():
+            here = (node_scale == length) & (node_depth == layout)
             flat_row[here] = rows[flat_index[here]]
             flat_centre[here] = tile_centre[flat_index[here]]
 

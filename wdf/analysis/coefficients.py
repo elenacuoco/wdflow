@@ -160,8 +160,8 @@ class SparseCoefficients:
         """
         from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds
 
-        t_lo, t_hi = coeff_time_bounds(self.n_coeff, self.fs)
-        f_lo, f_hi = coeff_freq_bands(self.n_coeff, self.fs)
+        t_lo, t_hi = coeff_time_bounds(self.n_coeff, self.fs, self.wave)
+        f_lo, f_hi = coeff_freq_bands(self.n_coeff, self.fs, self.wave)
         index = np.asarray(self.index, dtype=np.int64)
         return dict(
             t_lo=t_lo[index],

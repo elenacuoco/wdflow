@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds
+from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds, packet_depths
 
 SCALE_PIXEL_COLUMNS = [
     "trigger_index", "ifo", "scale", "fs",
@@ -51,8 +51,10 @@ def pixel_cloud(triggers: pd.DataFrame) -> pd.DataFrame:
     """Every surviving coefficient of every window length, as one tile cloud.
 
     :type triggers: pandas.DataFrame
-    :param triggers: triggers carrying `gps`, `n_coeff`, `fs` and the
-        coefficient columns. Several analysis window lengths may be present.
+    :param triggers: triggers carrying `gps`, `n_coeff`, `fs`, the coefficient
+        columns and, where the search recorded it, `wave`, whose layout places
+        each index (`wdf.analysis.wavelets`). Several analysis window lengths
+        may be present.
     :return: pandas.DataFrame -- one row per tile, with `SCALE_PIXEL_COLUMNS`.
         `scale` is the window length the tile was found at, in samples; times
         are absolute GPS.
@@ -61,10 +63,13 @@ def pixel_cloud(triggers: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=SCALE_PIXEL_COLUMNS)
 
     frames = []
-    for (n_coeff, fs), group in triggers.groupby(["n_coeff", "fs"], sort=True):
-        n_coeff, fs = int(n_coeff), float(fs)
-        t_lo_of, t_hi_of = coeff_time_bounds(n_coeff, fs)
-        f_lo_of, f_hi_of = coeff_freq_bands(n_coeff, fs)
+    depth = pd.Series(packet_depths(triggers["wave"].to_numpy()) if "wave" in triggers
+                      else np.zeros(len(triggers), dtype=int), index=triggers.index)
+    for (n_coeff, fs, layout), group in triggers.groupby(
+            [triggers["n_coeff"], triggers["fs"], depth], sort=True):
+        n_coeff, fs, layout = int(n_coeff), float(fs), int(layout)
+        t_lo_of, t_hi_of = coeff_time_bounds(n_coeff, fs, layout)
+        f_lo_of, f_hi_of = coeff_freq_bands(n_coeff, fs, layout)
 
         counts = group["wt_index"].map(len).to_numpy()
         if counts.sum() == 0:
@@ -113,7 +118,7 @@ def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
     Consecutive windows share samples, so the same time-frequency region can be
     thresholded in both and appear twice in the cloud. Summing the cloud would
     then count that region's energy twice. Two rows describe one region when
-    they agree in window length and in both edges, and what is kept is the
+    they agree in window length and in both edges of time and of band, and what is kept is the
     larger estimate: the window that saw more of the transient is the one that
     kept more of its amplitude.
 
@@ -123,8 +128,8 @@ def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
     matching, and the shared part of their support is still counted twice. That
     residual is bounded by the ratio of the overlap to the window.
 
-    Two rows are the same tile when they agree exactly in window length and in
-    both edges, in the same detector and, where the caller has labelled them,
+    Two rows are the same tile when they agree exactly in window length, in
+    their start and in both band edges, in the same detector and, where the caller has labelled them,
     in the same cluster. The edges are a window's start plus a dyadic offset, so on a
     power of two sampling rate and a whole-second start the sum is exact and
     the comparison is safe; it is not, on a rate that is not.
@@ -140,7 +145,10 @@ def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
     # The larger estimate is the larger one *on its own noise scale*: the two
     # windows that reported this tile need not have measured the same noise,
     # which is the reason every sum downstream normalises tile by tile.
+    # The band is both its edges: a packet tile and an octave tile of one
+    # window can share a lower edge and a start and still be different tiles.
     order = np.lexsort((-normalised_energy(pixels),
+                        pixels["f_hi"].to_numpy(dtype=float),
                         pixels["f_lo"].to_numpy(dtype=float),
                         pixels["t_lo"].to_numpy(dtype=float),
                         pixels["scale"].to_numpy(dtype=float)))
@@ -151,7 +159,7 @@ def unique_tiles(pixels: pd.DataFrame) -> pd.DataFrame:
     # tile is then a member of both. Deduplicating across owners would take it
     # from the quieter of the two.
     key = [column for column in ("ifo", "cluster_id") if column in ordered]
-    key += ["scale", "t_lo", "f_lo"]
+    key += ["scale", "t_lo", "f_lo", "f_hi"]
     keep = ~ordered.duplicated(subset=key, keep="first")
     # Back to the order the caller passed, whatever its index was.
     return ordered[keep].iloc[np.argsort(order[keep.to_numpy()])]
@@ -163,9 +171,10 @@ class ScaleCalibration:
 
     A tile's significance is read from the distribution of its own window
     length and its own frequency band, so that the same number means the same
-    thing wherever it was measured. Bands are octaves of the dyadic ladder and
-    are shared between window lengths wherever both reach them, so the key is
-    exact rather than a binning choice.
+    thing wherever it was measured. A band is its two edges: an octave of the
+    dyadic ladder, shared between window lengths wherever both reach them, or
+    a band of a wavelet-packet level; either way the key is exact rather than
+    a binning choice.
     """
 
     tables: dict = field(default_factory=dict)
@@ -187,7 +196,8 @@ class ScaleCalibration:
         energy = normalised_energy(background)
         tables = {}
         keys = list(zip(background["scale"].to_numpy(dtype=int),
-                        background["f_lo"].to_numpy(dtype=float)))
+                        background["f_lo"].to_numpy(dtype=float),
+                        background["f_hi"].to_numpy(dtype=float)))
         frame = pd.DataFrame(dict(key=pd.Series(keys, dtype=object), energy=energy))
         for key, group in frame.dropna().groupby("key", sort=False):
             tables[key] = np.sort(group["energy"].to_numpy())
@@ -207,8 +217,9 @@ class ScaleCalibration:
         out = np.full(len(pixels), np.nan)
         scale = pixels["scale"].to_numpy(dtype=int)
         band = pixels["f_lo"].to_numpy(dtype=float)
+        top = pixels["f_hi"].to_numpy(dtype=float)
         for key, table in self.tables.items():
-            rows = np.flatnonzero((scale == key[0]) & (band == key[1]))
+            rows = np.flatnonzero((scale == key[0]) & (band == key[1]) & (top == key[2]))
             if rows.size == 0:
                 continue
             above = len(table) - np.searchsorted(table, energy[rows], side="left")

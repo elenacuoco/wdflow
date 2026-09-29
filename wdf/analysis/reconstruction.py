@@ -32,10 +32,13 @@ def inverse_transform(coefficients, wave):
     :param coefficients: the ``wt*`` coefficients of one trigger.
     :type wave: str
     :param wave: name of the basis that produced them, as recorded on the
-        trigger.
+        trigger: a mother for its pyramid, or a mother followed by ``P`` and a
+        depth for that uniform wavelet-packet level
+        (`wdf.analysis.wavelets.packet_depth`).
     :return: numpy.ndarray -- the reconstructed samples.
     """
     from py4tsa.tsa import WaveletTransform
+    from wdf.analysis.wavelets import mother_wavelet, packet_depth
     from wdf.structures.array2SeqView import array2SeqView
 
     coefficients = np.asarray(coefficients, dtype=float).reshape(-1)
@@ -43,7 +46,11 @@ def inverse_transform(coefficients, wave):
 
     view = array2SeqView(0.0, 1.0, n)
     view = view.Fill(0.0, coefficients.copy())
-    WaveletTransform(n, getattr(WaveletTransform, wave)).Inverse(view)
+    mother = getattr(WaveletTransform, mother_wavelet(wave))
+    depth = packet_depth(wave)
+    transform = (WaveletTransform(n, mother, depth) if depth
+                 else WaveletTransform(n, mother))
+    transform.Inverse(view)
 
     return np.array([view.GetY(0, i) for i in range(n)])
 

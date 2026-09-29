@@ -182,7 +182,9 @@ class ClusterCoefficients:
         """The cluster's tiles rendered on a fixed octave-by-time grid.
 
         Each coefficient is placed at its own tile's absolute time and octave,
-        and the largest magnitude falling in a cell wins it. The grid has the
+        read from the layout of the basis its window won (a packet tile in the
+        octave that holds it, `wdf.analysis.wavelets.coeff_levels`), and the
+        largest magnitude falling in a cell wins it. The grid has the
         same shape whatever the cluster's duration or number of windows, which
         is what lets a learned model take it as an input.
 
@@ -195,10 +197,8 @@ class ClusterCoefficients:
         from wdf.analysis.wavelets import coeff_levels, coeff_time_bounds
 
         level, _ = coeff_levels(self.n_coeff)
-        t_lo, t_hi = coeff_time_bounds(self.n_coeff, self.fs)
-        t_mid = 0.5 * (t_lo + t_hi)
-
         n_levels = int(level.max()) + 2
+        geometry = {}
         grid = np.zeros((n_levels, int(n_time_bins)))
 
         span = max(self.duration, 1.0 / self.fs)
@@ -209,8 +209,14 @@ class ClusterCoefficients:
             return grid
         scale = sigma
 
-        row_of_level = np.where(level < 0, 0, level + 1)
+        waves = self.waves if self.waves else (None,) * self.n_triggers
         for row, start in enumerate(self.times):
+            wave = waves[row]
+            if wave not in geometry:
+                level, _ = coeff_levels(self.n_coeff, wave)
+                t_lo, t_hi = coeff_time_bounds(self.n_coeff, self.fs, wave)
+                geometry[wave] = (np.where(level < 0, 0, level + 1), 0.5 * (t_lo + t_hi))
+            row_of_level, t_mid = geometry[wave]
             offset = float(start - self.gps_start)
             column = np.clip(((offset + t_mid) / span * n_time_bins).astype(int),
                              0, int(n_time_bins) - 1)

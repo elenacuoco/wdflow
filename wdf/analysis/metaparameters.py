@@ -104,7 +104,7 @@ def energy_quantile(lo, hi, energy, quantiles):
 
 
 def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
-                  gps: float = 0.0) -> dict:
+                  gps: float = 0.0, wave=None) -> dict:
     """Derive an event's parameters from its surviving wavelet coefficients.
 
     :type index: array-like
@@ -120,6 +120,10 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     :type gps: float
     :param gps: GPS time of the analysis window's first sample, which the
         returned times are absolute against.
+    :type wave: str or None
+    :param wave: the basis that produced the coefficients, which fixes where
+        an index sits in the plane (`wdf.analysis.wavelets`); None is the
+        pyramid.
     :return: dict -- `gpsStart`, `gpsCentroid`, `tSpread`, `gpsPeak`,
         `duration`, `snrPeak`, `freqMin`, `freqMean`, `freqMax`;
         all `nan` when no coefficient survived.
@@ -135,8 +139,8 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     if total <= 0.0:
         return _empty()
 
-    t_lo, t_hi = coeff_time_bounds(int(n_coeff), float(fs))
-    f_lo, f_hi = coeff_freq_bands(int(n_coeff), float(fs))
+    t_lo, t_hi = coeff_time_bounds(int(n_coeff), float(fs), wave)
+    f_lo, f_hi = coeff_freq_bands(int(n_coeff), float(fs), wave)
     t_lo, t_hi = t_lo[index], t_hi[index]
     f_lo, f_hi = f_lo[index], f_hi[index]
     t_mid = 0.5 * (t_lo + t_hi)
