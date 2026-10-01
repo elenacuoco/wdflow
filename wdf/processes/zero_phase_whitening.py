@@ -938,18 +938,17 @@ def truncated_taps(ar, duration, sampling, band=None, blend=DEFAULT_BAND_BLEND_H
     return symmetric_taps(response, support=length // 2, taper=1.0)
 
 
-class MagnitudeWhitening:
-    """Whiten a stream by the modulus of its prediction-error filter.
+class _SymmetricTapsWhitening:
+    """Whiten a stream through a fixed set of symmetric taps.
 
-    The response is ``|A(e^{iw})|``, real and non-negative, so the phase is
-    zero at every frequency and the whitened spectrum is the causal
-    whitening's, bin by bin: the two differ in phase and in nothing else. The
-    impulse response is the symmetric `magnitude_taps`, applied by FFT
-    convolution over each output block together with ``K`` samples of the real
-    stream before it and ``K`` after it, ``K`` the support. That is linear
-    convolution with a fixed filter, so the output does not depend on where the
-    blocks begin: a stream whitened block by block is the stream whitened at
-    once.
+    The streaming shared by the zero-phase filters whose impulse response is
+    held as taps, whatever response they were built from. The taps are even,
+    ``2 K + 1`` of them with lag zero at ``K``, so the phase is zero at every
+    frequency. They are applied by FFT convolution over each output block
+    together with ``K`` samples of the real stream before it and ``K`` after
+    it, ``K`` the support. That is linear convolution with a fixed filter, so
+    the output does not depend on where the blocks begin: a stream whitened
+    block by block is the stream whitened at once.
 
     The interface is `ZeroPhaseWhitening`'s, so the worker drives either the
     same way. The output of a block is ready once ``output_size +
@@ -957,7 +956,144 @@ class MagnitudeWhitening:
     of its future is real data. The past is the ``K`` input samples preceding
     the block, zeros before the stream has supplied them, so the first ``K``
     samples a stream emits are not whitened data and are to be discarded as
-    the warm-up is. The latency is ``K`` samples.
+    the warm-up is. The latency is ``K`` samples. The stream is not divided by
+    `sigma`: the output is in the units the taps give it, and `sigma` is its
+    level, for the search to read.
+    """
+
+    def _install(self, taps, sigma, output_size, extra_size):
+        """Hold the filter and an empty stream.
+
+        Every way of obtaining the response ends here, so that the filters
+        differ in the response and in nothing else.
+
+        :type taps: numpy.ndarray
+        :param taps: ``2 K + 1`` symmetric taps, lag zero at ``K``.
+        :type sigma: float
+        :param sigma: level in band of the whitened output.
+        :type output_size: int
+        :param output_size: whitened samples produced per `Output` call.
+        :type extra_size: int
+        :param extra_size: samples buffered beyond the output block.
+        :return: None
+        :raises ValueError: if `extra_size` is positive and below the support.
+        """
+        self.taps = np.asarray(taps, dtype=float)
+        self.support = (self.taps.size - 1) // 2
+        self.sigma = float(sigma)
+        self._check_lookahead(extra_size)
+        self.output_size, self.extra_size = int(output_size), int(extra_size)
+        self._buffer = np.zeros(0)
+        self._history = np.zeros(self.support)
+        self._start = None
+        self._interval = None
+
+
+    @property
+    def latency(self):
+        """Samples of future data an output sample depends on: the support."""
+        return self.support
+
+    def _check_lookahead(self, extra_size):
+        """Refuse a lookahead that would put zeros in place of the future."""
+        if 0 < extra_size < self.support:
+            raise ValueError(
+                f"the lookahead is {extra_size} samples but the filter reads "
+                f"{self.support} ahead: the future would be zeros at every "
+                f"block join. Set WhiteningExtraSize to at least the filter's "
+                f"support.")
+
+    def Input(self, data):
+        """Append one chunk to the stream without producing output.
+
+        The stream's time is taken from the first chunk it is given, and every
+        later chunk is taken to follow the previous one.
+
+        :type data: py4tsa.tsa.SeqView_double_t
+        :param data: input chunk, band-passed and decimated.
+        :return: None
+        """
+        values = np.array([data.GetY(0, i) for i in range(data.GetSize())])
+        if self._start is None:
+            self._start, self._interval = data.GetStart(), data.GetSampling()
+        self._buffer = np.concatenate([self._buffer, values * data.GetScale()])
+
+    def Output(self, dataw):
+        """Whiten the next `output_size` samples of the stream.
+
+        :type dataw: py4tsa.tsa.SeqView_double_t
+        :param dataw: output view, replaced by the whitened block, labelled
+            with the time of its first sample.
+        :return: None
+        :raises RuntimeError: if fewer than ``output_size + extra_size``
+            samples are buffered.
+        """
+        from scipy.signal import fftconvolve
+
+        from wdf.structures.array2SeqView import array2SeqView
+
+        n, k = self.output_size, self.support
+        if self._buffer.size < n + self.extra_size:
+            raise RuntimeError(
+                f"{type(self).__name__}: {self._buffer.size} samples buffered, "
+                f"{n + self.extra_size} needed")
+        future = self._buffer[n:n + k]
+        future = np.concatenate([future, np.zeros(k - future.size)])
+        joined = np.concatenate([self._history, self._buffer[:n], future])
+        whitened = fftconvolve(joined, self.taps, mode="valid")
+        self._history = joined[n:n + k]
+        self._buffer = self._buffer[n:]
+
+        view = array2SeqView(self._start, 1.0 / self._interval, n)
+        view.Fill(self._start, whitened)
+        view.SV.SetScale(1.0)
+        dataw.assign(view.SV)
+        self._start += self._interval * n
+
+    def Process(self, data, dataw):
+        """Append one chunk and whiten the next block.
+
+        :type data: py4tsa.tsa.SeqView_double_t
+        :param data: input chunk, band-passed and decimated.
+        :type dataw: py4tsa.tsa.SeqView_double_t
+        :param dataw: output view, replaced by the whitened block.
+        :return: None
+        """
+        self.Input(data)
+        self.Output(dataw)
+
+    def DataNeeded(self):
+        """Buffered samples beyond what the next output block needs.
+
+        The quantity `ZeroPhaseWhitening.DataNeeded` returns, with the same
+        sign: negative means the next block cannot be produced yet.
+
+        :return: int
+        """
+        return int(self._buffer.size - (self.output_size + self.extra_size))
+
+    def SetOutputSize(self, output_size, extra_size):
+        """Change the output block size and the lookahead.
+
+        :type output_size: int
+        :param output_size: whitened samples produced per `Output` call.
+        :type extra_size: int
+        :param extra_size: samples buffered beyond the output block.
+        :return: None
+        :raises ValueError: if `extra_size` is positive and below the support.
+        """
+        self._check_lookahead(extra_size)
+        self.output_size, self.extra_size = int(output_size), int(extra_size)
+
+
+class MagnitudeWhitening(_SymmetricTapsWhitening):
+    """Whiten a stream by the modulus of its prediction-error filter.
+
+    The response is ``|A(e^{iw})|``, real and non-negative, so the phase is
+    zero at every frequency and the whitened spectrum is the causal
+    whitening's, bin by bin: the two differ in phase and in nothing else. The
+    impulse response is the symmetric `magnitude_taps`, streamed as
+    `_SymmetricTapsWhitening` describes, with latency ``K``, the support.
     """
 
     def __init__(self, ar, output_size, extra_size=0, floor=DEFAULT_RESPONSE_FLOOR,
@@ -1025,22 +1161,6 @@ class MagnitudeWhitening:
         self.band = None if band is None else (float(band[0]), float(band[1]))
         self._install(taps, sigma, output_size, extra_size)
 
-    def _install(self, taps, sigma, output_size, extra_size):
-        """Hold the filter and an empty stream.
-
-        Shared by the two ways of obtaining the response -- from an
-        autoregressive model and from a measured spectrum -- so that the two
-        differ in the response and in nothing else.
-        """
-        self.taps = np.asarray(taps, dtype=float)
-        self.support = (self.taps.size - 1) // 2
-        self.sigma = float(sigma)
-        self._check_lookahead(extra_size)
-        self.output_size, self.extra_size = int(output_size), int(extra_size)
-        self._buffer = np.zeros(0)
-        self._history = np.zeros(self.support)
-        self._start = None
-        self._interval = None
 
     @classmethod
     def from_spectrum(cls, samples, sampling, output_size, extra_size=0, band=None,
@@ -1097,99 +1217,3 @@ class MagnitudeWhitening:
         self._install(taps, whitened_level(whitened, sampling, band, nperseg),
                       output_size, extra_size)
         return self
-
-    @property
-    def latency(self):
-        """Samples of future data an output sample depends on: the support."""
-        return self.support
-
-    def _check_lookahead(self, extra_size):
-        """Refuse a lookahead that would put zeros in place of the future."""
-        if 0 < extra_size < self.support:
-            raise ValueError(
-                f"the lookahead is {extra_size} samples but the filter reads "
-                f"{self.support} ahead: the future would be zeros at every "
-                f"block join. Set WhiteningExtraSize to at least the filter's "
-                f"support.")
-
-    def Input(self, data):
-        """Append one chunk to the stream without producing output.
-
-        The stream's time is taken from the first chunk it is given, and every
-        later chunk is taken to follow the previous one.
-
-        :type data: py4tsa.tsa.SeqView_double_t
-        :param data: input chunk, band-passed and decimated.
-        :return: None
-        """
-        values = np.array([data.GetY(0, i) for i in range(data.GetSize())])
-        if self._start is None:
-            self._start, self._interval = data.GetStart(), data.GetSampling()
-        self._buffer = np.concatenate([self._buffer, values * data.GetScale()])
-
-    def Output(self, dataw):
-        """Whiten the next `output_size` samples of the stream.
-
-        :type dataw: py4tsa.tsa.SeqView_double_t
-        :param dataw: output view, replaced by the whitened block, labelled
-            with the time of its first sample.
-        :return: None
-        :raises RuntimeError: if fewer than ``output_size + extra_size``
-            samples are buffered.
-        """
-        from scipy.signal import fftconvolve
-
-        from wdf.structures.array2SeqView import array2SeqView
-
-        n, k = self.output_size, self.support
-        if self._buffer.size < n + self.extra_size:
-            raise RuntimeError(
-                f"MagnitudeWhitening: {self._buffer.size} samples buffered, "
-                f"{n + self.extra_size} needed")
-        future = self._buffer[n:n + k]
-        future = np.concatenate([future, np.zeros(k - future.size)])
-        joined = np.concatenate([self._history, self._buffer[:n], future])
-        whitened = fftconvolve(joined, self.taps, mode="valid")
-        self._history = joined[n:n + k]
-        self._buffer = self._buffer[n:]
-
-        view = array2SeqView(self._start, 1.0 / self._interval, n)
-        view.Fill(self._start, whitened)
-        view.SV.SetScale(1.0)
-        dataw.assign(view.SV)
-        self._start += self._interval * n
-
-    def Process(self, data, dataw):
-        """Append one chunk and whiten the next block.
-
-        :type data: py4tsa.tsa.SeqView_double_t
-        :param data: input chunk, band-passed and decimated.
-        :type dataw: py4tsa.tsa.SeqView_double_t
-        :param dataw: output view, replaced by the whitened block.
-        :return: None
-        """
-        self.Input(data)
-        self.Output(dataw)
-
-    def DataNeeded(self):
-        """Buffered samples beyond what the next output block needs.
-
-        The quantity `ZeroPhaseWhitening.DataNeeded` returns, with the same
-        sign: negative means the next block cannot be produced yet.
-
-        :return: int
-        """
-        return int(self._buffer.size - (self.output_size + self.extra_size))
-
-    def SetOutputSize(self, output_size, extra_size):
-        """Change the output block size and the lookahead.
-
-        :type output_size: int
-        :param output_size: whitened samples produced per `Output` call.
-        :type extra_size: int
-        :param extra_size: samples buffered beyond the output block.
-        :return: None
-        :raises ValueError: if `extra_size` is positive and below the support.
-        """
-        self._check_lookahead(extra_size)
-        self.output_size, self.extra_size = int(output_size), int(extra_size)
