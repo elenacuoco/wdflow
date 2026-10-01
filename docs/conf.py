@@ -51,8 +51,15 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"
 html_static_path = []
 
+# Each inventory is read from its site first and, when the site cannot be
+# reached, from the copy committed under _inventories/. The build runs with -W,
+# and intersphinx warns only when every location of an inventory fails, so an
+# outage of one of these sites no longer fails the build: on 1 Oct 2026
+# docs.python.org answered 503 for hours, and that alone failed the docs check.
+# The copies only serve while a site is down. Refresh them now and then with
+#     curl -sSL -o docs/_inventories/<name>.inv <site>/objects.inv
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-    "numpy": ("https://numpy.org/doc/stable/", None),
-    "pandas": ("https://pandas.pydata.org/docs/", None),
+    "python": ("https://docs.python.org/3", (None, "_inventories/python.inv")),
+    "numpy": ("https://numpy.org/doc/stable/", (None, "_inventories/numpy.inv")),
+    "pandas": ("https://pandas.pydata.org/docs/", (None, "_inventories/pandas.inv")),
 }
