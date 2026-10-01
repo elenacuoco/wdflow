@@ -40,6 +40,7 @@ from wdf.processes.zero_phase_whitening import (
     DEFAULT_SQRT_ORDER,
     DEFAULT_TRUNCATION_S,
     MagnitudeWhitening,
+    TruncatedWhitening,
     ZeroPhaseWhitening,
 )
 
@@ -54,7 +55,7 @@ DEFAULT_AR_FIT_CONTEXT_S = 20.0
 #: "magnitude" is `MagnitudeWhitening`, the response ``|A|`` itself; "causal" is
 #: `CausalWhitening`, the fitted lattice filter run forward only, at zero
 #: latency and with ``A``'s phase; "truncated", experimental, is
-#: `MagnitudeWhitening` with a duration, the model's inverse spectrum truncated
+#: `TruncatedWhitening`, the model's inverse spectrum truncated
 #: to `Parameters.ZeroPhaseDuration` seconds, gwpy's whitening with the Burg
 #: model's ASD.
 ZERO_PHASE_FILTERS = ("root", "magnitude", "causal", "truncated")
@@ -363,7 +364,7 @@ class wdfUnitDSWorker(object):
             elif zero_phase == "causal":
                 whitening = CausalWhitening(whiten, Noutdata, 0)
             elif zero_phase == "truncated":
-                whitening = MagnitudeWhitening(
+                whitening = TruncatedWhitening(
                     ar, Noutdata, 0, duration=duration,
                     **dict(held, sampling=self.par.resampling))
             else:
