@@ -84,6 +84,23 @@ def test_the_response_is_the_modulus_of_the_model():
     assert np.median(np.abs(applied / model - 1.0)) < 1e-4
 
 
+@pytest.mark.parametrize("band", [None, (20.0, 900.0)])
+def test_without_a_duration_the_filter_is_magnitude_taps(band):
+    """No duration, no warning: the taps of `magnitude_taps`, to the bit."""
+    import warnings
+
+    ar = line_model()
+    held = {} if band is None else dict(band=band, sampling=FS)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        whitening = MagnitudeWhitening(ar, 1024, 0, **held)
+    assert type(whitening) is MagnitudeWhitening
+    assert np.array_equal(whitening.taps, magnitude_taps(ar, **held))
+    assert whitening.latency == whitening.support == (whitening.taps.size - 1) // 2
+    if band is None:
+        assert whitening.sigma == ar[0]
+
+
 def test_the_whitened_spectrum_is_the_causal_one():
     """Same modulus as the causal whitening, so the same spectrum, line included.
 

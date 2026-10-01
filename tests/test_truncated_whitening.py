@@ -1,13 +1,15 @@
 """The truncated zero-phase whitening, and the level every zero-phase path gives.
 
-`MagnitudeWhitening` with a duration is gwpy's inverse-spectrum truncation with
-the Burg model's spectrum: the model at the resolution of the filter, inverted,
-held outside the passband and Hann-truncated to the duration. Every zero-phase
-path divides its output by its level in band, so that white-in-band noise comes
-out at unit density there and unit standard deviation over the band.
+`TruncatedWhitening` is gwpy's inverse-spectrum truncation with the Burg
+model's spectrum: the model at the resolution of the filter, inverted, held
+outside the passband and Hann-truncated to the duration. Every zero-phase
+path's output over its level in band is at unit density there and unit
+standard deviation over the band. `MagnitudeWhitening` with a duration, the
+call that built it before, still does, with a `DeprecationWarning`.
 """
 import glob
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -24,6 +26,7 @@ from wdf.processes.Whitening import Whitening
 from wdf.processes.zero_phase_whitening import (
     DEFAULT_TRUNCATION_S,
     MagnitudeWhitening,
+    TruncatedWhitening,
     ZeroPhaseWhitening,
     _both_ways,
     truncated_taps,
@@ -77,7 +80,7 @@ def _whiten(name, y, ar, band):
     if name == "magnitude":
         w = MagnitudeWhitening(ar, 1, 0, band=band, sampling=FS)
     elif name == "truncated":
-        w = MagnitudeWhitening(ar, 1, 0, band=band, sampling=FS, duration=4.0)
+        w = TruncatedWhitening(ar, 1, 0, band=band, sampling=FS, duration=4.0)
     elif name == "spectrum":
         # 300 s: a filter divides by its own estimate of the spectrum, and on
         # data it was not measured on that leaves E[S / S_hat] > 1 -- 1.2 %
@@ -106,13 +109,19 @@ def test_the_truncated_filter_is_the_duration_long_and_symmetric(white):
     assert taps.size == int(DEFAULT_TRUNCATION_S * FS) + 1
     assert np.array_equal(taps, taps[::-1])
     assert taps[0] == 0.0 and taps[-1] == 0.0          # Hann to the last tap
-    w = MagnitudeWhitening(ar, 1, 0, sampling=FS, duration=2.0)
+    w = TruncatedWhitening(ar, 1, 0, sampling=FS, duration=2.0)
     assert w.latency == int(1.0 * FS) and w.duration == 2.0
+
+
+def test_the_default_duration_is_gwpys(white):
+    w = TruncatedWhitening(white[1], 1, 0, sampling=FS)
+    assert w.duration == DEFAULT_TRUNCATION_S
+    assert np.array_equal(w.taps, truncated_taps(white[1], DEFAULT_TRUNCATION_S, FS))
 
 
 def test_a_duration_needs_the_sampling(white):
     with pytest.raises(ValueError):
-        MagnitudeWhitening(white[1], 1, 0, duration=4.0)
+        TruncatedWhitening(white[1], 1, 0, duration=4.0)
 
 
 def test_the_truncated_stream_is_the_stream_whitened_at_once(front, coloured):
@@ -120,7 +129,7 @@ def test_the_truncated_stream_is_the_stream_whitened_at_once(front, coloured):
     from test_magnitude_whitening import stream
 
     y, ar = coloured
-    whitening = MagnitudeWhitening(ar, 2000, 0, band=front.passband(), sampling=FS,
+    whitening = TruncatedWhitening(ar, 2000, 0, band=front.passband(), sampling=FS,
                                    duration=4.0)
     whitening.SetOutputSize(2000, whitening.latency)
     x = y[:int(60 * FS)]
@@ -128,6 +137,37 @@ def test_the_truncated_stream_is_the_stream_whitened_at_once(front, coloured):
     reference = fftconvolve(x, whitening.taps, mode="full")[whitening.latency:][:streamed.size]
     settled = slice(whitening.latency, None)
     assert np.abs(streamed[settled] - reference[settled]).max() < 1e-12 * np.abs(reference).max()
+
+
+def test_a_duration_given_to_magnitude_whitening_is_deprecated(white):
+    with pytest.warns(DeprecationWarning, match="TruncatedWhitening"):
+        w = MagnitudeWhitening(white[1], 1, 0, sampling=FS, duration=4.0)
+    assert type(w) is TruncatedWhitening
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_the_deprecated_call_is_the_truncated_filter_to_the_bit(front, coloured, held):
+    """Taps, sigma, latency and the stream, block joins included, bit for bit."""
+    from test_magnitude_whitening import stream
+
+    y, ar = coloured
+    kw = dict(band=front.passband()) if held else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        old = MagnitudeWhitening(ar, 2000, 0, sampling=FS, duration=4.0, **kw)
+    new = TruncatedWhitening(ar, 2000, 0, duration=4.0, sampling=FS, **kw)
+    assert np.array_equal(old.taps, new.taps)
+    assert old.sigma == new.sigma
+    assert old.latency == new.latency == int(2.0 * FS)
+    assert old.duration == new.duration and old.band == new.band
+    x = y[:int(30 * FS)]
+    cuts = [777, 5000, 5001, 40000]
+    for w in (old, new):
+        w.SetOutputSize(2000, w.latency)
+    streamed_old, starts_old = stream(old, x, cuts)
+    streamed_new, starts_new = stream(new, x, cuts)
+    assert np.array_equal(streamed_old, streamed_new)
+    assert np.array_equal(starts_old, starts_new)
 
 
 @pytest.fixture(scope="module")
