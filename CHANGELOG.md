@@ -5,6 +5,16 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The truncated whitening is its own class
+
+`ZeroPhaseFilter = "truncated"` runs `TruncatedWhitening`: the model's
+inverse spectrum at the resolution of `ZeroPhaseDuration`, Hann-truncated to
+it, gwpy's whitening with the Burg model's ASD. It was `MagnitudeWhitening`
+given a duration, though it is not the `|A|` filter; `MagnitudeWhitening` is
+now that filter alone. `MagnitudeWhitening(..., duration=T)` still works,
+returning the same `TruncatedWhitening` with a `DeprecationWarning`. Nothing
+the worker computes changes.
+
 ### The noise model is fitted on settled samples
 
 The stretch the autoregressive model is fitted on is read with

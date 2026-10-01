@@ -3,7 +3,7 @@
 .. moduleauthor:: Elena Cuoco <elena.cuoco@unibo.it>
 
 The lattice filter `ArBurgEstimator` fits whitens with magnitude ``|A|`` but
-carries ``A``'s phase, which displaces the reconstructed waveform. Two filters
+carries ``A``'s phase, which displaces the reconstructed waveform. The filters
 here remove the same colour at zero phase.
 
 `MagnitudeWhitening`, which the worker runs when asked for it (`ZeroPhaseFilter
@@ -15,10 +15,12 @@ to the unit circle -- the narrow lines of a detector -- long; it is measured
 from the response itself, like the settling of the band-pass, and applied by
 FFT convolution with real past and future data on each side of the block.
 
-Given a duration, `MagnitudeWhitening` is instead the inverse-spectrum
-truncation gwpy whitens with (`truncated_taps`): the model's spectrum at the
-resolution of the filter, inverted, held, and Hann-truncated to that duration,
-read half of it ahead.
+`TruncatedWhitening` (`ZeroPhaseFilter = "truncated"`) is the
+inverse-spectrum truncation gwpy whitens with (`truncated_taps`): the model's
+spectrum at the resolution of the filter, inverted, held, and Hann-truncated
+to a fixed duration, read half of it ahead. It is not ``|A|``: it follows
+``|A|`` only where ``|A|`` varies slowly on the inverse of the duration. Both
+stream their taps the same way (`_SymmetricTapsWhitening`).
 
 `ZeroPhaseWhitening` is the worker's default. Applying any filter forward and
 then backward gives magnitude ``|B|^2`` and
@@ -665,7 +667,7 @@ DEFAULT_RESPONSE_GRID = 1 << 23
 #: Fraction of the kept support over which its two ends are tapered, so that
 #: truncating a tail already below the floor does not leave a step.
 RESPONSE_TAPER = 0.1
-#: Length in seconds of the truncated filter (`truncated_taps`), gwpy's
+#: Length in seconds of the truncated filter (`TruncatedWhitening`), gwpy's
 #: ``fduration`` default: the whitening reads half of it ahead.
 DEFAULT_TRUNCATION_S = 4.0
 
@@ -859,11 +861,8 @@ def spectrum_at_resolution(ar, length, grid=DEFAULT_RESPONSE_GRID):
     twice that.
 
     A filter truncated to `length` samples cannot follow ``|A|`` closer than
-    this. Truncating ``|A|`` itself smears each narrow notch into a shallow
-    one while the line it faces keeps its power, and the line comes through:
-    with an order-3000 model and 4 s at 2048 Hz, GW150914 L1 whitened that
-    way has a standard deviation of 4.3. The line's power spread over the
-    resolution, as here, is what a filter of that length can whiten.
+    this; why it is this and not ``|A|`` that `TruncatedWhitening` inverts is
+    told there.
 
     :type ar: numpy.ndarray
     :param ar: AR coefficients as `ArBurgEstimator` holds them.
@@ -911,7 +910,8 @@ def truncated_taps(ar, duration, sampling, band=None, blend=DEFAULT_BAND_BLEND_H
     (`held_modulus`), taken to `duration` seconds and truncated there by a Hann
     window: ``TimeSeries.whiten(asd=..., fduration=duration)`` with the ASD of
     the Burg model in place of a Welch estimate. The response is in units of
-    ``1 / ar[0]``, like ``|A|``, whose smoothed counterpart it is.
+    ``1 / ar[0]``. The filter `TruncatedWhitening` streams, and where it
+    departs from ``|A|``.
 
     :type ar: numpy.ndarray
     :param ar: AR coefficients as `ArBurgEstimator` holds them.
@@ -938,18 +938,17 @@ def truncated_taps(ar, duration, sampling, band=None, blend=DEFAULT_BAND_BLEND_H
     return symmetric_taps(response, support=length // 2, taper=1.0)
 
 
-class MagnitudeWhitening:
-    """Whiten a stream by the modulus of its prediction-error filter.
+class _SymmetricTapsWhitening:
+    """Whiten a stream through a fixed set of symmetric taps.
 
-    The response is ``|A(e^{iw})|``, real and non-negative, so the phase is
-    zero at every frequency and the whitened spectrum is the causal
-    whitening's, bin by bin: the two differ in phase and in nothing else. The
-    impulse response is the symmetric `magnitude_taps`, applied by FFT
-    convolution over each output block together with ``K`` samples of the real
-    stream before it and ``K`` after it, ``K`` the support. That is linear
-    convolution with a fixed filter, so the output does not depend on where the
-    blocks begin: a stream whitened block by block is the stream whitened at
-    once.
+    The streaming shared by the zero-phase filters whose impulse response is
+    held as taps, whatever response they were built from. The taps are even,
+    ``2 K + 1`` of them with lag zero at ``K``, so the phase is zero at every
+    frequency. They are applied by FFT convolution over each output block
+    together with ``K`` samples of the real stream before it and ``K`` after
+    it, ``K`` the support. That is linear convolution with a fixed filter, so
+    the output does not depend on where the blocks begin: a stream whitened
+    block by block is the stream whitened at once.
 
     The interface is `ZeroPhaseWhitening`'s, so the worker drives either the
     same way. The output of a block is ready once ``output_size +
@@ -957,8 +956,178 @@ class MagnitudeWhitening:
     of its future is real data. The past is the ``K`` input samples preceding
     the block, zeros before the stream has supplied them, so the first ``K``
     samples a stream emits are not whitened data and are to be discarded as
-    the warm-up is. The latency is ``K`` samples.
+    the warm-up is. The latency is ``K`` samples. The stream is not divided by
+    `sigma`: the output is in the units the taps give it, and `sigma` is its
+    level, for the search to read.
     """
+
+    def _install(self, taps, sigma, output_size, extra_size):
+        """Hold the filter and an empty stream.
+
+        Every way of obtaining the response ends here, so that the filters
+        differ in the response and in nothing else.
+
+        :type taps: numpy.ndarray
+        :param taps: ``2 K + 1`` symmetric taps, lag zero at ``K``.
+        :type sigma: float
+        :param sigma: level in band of the whitened output.
+        :type output_size: int
+        :param output_size: whitened samples produced per `Output` call.
+        :type extra_size: int
+        :param extra_size: samples buffered beyond the output block.
+        :return: None
+        :raises ValueError: if `extra_size` is positive and below the support.
+        """
+        self.taps = np.asarray(taps, dtype=float)
+        self.support = (self.taps.size - 1) // 2
+        self.sigma = float(sigma)
+        self._check_lookahead(extra_size)
+        self.output_size, self.extra_size = int(output_size), int(extra_size)
+        self._buffer = np.zeros(0)
+        self._history = np.zeros(self.support)
+        self._start = None
+        self._interval = None
+
+
+    @property
+    def latency(self):
+        """Samples of future data an output sample depends on: the support."""
+        return self.support
+
+    def _check_lookahead(self, extra_size):
+        """Refuse a lookahead that would put zeros in place of the future."""
+        if 0 < extra_size < self.support:
+            raise ValueError(
+                f"the lookahead is {extra_size} samples but the filter reads "
+                f"{self.support} ahead: the future would be zeros at every "
+                f"block join. Set WhiteningExtraSize to at least the filter's "
+                f"support.")
+
+    def Input(self, data):
+        """Append one chunk to the stream without producing output.
+
+        The stream's time is taken from the first chunk it is given, and every
+        later chunk is taken to follow the previous one.
+
+        :type data: py4tsa.tsa.SeqView_double_t
+        :param data: input chunk, band-passed and decimated.
+        :return: None
+        """
+        values = np.array([data.GetY(0, i) for i in range(data.GetSize())])
+        if self._start is None:
+            self._start, self._interval = data.GetStart(), data.GetSampling()
+        self._buffer = np.concatenate([self._buffer, values * data.GetScale()])
+
+    def Output(self, dataw):
+        """Whiten the next `output_size` samples of the stream.
+
+        :type dataw: py4tsa.tsa.SeqView_double_t
+        :param dataw: output view, replaced by the whitened block, labelled
+            with the time of its first sample.
+        :return: None
+        :raises RuntimeError: if fewer than ``output_size + extra_size``
+            samples are buffered.
+        """
+        from scipy.signal import fftconvolve
+
+        from wdf.structures.array2SeqView import array2SeqView
+
+        n, k = self.output_size, self.support
+        if self._buffer.size < n + self.extra_size:
+            raise RuntimeError(
+                f"{type(self).__name__}: {self._buffer.size} samples buffered, "
+                f"{n + self.extra_size} needed")
+        future = self._buffer[n:n + k]
+        future = np.concatenate([future, np.zeros(k - future.size)])
+        joined = np.concatenate([self._history, self._buffer[:n], future])
+        whitened = fftconvolve(joined, self.taps, mode="valid")
+        self._history = joined[n:n + k]
+        self._buffer = self._buffer[n:]
+
+        view = array2SeqView(self._start, 1.0 / self._interval, n)
+        view.Fill(self._start, whitened)
+        view.SV.SetScale(1.0)
+        dataw.assign(view.SV)
+        self._start += self._interval * n
+
+    def Process(self, data, dataw):
+        """Append one chunk and whiten the next block.
+
+        :type data: py4tsa.tsa.SeqView_double_t
+        :param data: input chunk, band-passed and decimated.
+        :type dataw: py4tsa.tsa.SeqView_double_t
+        :param dataw: output view, replaced by the whitened block.
+        :return: None
+        """
+        self.Input(data)
+        self.Output(dataw)
+
+    def DataNeeded(self):
+        """Buffered samples beyond what the next output block needs.
+
+        The quantity `ZeroPhaseWhitening.DataNeeded` returns, with the same
+        sign: negative means the next block cannot be produced yet.
+
+        :return: int
+        """
+        return int(self._buffer.size - (self.output_size + self.extra_size))
+
+    def SetOutputSize(self, output_size, extra_size):
+        """Change the output block size and the lookahead.
+
+        :type output_size: int
+        :param output_size: whitened samples produced per `Output` call.
+        :type extra_size: int
+        :param extra_size: samples buffered beyond the output block.
+        :return: None
+        :raises ValueError: if `extra_size` is positive and below the support.
+        """
+        self._check_lookahead(extra_size)
+        self.output_size, self.extra_size = int(output_size), int(extra_size)
+
+
+class MagnitudeWhitening(_SymmetricTapsWhitening):
+    """Whiten a stream by the modulus of its prediction-error filter.
+
+    The response is ``|A(e^{iw})|``, real and non-negative, so the phase is
+    zero at every frequency and the whitened spectrum is the causal
+    whitening's, bin by bin: the two differ in phase and in nothing else. The
+    impulse response is the symmetric `magnitude_taps`, kept down to `floor`
+    of its peak: the support ``K`` is measured on the response
+    (`response_support`), not set in advance, and a narrow line makes it long.
+    The taps are streamed as `_SymmetricTapsWhitening` describes, with
+    latency ``K``. `from_spectrum` builds the same filter from a measured
+    spectrum in place of the model.
+
+    The model's inverse spectrum truncated to a fixed duration, gwpy's
+    whitening, is a different filter and is `TruncatedWhitening`. Given a
+    `duration`, this constructor still returns one, with a
+    `DeprecationWarning`.
+    """
+
+    def __new__(cls, ar=None, output_size=None, extra_size=0,
+                floor=DEFAULT_RESPONSE_FLOOR, grid=DEFAULT_RESPONSE_GRID,
+                support=None, band=None, sampling=None,
+                blend=DEFAULT_BAND_BLEND_HZ, duration=None):
+        """A `MagnitudeWhitening`, or, given a `duration`, a `TruncatedWhitening`.
+
+        The truncated filter used to be this class with a duration. The call
+        is kept, and returns the `TruncatedWhitening` the same arguments
+        build, `floor` and `support` unused as they were.
+
+        :return: MagnitudeWhitening or TruncatedWhitening
+        """
+        if duration is None:
+            return super().__new__(cls)
+        import warnings
+
+        warnings.warn(
+            "MagnitudeWhitening(duration=...) is deprecated; the truncated "
+            "filter is TruncatedWhitening(ar, output_size, extra_size, "
+            "duration=..., sampling=...)", DeprecationWarning, stacklevel=2)
+        return TruncatedWhitening(ar, output_size, extra_size, duration=duration,
+                                  sampling=sampling, band=band, blend=blend,
+                                  grid=grid)
 
     def __init__(self, ar, output_size, extra_size=0, floor=DEFAULT_RESPONSE_FLOOR,
                  grid=DEFAULT_RESPONSE_GRID, support=None, band=None, sampling=None,
@@ -991,13 +1160,9 @@ class MagnitudeWhitening:
         :param sampling: sampling frequency of the model, hertz; needed with `band`.
         :type blend: float
         :param blend: width of the raised cosine inside each edge, hertz.
-        :type duration: float or None
-        :param duration: seconds; the filter is then `truncated_taps`, the
-            model's inverse spectrum at the resolution of `duration`,
-            Hann-truncated to it, with support and latency half of it, and
-            `sigma` the level in band of the response it applies
-            (`in_band_scale`; the full band when `band` is None). Needs
-            `sampling`; `floor` and `support` are not used.
+        :type duration: None
+        :param duration: deprecated; a duration makes the call return a
+            `TruncatedWhitening` (`__new__`), and this constructor never sees it.
         :raises ValueError: if `extra_size` is positive and below the support,
             or the response does not decay within the grid.
         """
@@ -1006,41 +1171,13 @@ class MagnitudeWhitening:
             raise ValueError(f"grid {grid} is too short for an order "
                              f"{polynomial.size - 1} model")
         scale = float(np.asarray(ar, dtype=float).reshape(-1)[0])
-        if duration is not None:
-            if sampling is None:
-                raise ValueError("a duration in seconds needs the sampling frequency")
-            taps = truncated_taps(ar, duration, sampling, band, blend)
-            modulus, _ = held_response(ar, grid)
-            applied = np.abs(np.fft.rfft(taps, int(grid)))
-            freq = np.fft.rfftfreq(int(grid), 1.0 / float(sampling))
-            sigma = in_band_scale(scale, applied, modulus, freq, band)
-            self.duration = float(duration)
-        else:
-            modulus, target = held_response(ar, grid, band, sampling, blend)
-            taps = symmetric_taps(target, floor, support)
-            sigma = scale if band is None else in_band_scale(
-                scale, target, modulus,
-                np.fft.rfftfreq(int(grid), 1.0 / float(sampling)), band)
-            self.duration = None
+        modulus, target = held_response(ar, grid, band, sampling, blend)
+        taps = symmetric_taps(target, floor, support)
+        sigma = scale if band is None else in_band_scale(
+            scale, target, modulus,
+            np.fft.rfftfreq(int(grid), 1.0 / float(sampling)), band)
         self.band = None if band is None else (float(band[0]), float(band[1]))
         self._install(taps, sigma, output_size, extra_size)
-
-    def _install(self, taps, sigma, output_size, extra_size):
-        """Hold the filter and an empty stream.
-
-        Shared by the two ways of obtaining the response -- from an
-        autoregressive model and from a measured spectrum -- so that the two
-        differ in the response and in nothing else.
-        """
-        self.taps = np.asarray(taps, dtype=float)
-        self.support = (self.taps.size - 1) // 2
-        self.sigma = float(sigma)
-        self._check_lookahead(extra_size)
-        self.output_size, self.extra_size = int(output_size), int(extra_size)
-        self._buffer = np.zeros(0)
-        self._history = np.zeros(self.support)
-        self._start = None
-        self._interval = None
 
     @classmethod
     def from_spectrum(cls, samples, sampling, output_size, extra_size=0, band=None,
@@ -1093,103 +1230,93 @@ class MagnitudeWhitening:
         whitened = fftconvolve(samples, taps, mode="valid")
         self = cls.__new__(cls)
         self.band = None if band is None else (float(band[0]), float(band[1]))
-        self.duration = None
         self._install(taps, whitened_level(whitened, sampling, band, nperseg),
                       output_size, extra_size)
         return self
 
-    @property
-    def latency(self):
-        """Samples of future data an output sample depends on: the support."""
-        return self.support
 
-    def _check_lookahead(self, extra_size):
-        """Refuse a lookahead that would put zeros in place of the future."""
-        if 0 < extra_size < self.support:
-            raise ValueError(
-                f"the lookahead is {extra_size} samples but the filter reads "
-                f"{self.support} ahead: the future would be zeros at every "
-                f"block join. Set WhiteningExtraSize to at least the filter's "
-                f"support.")
+class TruncatedWhitening(_SymmetricTapsWhitening):
+    """Whiten a stream by the model's inverse spectrum, truncated to a duration.
 
-    def Input(self, data):
-        """Append one chunk to the stream without producing output.
+    Inverse-spectrum truncation, as gwpy's ``TimeSeries.whiten(asd=...,
+    fduration=T)`` builds it, with the amplitude spectral density of the
+    autoregressive model in place of a Welch estimate. The response is
+    ``1 / sqrt(S_T)``, ``S_T`` the model's ``1 / |A|**2`` smoothed by the
+    lag window of a Hann segment of ``L = T fs`` samples
+    (`spectrum_at_resolution`): what a Welch estimate on segments of that
+    length would measure, in expectation, on data the model describes. Outside
+    `band` it is held (`held_modulus`). The response is in units of
+    ``1 / ar[0]``.
 
-        The stream's time is taken from the first chunk it is given, and every
-        later chunk is taken to follow the previous one.
+    It is not ``|A|`` and not `MagnitudeWhitening`. A filter of ``L`` taps
+    cannot follow ``|A|`` closer than ``1/T``, and ``1 / sqrt(S_T)`` equals
+    ``|A| / a0``, ``a0 = ar[0]``, only where ``|A|`` varies slowly on that
+    scale. At a narrow line it does not: the line's power is spread over the
+    resolution and the response there is shallower than ``|A|``'s notch.
+    Truncating ``|A|`` itself would instead smear each narrow notch into a
+    shallow one while the line it faces keeps its power, and the line would
+    come through: with an order-3000 model and 4 s at 2048 Hz, GW150914 L1
+    whitened that way has a standard deviation of 4.3. The line spread over
+    the resolution, as here, is what a filter of that length can whiten.
 
-        :type data: py4tsa.tsa.SeqView_double_t
-        :param data: input chunk, band-passed and decimated.
-        :return: None
+    The taps are `truncated_taps`: the inverse transform of the response,
+    taken to the fixed support ``K = T fs / 2`` -- set by the duration, not
+    measured -- and tapered by a Hann window over the whole of it, to zero at
+    both ends. They are made even to the last bit, so the response is real
+    and the phase exactly zero. They are streamed as
+    `_SymmetricTapsWhitening` describes; the latency is ``K``, half the
+    duration.
+
+    `sigma` is the level in band of the response applied (`in_band_scale`):
+    ``ar[0]`` times the square root of the median over the band of
+    ``(response / |A|)**2``, read against ``|A|`` not held. The median,
+    because at a line the ratio departs from one and should set nothing. The
+    stream is not divided by it; the output over `sigma` is at unit density
+    in band.
+    """
+
+    def __init__(self, ar, output_size, extra_size=0, duration=DEFAULT_TRUNCATION_S,
+                 sampling=None, band=None, blend=DEFAULT_BAND_BLEND_HZ,
+                 grid=DEFAULT_RESPONSE_GRID):
         """
-        values = np.array([data.GetY(0, i) for i in range(data.GetSize())])
-        if self._start is None:
-            self._start, self._interval = data.GetStart(), data.GetSampling()
-        self._buffer = np.concatenate([self._buffer, values * data.GetScale()])
-
-    def Output(self, dataw):
-        """Whiten the next `output_size` samples of the stream.
-
-        :type dataw: py4tsa.tsa.SeqView_double_t
-        :param dataw: output view, replaced by the whitened block, labelled
-            with the time of its first sample.
-        :return: None
-        :raises RuntimeError: if fewer than ``output_size + extra_size``
-            samples are buffered.
-        """
-        from scipy.signal import fftconvolve
-
-        from wdf.structures.array2SeqView import array2SeqView
-
-        n, k = self.output_size, self.support
-        if self._buffer.size < n + self.extra_size:
-            raise RuntimeError(
-                f"MagnitudeWhitening: {self._buffer.size} samples buffered, "
-                f"{n + self.extra_size} needed")
-        future = self._buffer[n:n + k]
-        future = np.concatenate([future, np.zeros(k - future.size)])
-        joined = np.concatenate([self._history, self._buffer[:n], future])
-        whitened = fftconvolve(joined, self.taps, mode="valid")
-        self._history = joined[n:n + k]
-        self._buffer = self._buffer[n:]
-
-        view = array2SeqView(self._start, 1.0 / self._interval, n)
-        view.Fill(self._start, whitened)
-        view.SV.SetScale(1.0)
-        dataw.assign(view.SV)
-        self._start += self._interval * n
-
-    def Process(self, data, dataw):
-        """Append one chunk and whiten the next block.
-
-        :type data: py4tsa.tsa.SeqView_double_t
-        :param data: input chunk, band-passed and decimated.
-        :type dataw: py4tsa.tsa.SeqView_double_t
-        :param dataw: output view, replaced by the whitened block.
-        :return: None
-        """
-        self.Input(data)
-        self.Output(dataw)
-
-    def DataNeeded(self):
-        """Buffered samples beyond what the next output block needs.
-
-        The quantity `ZeroPhaseWhitening.DataNeeded` returns, with the same
-        sign: negative means the next block cannot be produced yet.
-
-        :return: int
-        """
-        return int(self._buffer.size - (self.output_size + self.extra_size))
-
-    def SetOutputSize(self, output_size, extra_size):
-        """Change the output block size and the lookahead.
-
+        :type ar: numpy.ndarray
+        :param ar: AR coefficients as `ArBurgEstimator` holds them -- the noise
+            scale in ``ar[0]`` and the prediction coefficients in ``ar[1:]``.
         :type output_size: int
         :param output_size: whitened samples produced per `Output` call.
         :type extra_size: int
-        :param extra_size: samples buffered beyond the output block.
-        :return: None
-        :raises ValueError: if `extra_size` is positive and below the support.
+        :param extra_size: samples buffered beyond the output block before it
+            is produced. Zero, or at least the support.
+        :type duration: float
+        :param duration: length ``T`` of the filter, seconds; the support and
+            the latency are half of it.
+        :type sampling: float
+        :param sampling: sampling frequency of the model, hertz.
+        :type band: tuple or None
+        :param band: ``(f_lo, f_hi)`` in hertz, the passband of the
+            conditioning, outside which the response is held and over which
+            `sigma` is read; None for the full band.
+        :type blend: float
+        :param blend: width of the raised cosine inside each edge, hertz.
+        :type grid: int
+        :param grid: FFT length ``|A|`` and the applied response are sampled
+            on to read `sigma`.
+        :raises ValueError: if `sampling` is not given, the filter would hold
+            fewer than four taps, or `extra_size` is positive and below the
+            support.
         """
-        self._check_lookahead(extra_size)
-        self.output_size, self.extra_size = int(output_size), int(extra_size)
+        polynomial = prediction_error_polynomial(ar)
+        if grid < 2 * polynomial.size:
+            raise ValueError(f"grid {grid} is too short for an order "
+                             f"{polynomial.size - 1} model")
+        if sampling is None:
+            raise ValueError("a duration in seconds needs the sampling frequency")
+        scale = float(np.asarray(ar, dtype=float).reshape(-1)[0])
+        taps = truncated_taps(ar, duration, sampling, band, blend)
+        modulus, _ = held_response(ar, grid)
+        applied = np.abs(np.fft.rfft(taps, int(grid)))
+        freq = np.fft.rfftfreq(int(grid), 1.0 / float(sampling))
+        sigma = in_band_scale(scale, applied, modulus, freq, band)
+        self.duration = float(duration)
+        self.band = None if band is None else (float(band[0]), float(band[1]))
+        self._install(taps, sigma, output_size, extra_size)
