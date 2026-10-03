@@ -76,6 +76,41 @@ def use_min_frequency(classify, f_min, fs):
     return f_min
 
 
+BLOCK_REMAINDERS = ("legacy", "merge", "scaled")
+
+
+def use_block_remainder(classify, mode):
+    """How the block rule judges a block shorter than L = round(ln window).
+
+    ``"legacy"`` (the default) judges it like a full block, against
+    lambda n sigma^2; ``"merge"`` joins a run's remainder to the block before
+    it (7 + 1 = one block of 8); ``"scaled"`` judges a block of n < L at a full
+    block's false-alarm probability (p4TSA `WDF2Classify.SetBlockRemainder`).
+    The other rules ignore it.
+
+    :type classify: py4tsa.tsa.WDF2Classify
+    :param classify: the search to set.
+    :type mode: str or None
+    :param mode: one of `BLOCK_REMAINDERS`; None or "legacy" makes no call, so
+        the search is the core's own.
+    :return: str -- the mode in force.
+    :raises ValueError: on an unknown mode.
+    :raises RuntimeError: if a mode other than legacy is asked of a py4tsa
+        without the option.
+    """
+    mode = "legacy" if mode is None else str(mode).strip().lower()
+    if mode not in BLOCK_REMAINDERS:
+        raise ValueError(f"BlockRemainder is {mode!r}; expected one of {BLOCK_REMAINDERS}")
+    if mode == "legacy":
+        return mode
+    if not hasattr(classify, "SetBlockRemainder"):
+        raise RuntimeError(
+            f"the installed py4tsa has no WDF2Classify.SetBlockRemainder; BlockRemainder {mode!r} needs "
+            "p4TSA feature/cosine-packets 5aeba62 or later")
+    classify.SetBlockRemainder(mode)
+    return mode
+
+
 class wdf(Observable):
 
     """
@@ -103,6 +138,9 @@ class wdf(Observable):
         `WdfParams.MinFrequency` (Hz, default 0: none) leaves the coefficients whose tile lies
         at or below it out of sigma, the block rule and EnWDF (`use_min_frequency`), read with
         the rate `WdfParams.resampling`; the value in force is written back.
+
+        `WdfParams.BlockRemainder` ("legacy", the default, "merge" or "scaled") sets how the
+        block rule judges blocks shorter than round(ln window) (`use_block_remainder`).
         """
         Observable.__init__(self)
         self.parameters = WdfParams 
@@ -124,6 +162,9 @@ class wdf(Observable):
             self.parameters.bases = None
         if given is not None:
             self.parameters.Bases = self.parameters.bases
+        remainder = getattr(self.parameters, "BlockRemainder", None)
+        if remainder is not None:
+            self.parameters.BlockRemainder = use_block_remainder(self.wdf2classify, remainder)
         f_min = getattr(self.parameters, "MinFrequency", None)
         if f_min:
             self.parameters.MinFrequency = use_min_frequency(

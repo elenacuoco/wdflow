@@ -26,6 +26,11 @@ what the software does differently, not how it came to.
   edge is at or below it out of sigma, the block rule and EnWDF
   (`use_min_frequency`, p4TSA `WDF2Classify.SetMinFrequency`, d335d33 or
   later); 0 makes no call, and the search is the core's own bit for bit.
+- `BlockRemainder` ("legacy", the default, "merge" or "scaled") sets how the
+  block rule judges a block shorter than round(ln window) (`use_block_remainder`,
+  p4TSA `WDF2Classify.SetBlockRemainder`, 5aeba62 or later). "merge" joins a
+  run's remainder to the block before it, so a LocalCos128 row of 8 at a
+  window of 1024 is one block of 8 rather than 7 + 1; "legacy" makes no call.
 
 ### The truncated whitening is its own class
 

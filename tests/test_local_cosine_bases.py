@@ -146,3 +146,51 @@ def test_use_min_frequency_needs_the_core():
 
     core = Core()
     assert use_min_frequency(core, "16", 2048) == 16.0 and core.args == (16.0, 2048.0)
+
+
+def test_use_block_remainder():
+    from wdf.processes.wdf import use_block_remainder
+
+    class Old:
+        pass
+
+    assert use_block_remainder(Old(), None) == "legacy"
+    assert use_block_remainder(Old(), "legacy") == "legacy"
+    with pytest.raises(RuntimeError, match="SetBlockRemainder"):
+        use_block_remainder(Old(), "merge")
+    with pytest.raises(ValueError, match="BlockRemainder"):
+        use_block_remainder(Old(), "join")
+
+    class Core:
+        def SetBlockRemainder(self, mode):
+            self.mode = mode
+
+    core = Core()
+    assert use_block_remainder(core, " Merge ") == "merge" and core.mode == "merge"
+
+
+def test_the_worker_merges_the_block_remainders(tmp_outdir):
+    import os
+
+    from _synth import packets_or_skip
+    from conftest import run_segment_process
+
+    packets_or_skip()
+    tsa = pytest.importorskip("py4tsa.tsa")
+    if not hasattr(tsa.WDF2Classify, "SetBlockRemainder"):
+        pytest.skip("the installed py4tsa has no block remainder option")
+    runs = {}
+    for mode in ("legacy", "merge"):
+        os.makedirs(tmp_outdir + mode)
+        runs[mode] = run_segment_process(tmp_outdir + mode + "/", window=1024, overlap=256,
+                                         Bases="Haar,Sym8,LocalCos128", MinFrequency=16.0, BlockRemainder=mode)
+        [used] = glob.glob(f"{tmp_outdir}{mode}/**/parametersUsed-Win1024.json", recursive=True)
+        with open(used) as fh:
+            assert json.load(fh)["BlockRemainder"] == mode
+    # a merged remainder is judged with its block, so fewer lone coefficients survive in noise
+    assert len(runs["merge"]) < len(runs["legacy"])
+    os.makedirs(tmp_outdir + "default")
+    default = run_segment_process(tmp_outdir + "default/", window=1024, overlap=256, Bases="Haar,Sym8,LocalCos128",
+                                  MinFrequency=16.0)
+    assert len(default) == len(runs["legacy"])
+    assert np.array_equal(default.EnWDF.values, runs["legacy"].EnWDF.values)

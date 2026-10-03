@@ -67,3 +67,10 @@ layout; the trigger holds zeros there. At a window of 1024 and 2048 Hz, 16 Hz
 drops pyramid indices 0-15 and LocalCos128 rows 0-1. With a full-band
 whitening the levels below the band-pass corner carry seismic residuals that
 fire windows on their own; the cut keeps them out of the statistic.
+
+`BlockRemainder` chooses how the block rule judges the short block at the end
+of a run (1 to L - 1 coefficients): `legacy` (the default) like a full block,
+so a lone coefficient survives at 2.12 sigma; `merge` joins it to the block
+before it; `scaled` judges it at a full block's false-alarm probability. At a
+window of 1024 every LocalCos128 row of 8 ends on a remainder of 1 under
+`legacy`, which is why that basis fires on noise.
