@@ -22,6 +22,30 @@ wdf.processes.wdfUnitDSWorker
 .. automodule:: wdf.processes.wdfUnitDSWorker
    :members:
 
+wdf.processes.wdfUnitOnline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.wdfUnitOnline
+   :members:
+
+wdf.processes.wdfUnitOffline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.wdfUnitOffline
+   :members:
+
+wdf.processes.glitch_subtraction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.glitch_subtraction
+   :members:
+
+wdf.processes.census
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.census
+   :members:
+
 wdf.processes.wdf
 ~~~~~~~~~~~~~~~~~~
 
@@ -263,6 +287,24 @@ wdf.analysis.ridge
 ~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.ridge
+   :members:
+
+wdf.analysis.ridge_tracking
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.ridge_tracking
+   :members:
+
+wdf.analysis.local_cosine
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.local_cosine
+   :members:
+
+wdf.analysis.dechirp
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.dechirp
    :members:
 
 wdf.analysis.reconstruction

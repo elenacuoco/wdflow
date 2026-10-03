@@ -18,6 +18,7 @@ tutorials/04_reconstruction_and_phase
 :hidden:
 
 api
+design/online-offline
 design/sparse-coefficients
 design/windows-and-graphs
 design/event-candidates
