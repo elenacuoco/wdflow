@@ -173,6 +173,254 @@ class wdfUnitDSWorker(object):
                 f"{raw.GetStart()}")
         return discard_edges(front.Process(raw), context)
 
+    def _conditioning(self, gpsStart, gpsEnd, dir_chunk, ID):
+        """The segment's noise model, whitening filter and conditioning front end.
+
+        Fits (or loads) the autoregressive model, builds the whitening filter
+        `ZeroPhaseFilter` names and the band-pass, and sets the warm-up, recording
+        every value in the run parameters.
+
+        :type gpsStart: float
+        :param gpsStart: start of the segment.
+        :type gpsEnd: float
+        :param gpsEnd: end of the segment.
+        :type dir_chunk: str
+        :param dir_chunk: the segment's output folder.
+        :type ID: str
+        :param ID: the segment's name.
+        :return: tuple -- (whitening filter, `BandPassDownSampling`).
+        """
+        # self.parameter for whitening and its estimation self.parameters
+        whiten = Whitening(self.par.ARorder)
+        # .h5 (not .txt): Whitening.ParametersSave/Load now use HDF5
+        # (wdf.processes.ar_lv_io), not p4TSA's old XML Save/Load.
+        self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s.h5" % (
+            self.par.ARorder,
+            self.par.resampling,
+            self.par.channel,
+        )
+        self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s.h5" % (
+            self.par.ARorder,
+            self.par.resampling,
+            self.par.channel,
+        )
+
+        if os.path.isfile(self.par.ARfile) and os.path.isfile(self.par.LVfile):
+            logging.info("Load AR parameters")
+            whiten.ParametersLoad(self.par.ARfile, self.par.LVfile)
+             
+        else:
+            logging.info("Start AR parameter estimation")
+            Learn_DS = self._learn_stretch(gpsStart, gpsEnd)
+            whiten.ParametersEstimate(Learn_DS)
+            self._after_fit(Learn_DS, whiten)
+            whiten.ParametersSave(self.par.ARfile, self.par.LVfile)
+            del Learn_DS
+            
+        # sigma for the noise
+        self.par.sigma = whiten.GetSigma()
+        logging.info("Estimated sigma= %s" % self.par.sigma)
+
+        # Which filter whitens the stream. "root" is the square-root model
+        # run forward and backward, which approximates |A| at a finite
+        # order; "magnitude" has the response |A| itself, so its whitened
+        # spectrum is the causal whitening's; "causal" is the lattice filter
+        # A(z) run forward only, at zero latency and with A's phase.
+        zero_phase = str(getattr(self.par, "ZeroPhaseFilter",
+                                 DEFAULT_ZERO_PHASE_FILTER)).lower()
+        if zero_phase not in ZERO_PHASE_FILTERS:
+            raise ValueError(f"ZeroPhaseFilter is {zero_phase!r}; expected one "
+                             f"of {ZERO_PHASE_FILTERS}")
+        self.par.ZeroPhaseFilter = zero_phase
+        floor = float(getattr(self.par, "ZeroPhaseResponseFloor",
+                              DEFAULT_RESPONSE_FLOOR))
+        self.par.ZeroPhaseResponseFloor = floor
+        if zero_phase == "truncated":
+            duration = float(getattr(self.par, "ZeroPhaseDuration",
+                                     DEFAULT_TRUNCATION_S))
+            self.par.ZeroPhaseDuration = duration
+
+        # Coefficients of the square-root model the "root" filter runs in
+        # both directions (see wdf.processes.zero_phase_whitening).
+        # Unset means the model's own order: a lower one costs accuracy
+        # twice over, since the response is the square of the filter's
+        # magnitude.
+        sqrt_order = getattr(self.par, "SqrtWhiteningOrder", None)
+        sqrt_order = (max(DEFAULT_SQRT_ORDER, self.par.ARorder)
+                      if sqrt_order is None else int(sqrt_order))
+        self.par.SqrtWhiteningOrder = sqrt_order
+        ar = np.array([whiten.ADE.GetAR(j)
+                       for j in range(self.par.ARorder + 1)])
+
+        # Which fit the whitening filter comes from. "burg" is the
+        # historical path and the default: the autoregressive model above,
+        # then its square root. "spectrum" fits the same filter straight to
+        # the measured spectrum of the same stretch, which is one fit
+        # instead of two and weighs its error in decibels across the band
+        # rather than in absolute power -- Burg has no incentive to fit an
+        # octave 60 dB below the one that carries the power, and on O4b
+        # strain it leaves the whitened spectrum a factor 2.9 low below
+        # 32 Hz. The autoregressive model is estimated and saved either
+        # way, so a run can be read back and compared against the other.
+        model = str(getattr(self.par, "WhiteningModel", "burg")).lower()
+        if model not in ("burg", "spectrum"):
+            raise ValueError(
+                f"WhiteningModel is {model!r}; expected 'burg' or 'spectrum'")
+        
+        # update the self.parameters to be saved in local json file
+        self.par.ID = ID
+        self.par.dir = dir_chunk
+        self.par.gps = gpsStart
+        self.par.gpsStart = gpsStart
+        
+
+        ######################
+        # self.parameter for sequence of data and the resampling
+    
+        ds = BandPassDownSampling(self.par)
+        # What the conditioning was, recorded with the rest of the run's
+        # parameters: its family decides where the band edges are.
+        self.par.BandPassFilter = ds.family
+        self.par.BandPassPassband = list(ds.passband())
+        
+        #Perform operation to intialite the detection loop    
+        #gpsStart = gpsStart - self.par.preWhite            
+        data = SV()
+        data_ds = SV()
+        dataw = SV()
+        Noutdata = int(self.par.resampling)
+
+        # The band the whitening whitens. The model is fitted on band-passed
+        # data, so over the full band |A| also inverts the band-pass's stop
+        # band -- a gain up to 1e6 on nothing -- which the whitening must
+        # not undo: the stop band belongs to the band-pass alone. Held, the
+        # target is |A| inside the band-pass's own passband and its edge
+        # values outside it. False keeps the full band, and is the default
+        # until the search is calibrated on a stream white in band only.
+        hold = bool(getattr(self.par, "HoldOutsideBand", False))
+        self.par.HoldOutsideBand = hold
+        if hold:
+            level = float(getattr(self.par, "PassbandLevel",
+                                  DEFAULT_PASSBAND_LEVEL_DB))
+            blend = float(getattr(self.par, "BandEdgeBlend",
+                                  DEFAULT_BAND_BLEND_HZ))
+            band = ds.passband(level)
+            self.par.PassbandLevel, self.par.BandEdgeBlend = level, blend
+            self.par.Passband = list(band)
+            held = dict(band=band, sampling=self.par.resampling, blend=blend)
+            logging.info(f"Whitening held outside the passband "
+                         f"{band[0]:.3f}-{band[1]:.3f} Hz ({level:g} dB), "
+                         f"blend {blend:g} Hz")
+        else:
+            band, blend = (low_frequency_cut(self.par), 0.5 * self.par.resampling), 0.0
+            held = {}
+        if zero_phase == "causal" and (model == "spectrum" or hold):
+            raise ValueError("ZeroPhaseFilter 'causal' runs the fitted "
+                             "autoregressive model over the full band; it "
+                             "needs WhiteningModel 'burg' and HoldOutsideBand "
+                             "False")
+        if model == "spectrum":
+            learn = self._learn_stretch(gpsStart, gpsEnd)
+            samples = np.array([learn.GetY(0, i) for i in range(learn.GetSize())])
+            del learn
+            if zero_phase == "magnitude":
+                whitening = MagnitudeWhitening.from_spectrum(
+                    samples, self.par.resampling, Noutdata, 0, band=band,
+                    blend=blend)
+            elif zero_phase == "truncated":
+                # A Welch estimate on segments of the filter's length and
+                # a Hann truncation: gwpy's TimeSeries.whiten.
+                whitening = MagnitudeWhitening.from_spectrum(
+                    samples, self.par.resampling, Noutdata, 0, band=band,
+                    blend=blend, taper=1.0,
+                    nperseg=2 * int(round(0.5 * duration * self.par.resampling)))
+            else:
+                whitening = ZeroPhaseWhitening.from_spectrum(
+                    samples, self.par.resampling, Noutdata, 0,
+                    order=sqrt_order, band=band, blend=blend)
+        elif zero_phase == "magnitude":
+            whitening = MagnitudeWhitening(ar, Noutdata, 0, floor=floor, **held)
+        elif zero_phase == "causal":
+            whitening = CausalWhitening(whiten, Noutdata, 0)
+        elif zero_phase == "truncated":
+            whitening = TruncatedWhitening(
+                ar, Noutdata, 0, duration=duration,
+                **dict(held, sampling=self.par.resampling))
+        else:
+            whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order,
+                                           **held)
+        if model == "spectrum" or hold or zero_phase == "truncated":
+            # The scale of the stream the search is given is this filter's
+            # level in band (in_band_scale, whitened_level): the stream
+            # over it is at unit density in band. Only the "cuoco" rule
+            # thresholds on it; "block" and "dohonojohnston" read the
+            # scale of each window from its own coefficients.
+            self.par.sigma = whitening.sigma
+        self.par.sigmaWhitened = whitening.sigma
+        self.par.ZeroPhaseLatency = int(whitening.latency)
+        logging.info(f"Whitening model: {model}, whitening filter: {zero_phase}")
+        root = f", square-root order {sqrt_order}" if zero_phase == "root" else ""
+        logging.info(f"Whitening latency {whitening.latency} samples "
+                     f"({whitening.latency / self.par.resampling:.3f} s){root}")
+
+        # The warm-up whitens data that is then discarded, and it has to
+        # last until the filter's past is real data: a zero-phase output
+        # sample depends on `latency` samples before it, zeros until the
+        # stream has supplied them; a causal one on the model's `ARorder`
+        # samples before it, which have to be conditioned samples the
+        # band-pass reached settled. `preWhite` is the floor; a longer past
+        # lengthens the warm-up rather than emitting a start-up transient.
+        if zero_phase == "causal":
+            past_s = (self.par.ARorder / self.par.resampling
+                      + ds.padlen / ds.sampling)
+        else:
+            past_s = whitening.latency / self.par.resampling
+        pre_white = max(int(self.par.preWhite), int(np.ceil(past_s)))
+        if pre_white > int(self.par.preWhite):
+            logging.info(f"Warm-up lengthened from {self.par.preWhite} to "
+                         f"{pre_white} s to cover the whitening's past")
+        self.par.preWhite = pre_white
+        return whitening, ds
+
+    def _read_block(self, streaming, block, downsampling):
+        """The next conditioned block the whitening reads.
+
+        :return: py4tsa.tsa.SeqView_double_t -- as `read_conditioned`; a
+            subclass may clean it.
+        """
+        return read_conditioned(streaming, block, downsampling)
+
+    def _after_fit(self, learn, whiten):
+        """Called once the noise model is fitted on `learn`, before it is saved.
+
+        :type learn: py4tsa.tsa.SeqView_double_t
+        :param learn: the conditioned fit stretch.
+        :type whiten: Whitening
+        :param whiten: the fitted model, which a subclass may refit.
+        :return: None
+        """
+
+    def _prepare_segment(self, gpsStart, gpsEnd, whitening, dir_chunk):
+        """Called once the whitening is built, before the stream is read.
+
+        :return: None
+        """
+
+    def _on_whitened(self, dataw):
+        """Called with every whitened block the searches read.
+
+        :type dataw: py4tsa.tsa.SeqView_double_t
+        :param dataw: the whitened block.
+        :return: None
+        """
+
+    def _finish_segment(self, dir_chunk):
+        """Called once the segment's stream is exhausted, before the trigger
+        files are closed.
+
+        :return: None
+        """
+
     def segmentProcess(self, segment, wavThresh=None):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
@@ -247,195 +495,11 @@ class wdfUnitDSWorker(object):
         if not os.path.exists(dir_chunk):
             os.makedirs(dir_chunk)
         if not os.path.isfile(dir_chunk + "ProcessEnded.check"):
-            # self.parameter for whitening and its estimation self.parameters
-            whiten = Whitening(self.par.ARorder)
-            # .h5 (not .txt): Whitening.ParametersSave/Load now use HDF5
-            # (wdf.processes.ar_lv_io), not p4TSA's old XML Save/Load.
-            self.par.ARfile = dir_chunk + "ARcoeff-AR%s-fs%s-%s.h5" % (
-                self.par.ARorder,
-                self.par.resampling,
-                self.par.channel,
-            )
-            self.par.LVfile = dir_chunk + "LVcoeff-AR%s-fs%s-%s.h5" % (
-                self.par.ARorder,
-                self.par.resampling,
-                self.par.channel,
-            )
-
-            if os.path.isfile(self.par.ARfile) and os.path.isfile(self.par.LVfile):
-                logging.info("Load AR parameters")
-                whiten.ParametersLoad(self.par.ARfile, self.par.LVfile)
-                 
-            else:
-                logging.info("Start AR parameter estimation")
-                Learn_DS = self._learn_stretch(gpsStart, gpsEnd)
-                whiten.ParametersEstimate(Learn_DS)
-                whiten.ParametersSave(self.par.ARfile, self.par.LVfile)
-                del Learn_DS
-                
-            # sigma for the noise
-            self.par.sigma = whiten.GetSigma()
-            logging.info("Estimated sigma= %s" % self.par.sigma)
-
-            # Which filter whitens the stream. "root" is the square-root model
-            # run forward and backward, which approximates |A| at a finite
-            # order; "magnitude" has the response |A| itself, so its whitened
-            # spectrum is the causal whitening's; "causal" is the lattice filter
-            # A(z) run forward only, at zero latency and with A's phase.
-            zero_phase = str(getattr(self.par, "ZeroPhaseFilter",
-                                     DEFAULT_ZERO_PHASE_FILTER)).lower()
-            if zero_phase not in ZERO_PHASE_FILTERS:
-                raise ValueError(f"ZeroPhaseFilter is {zero_phase!r}; expected one "
-                                 f"of {ZERO_PHASE_FILTERS}")
-            self.par.ZeroPhaseFilter = zero_phase
-            floor = float(getattr(self.par, "ZeroPhaseResponseFloor",
-                                  DEFAULT_RESPONSE_FLOOR))
-            self.par.ZeroPhaseResponseFloor = floor
-            if zero_phase == "truncated":
-                duration = float(getattr(self.par, "ZeroPhaseDuration",
-                                         DEFAULT_TRUNCATION_S))
-                self.par.ZeroPhaseDuration = duration
-
-            # Coefficients of the square-root model the "root" filter runs in
-            # both directions (see wdf.processes.zero_phase_whitening).
-            # Unset means the model's own order: a lower one costs accuracy
-            # twice over, since the response is the square of the filter's
-            # magnitude.
-            sqrt_order = getattr(self.par, "SqrtWhiteningOrder", None)
-            sqrt_order = (max(DEFAULT_SQRT_ORDER, self.par.ARorder)
-                          if sqrt_order is None else int(sqrt_order))
-            self.par.SqrtWhiteningOrder = sqrt_order
-            ar = np.array([whiten.ADE.GetAR(j)
-                           for j in range(self.par.ARorder + 1)])
-
-            # Which fit the whitening filter comes from. "burg" is the
-            # historical path and the default: the autoregressive model above,
-            # then its square root. "spectrum" fits the same filter straight to
-            # the measured spectrum of the same stretch, which is one fit
-            # instead of two and weighs its error in decibels across the band
-            # rather than in absolute power -- Burg has no incentive to fit an
-            # octave 60 dB below the one that carries the power, and on O4b
-            # strain it leaves the whitened spectrum a factor 2.9 low below
-            # 32 Hz. The autoregressive model is estimated and saved either
-            # way, so a run can be read back and compared against the other.
-            model = str(getattr(self.par, "WhiteningModel", "burg")).lower()
-            if model not in ("burg", "spectrum"):
-                raise ValueError(
-                    f"WhiteningModel is {model!r}; expected 'burg' or 'spectrum'")
-            
-            # update the self.parameters to be saved in local json file
-            self.par.ID = ID
-            self.par.dir = dir_chunk
-            self.par.gps = gpsStart
-            self.par.gpsStart = gpsStart
-            
-
-            ######################
-            # self.parameter for sequence of data and the resampling
-        
-            ds = BandPassDownSampling(self.par)
-            # What the conditioning was, recorded with the rest of the run's
-            # parameters: its family decides where the band edges are.
-            self.par.BandPassFilter = ds.family
-            self.par.BandPassPassband = list(ds.passband())
-            
-            #Perform operation to intialite the detection loop    
-            #gpsStart = gpsStart - self.par.preWhite            
+            whitening, ds = self._conditioning(gpsStart, gpsEnd, dir_chunk, ID)
+            self._prepare_segment(gpsStart, gpsEnd, whitening, dir_chunk)
             data = SV()
             data_ds = SV()
             dataw = SV()
-            Noutdata = int(self.par.resampling)
-
-            # The band the whitening whitens. The model is fitted on band-passed
-            # data, so over the full band |A| also inverts the band-pass's stop
-            # band -- a gain up to 1e6 on nothing -- which the whitening must
-            # not undo: the stop band belongs to the band-pass alone. Held, the
-            # target is |A| inside the band-pass's own passband and its edge
-            # values outside it. False keeps the full band, and is the default
-            # until the search is calibrated on a stream white in band only.
-            hold = bool(getattr(self.par, "HoldOutsideBand", False))
-            self.par.HoldOutsideBand = hold
-            if hold:
-                level = float(getattr(self.par, "PassbandLevel",
-                                      DEFAULT_PASSBAND_LEVEL_DB))
-                blend = float(getattr(self.par, "BandEdgeBlend",
-                                      DEFAULT_BAND_BLEND_HZ))
-                band = ds.passband(level)
-                self.par.PassbandLevel, self.par.BandEdgeBlend = level, blend
-                self.par.Passband = list(band)
-                held = dict(band=band, sampling=self.par.resampling, blend=blend)
-                logging.info(f"Whitening held outside the passband "
-                             f"{band[0]:.3f}-{band[1]:.3f} Hz ({level:g} dB), "
-                             f"blend {blend:g} Hz")
-            else:
-                band, blend = (low_frequency_cut(self.par), 0.5 * self.par.resampling), 0.0
-                held = {}
-            if zero_phase == "causal" and (model == "spectrum" or hold):
-                raise ValueError("ZeroPhaseFilter 'causal' runs the fitted "
-                                 "autoregressive model over the full band; it "
-                                 "needs WhiteningModel 'burg' and HoldOutsideBand "
-                                 "False")
-            if model == "spectrum":
-                learn = self._learn_stretch(gpsStart, gpsEnd)
-                samples = np.array([learn.GetY(0, i) for i in range(learn.GetSize())])
-                del learn
-                if zero_phase == "magnitude":
-                    whitening = MagnitudeWhitening.from_spectrum(
-                        samples, self.par.resampling, Noutdata, 0, band=band,
-                        blend=blend)
-                elif zero_phase == "truncated":
-                    # A Welch estimate on segments of the filter's length and
-                    # a Hann truncation: gwpy's TimeSeries.whiten.
-                    whitening = MagnitudeWhitening.from_spectrum(
-                        samples, self.par.resampling, Noutdata, 0, band=band,
-                        blend=blend, taper=1.0,
-                        nperseg=2 * int(round(0.5 * duration * self.par.resampling)))
-                else:
-                    whitening = ZeroPhaseWhitening.from_spectrum(
-                        samples, self.par.resampling, Noutdata, 0,
-                        order=sqrt_order, band=band, blend=blend)
-            elif zero_phase == "magnitude":
-                whitening = MagnitudeWhitening(ar, Noutdata, 0, floor=floor, **held)
-            elif zero_phase == "causal":
-                whitening = CausalWhitening(whiten, Noutdata, 0)
-            elif zero_phase == "truncated":
-                whitening = TruncatedWhitening(
-                    ar, Noutdata, 0, duration=duration,
-                    **dict(held, sampling=self.par.resampling))
-            else:
-                whitening = ZeroPhaseWhitening(ar, Noutdata, 0, order=sqrt_order,
-                                               **held)
-            if model == "spectrum" or hold or zero_phase == "truncated":
-                # The scale of the stream the search is given is this filter's
-                # level in band (in_band_scale, whitened_level): the stream
-                # over it is at unit density in band. Only the "cuoco" rule
-                # thresholds on it; "block" and "dohonojohnston" read the
-                # scale of each window from its own coefficients.
-                self.par.sigma = whitening.sigma
-            self.par.sigmaWhitened = whitening.sigma
-            self.par.ZeroPhaseLatency = int(whitening.latency)
-            logging.info(f"Whitening model: {model}, whitening filter: {zero_phase}")
-            root = f", square-root order {sqrt_order}" if zero_phase == "root" else ""
-            logging.info(f"Whitening latency {whitening.latency} samples "
-                         f"({whitening.latency / self.par.resampling:.3f} s){root}")
-
-            # The warm-up whitens data that is then discarded, and it has to
-            # last until the filter's past is real data: a zero-phase output
-            # sample depends on `latency` samples before it, zeros until the
-            # stream has supplied them; a causal one on the model's `ARorder`
-            # samples before it, which have to be conditioned samples the
-            # band-pass reached settled. `preWhite` is the floor; a longer past
-            # lengthens the warm-up rather than emitting a start-up transient.
-            if zero_phase == "causal":
-                past_s = (self.par.ARorder / self.par.resampling
-                          + ds.padlen / ds.sampling)
-            else:
-                past_s = whitening.latency / self.par.resampling
-            pre_white = max(int(self.par.preWhite), int(np.ceil(past_s)))
-            if pre_white > int(self.par.preWhite):
-                logging.info(f"Warm-up lengthened from {self.par.preWhite} to "
-                             f"{pre_white} s to cover the whitening's past")
-            self.par.preWhite = pre_white
             for i in range(100):
                 try:
                     streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
@@ -449,7 +513,7 @@ class wdfUnitDSWorker(object):
             streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
             # reading data, downsampling and whitening
             for i in range(self.par.preWhite):
-                data_ds = read_conditioned(streaming, data, ds)
+                data_ds = self._read_block(streaming, data, ds)
                 whitening.Process(data_ds,dataw)
                
                 
@@ -516,7 +580,7 @@ class wdfUnitDSWorker(object):
                 needed = extra_size + int(self.par.resampling * self.par.len)
                 buffered = 0
                 while buffered < needed:
-                    data_ds = read_conditioned(streaming, data, ds)
+                    data_ds = self._read_block(streaming, data, ds)
                     buffered += data_ds.GetSize()
                     whitening.Input(data_ds)
 
@@ -553,18 +617,19 @@ class wdfUnitDSWorker(object):
             # Tested on the block that comes out of conditioning, not on the
             # reader: the two are not at the same time, and testing the reader
             # would end the loop while conditioned data was still queued.
-            data_ds = read_conditioned(streaming, data, ds)
+            data_ds = self._read_block(streaming, data, ds)
             while data_ds.GetStart() <= self.par.gpsEnd:
                 whitening.Process(data_ds, dataw)
                 for search in searches:
                     search.SetData(dataw)
                     search.Process()
+                self._on_whitened(dataw)
                 if data.GetStart() + 2 * self.par.len > gpsEnd:
                     logging.warning(
                         "Stopping at %.1f: the next read would pass the end of "
                         "the segment at %.1f", data_ds.GetStart(), gpsEnd)
                     break
-                data_ds = read_conditioned(streaming, data, ds)
+                data_ds = self._read_block(streaming, data, ds)
 
             # Reading stops a whole priming ahead of what the whitening has
             # emitted, so the filters still hold analysable data when the last
@@ -579,7 +644,9 @@ class wdfUnitDSWorker(object):
                 for search in searches:
                     search.SetData(dataw)
                     search.Process()
+                self._on_whitened(dataw)
 
+            self._finish_segment(dir_chunk)
             for savetrigger in writers:
                 savetrigger.close()
 
