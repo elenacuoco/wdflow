@@ -111,3 +111,45 @@ def window_schedule(par):
                 "the search advances by window - overlap and would not move"
             )
     return schedule
+
+
+#: The high-pass corner and the lowest frequency of the conditioning, Hz, when
+#: a run does not give `LowFrequencyCut`. It is the one default every stage
+#: reads, through `low_frequency_cut`.
+DEFAULT_LOW_FREQUENCY_CUT_HZ = 4.0
+
+
+def low_frequency_cut(par):
+    """The run's `LowFrequencyCut`, Hz, or `DEFAULT_LOW_FREQUENCY_CUT_HZ`.
+
+    Every stage that needs the low edge of the conditioning reads it here, so
+    that a run without one gets the same value everywhere.
+
+    :param par: run configuration.
+    :return: float -- the low-frequency cut, Hz.
+    """
+    value = getattr(par, "LowFrequencyCut", None)
+    return DEFAULT_LOW_FREQUENCY_CUT_HZ if value is None else float(value)
+
+
+#: The rules for the coefficients of a window `ThresholdRule` may name, as
+#: p4TSA's `WaveletThreshold` spells them.
+THRESHOLD_RULES = ("block", "dohonojohnston", "cuoco")
+#: The rule of a run that does not name one.
+DEFAULT_THRESHOLD_RULE = "block"
+
+
+def threshold_rule(par):
+    """The run's `ThresholdRule` as a `py4tsa.tsa.WaveletThreshold` value.
+
+    :param par: run configuration; `ThresholdRule` is one of
+        `THRESHOLD_RULES`, `DEFAULT_THRESHOLD_RULE` when unset.
+    :return: py4tsa.tsa.WaveletThreshold.WaveletThresholding
+    :raises ValueError: on an unknown name.
+    """
+    from py4tsa.tsa import WaveletThreshold
+
+    name = str(getattr(par, "ThresholdRule", None) or DEFAULT_THRESHOLD_RULE).strip().lower()
+    if name not in THRESHOLD_RULES:
+        raise ValueError(f"ThresholdRule is {name!r}; expected one of {THRESHOLD_RULES}")
+    return getattr(WaveletThreshold, name)

@@ -16,9 +16,28 @@ __project__ = "wdf"
 import logging
 from wdf.structures.array2SeqView import *
 import numpy as np
-from scipy.signal import butter, cheby2, sosfilt, sosfreqz
+from scipy.signal import butter, cheby2, sosfilt, sosfilt_zi, sosfreqz
 
 from wdf.filtering import sosfiltfilt
+from wdf.config.Parameters import low_frequency_cut
+
+#: Default low-pass corner of the Butterworth, as a fraction of the decimated
+#: Nyquist frequency: 900 Hz at a resampling of 2048 Hz.
+DEFAULT_LOWPASS_CORNER_FRACTION = 0.87890625
+#: Default attenuation the Butterworth low-pass must reach, in the response the
+#: data receive, at the lowest input frequency that folds onto the corner
+#: (resampling - corner): 50 dB, which order 8 at 900 Hz meets from 4096 Hz
+#: (53 dB) and which needs order 12 from 16384 Hz. The strain's own need,
+#: measured on the raw GWOSC data, is 40 dB there.
+DEFAULT_ALIAS_ATTENUATION_DB = 50.0
+#: Highest low-pass order the alias requirement may ask for.
+MAX_LOWPASS_ORDER = 64
+#: The two ways the band-pass is applied: "zero", forward and backward over a
+#: block with its real past and future (`sosfiltfilt`, offline, one block of
+#: latency, response ``|H|^2``); "causal", forward only with its state carried
+#: across blocks (`sosfilt`, online, no read-ahead, response ``|H|`` and the
+#: filter's phase).
+BAND_PASS_PHASES = ("zero", "causal")
 
 
 def SV_to_array(seqView):
@@ -100,7 +119,12 @@ def discard_edges(view, seconds):
 
 class BandPassDownSampling(object):
     """
-    Band-pass with zero phase, then decimate.
+    Band-pass, then decimate.
+
+    `Parameters.BandPassPhase` chooses the form (`BAND_PASS_PHASES`): "zero"
+    (the default) filters each block forward and backward with its real past
+    and future, offline; "causal" filters forward only and carries the state
+    from block to block, online, emitting each block as soon as it is read.
 
     Over a stream, drive this through `read_conditioned` rather than calling
     `Process` once per read: a block is emitted only once the data following it
@@ -145,15 +169,17 @@ class BandPassDownSampling(object):
         self.nyquist_frequency = 0.5 * self.sampling
         self.cutoff_frequency = 0.90 * (self.nyquist_frequency / self.ResamplingFactor)
          
-        if low_freq_hp is None:
-            low_freq_hp = getattr(Parameters, "LowFrequencyCut", None)
-        self.low_freq_hp = 4.0 if low_freq_hp is None else float(low_freq_hp)
+        self.low_freq_hp = (low_frequency_cut(Parameters) if low_freq_hp is None
+                            else float(low_freq_hp))
 
         if order is None:
             order = getattr(Parameters, "FilterOrder", None)
         self.order = 10 if order is None else int(order)
         self.stopband_attenuation_db = float(stopband_attenuation_db)
         self.family = str(getattr(Parameters, "BandPassFilter", None) or "cheby2")
+        self.phase = str(getattr(Parameters, "BandPassPhase", None) or "zero").lower()
+        if self.phase not in BAND_PASS_PHASES:
+            raise ValueError(f"BandPassPhase {self.phase!r}: use one of {BAND_PASS_PHASES}")
 
         if self.family == "cheby2":
             # Apply a low-pass filter to the data to prevent aliasing. Chebyshev
@@ -175,7 +201,6 @@ class BandPassDownSampling(object):
             # the low-pass's roll-off above the decimated Nyquist, which the
             # low-pass order and corner must leave deep enough there.
             self.highpass_order = int(getattr(Parameters, "HighPassOrder", None) or 4)
-            self.lowpass_order = int(getattr(Parameters, "LowPassOrder", None) or 8)
             # 900 Hz at 2048 Hz: an order 8 there passes the data to 865 Hz at
             # -3 dB, is 53 dB down from 1148 Hz, the lowest input frequency that
             # folds below 900 Hz, and 125 dB at the third violin harmonics
@@ -185,18 +210,37 @@ class BandPassDownSampling(object):
             # band-pass there; a lower order or a higher corner lets the
             # folded power through the top of the band.
             corner = getattr(Parameters, "LowPassCorner", None)
-            self.cutoff_frequency = (0.87890625 * 0.5 * self.resampling if corner is None
-                                     else float(corner))
+            fraction = getattr(Parameters, "LowPassCornerFraction", None)
+            self.corner_fraction = (DEFAULT_LOWPASS_CORNER_FRACTION if fraction is None
+                                    else float(fraction))
+            self.cutoff_frequency = (self.corner_fraction * 0.5 * self.resampling
+                                     if corner is None else float(corner))
             if not self.low_freq_hp < self.cutoff_frequency < 0.5 * self.resampling:
                 raise ValueError(
                     f"low-pass corner {self.cutoff_frequency} Hz must lie between the "
                     f"high-pass corner {self.low_freq_hp} Hz and the decimated Nyquist "
                     f"{0.5 * self.resampling} Hz")
+            required = getattr(Parameters, "AliasAttenuationDB", None)
+            self.alias_requirement_db = (DEFAULT_ALIAS_ATTENUATION_DB if required is None
+                                         else float(required))
+            highpass = butter(self.highpass_order, self.low_freq_hp, btype='highpass',
+                              fs=self.sampling, output='sos')
+            given = getattr(Parameters, "LowPassOrder", None)
+            if given is None:
+                self.lowpass_order = self._order_for_alias(highpass)
+            else:
+                self.lowpass_order = int(given)
             self.sos = np.vstack([
-                butter(self.highpass_order, self.low_freq_hp, btype='highpass',
-                       fs=self.sampling, output='sos'),
+                highpass,
                 butter(self.lowpass_order, self.cutoff_frequency, btype='lowpass',
                        fs=self.sampling, output='sos')])
+            if self.alias_attenuation_db() < self.alias_requirement_db:
+                raise ValueError(
+                    f"a low-pass of order {self.lowpass_order} at {self.cutoff_frequency:.1f} Hz "
+                    f"attenuates by {self.alias_attenuation_db():.1f} dB at "
+                    f"{self.alias_frequency:.1f} Hz, the lowest input frequency that folds "
+                    f"onto the corner, less than the {self.alias_requirement_db:.1f} dB "
+                    f"AliasAttenuationDB asks; raise LowPassOrder or leave it unset")
         else:
             raise ValueError(f"BandPassFilter {self.family!r}: use 'cheby2' or 'butterworth'")
         self.estimation=estimation
@@ -213,13 +257,17 @@ class BandPassDownSampling(object):
         # Blocks read but not yet emitted, and the stretch already emitted.
         self.pending = []
         self.history = np.zeros(0)
+        # The causal form's state, carried from one block to the next.
+        self.state = None
 
         if self.family == "cheby2":
             design = (f"cheby2 order {self.order}, {self.stopband_attenuation_db:.0f} dB "
                       f"at {self.low_freq_hp:.1f}-{self.cutoff_frequency:.1f} Hz")
         else:
             design = (f"butterworth high-pass {self.highpass_order} at {self.low_freq_hp:.1f} Hz, "
-                      f"low-pass {self.lowpass_order} at {self.cutoff_frequency:.1f} Hz")
+                      f"low-pass {self.lowpass_order} at {self.cutoff_frequency:.1f} Hz "
+                      f"({self.alias_attenuation_db():.1f} dB from {self.alias_frequency:.1f} Hz)")
+        design += f", {self.phase} phase"
         low, high = self.passband()
         logging.info(
             "BandPassDownSampling: %d -> %d Hz, %s, -3 dB passband %.1f-%.1f Hz, "
@@ -261,9 +309,15 @@ class BandPassDownSampling(object):
         start = data.GetStart()
 
         if self.estimation:
-            y_ds = sosfiltfilt(self.sos, y)[::self.ResamplingFactor]
+            if self.phase == "causal":
+                y_ds = sosfilt(self.sos, y)[::self.ResamplingFactor]
+            else:
+                y_ds = sosfiltfilt(self.sos, y)[::self.ResamplingFactor]
             self.estimation = False
             return self._decimated_view(y_ds, data.GetStart())
+
+        if self.phase == "causal":
+            return self._process_causal(y, start)
 
         self.pending.append((y, start))
         if sum(len(s) for s, _ in self.pending[1:]) < self.padlen:
@@ -278,13 +332,7 @@ class BandPassDownSampling(object):
         # band edges is large, into something indistinguishable from a burst --
         # and a permanent timing bias thereafter. Nothing in the reader
         # enforces it, so it is checked here rather than assumed.
-        if len(block) % self.ResamplingFactor:
-            raise ValueError(
-                f"a block of {len(block)} samples cannot be decimated by "
-                f"{self.ResamplingFactor} without moving the decimation phase "
-                f"of everything that follows it; read blocks whose length is a "
-                f"multiple of {self.ResamplingFactor} samples "
-                f"({self.ResamplingFactor / self.sampling:.6g} s)")
+        self._check_decimation_phase(block)
         lookahead = np.concatenate([s for s, _ in self.pending])[:self.padlen]
 
         joined = np.concatenate([self.history, block, lookahead])
@@ -297,11 +345,88 @@ class BandPassDownSampling(object):
         y_ds = emitted[::self.ResamplingFactor]
         return self._decimated_view(y_ds, block_start)
 
+    def _check_decimation_phase(self, block):
+        """Refuse a block that would move the decimation phase of the stream."""
+        if len(block) % self.ResamplingFactor:
+            raise ValueError(
+                f"a block of {len(block)} samples cannot be decimated by "
+                f"{self.ResamplingFactor} without moving the decimation phase "
+                f"of everything that follows it; read blocks whose length is a "
+                f"multiple of {self.ResamplingFactor} samples "
+                f"({self.ResamplingFactor / self.sampling:.6g} s)")
+
+    def _process_causal(self, block, start):
+        """The causal form: filter forward with the state the previous block
+        left, decimate, and emit at once.
+
+        The stream starts from the filter at rest scaled to its first sample
+        (`sosfilt_zi`), so a constant offset does not ring; its first
+        `padlen` samples are the filter's settling, which a caller drops with
+        the warm-up. Nothing after a sample is read before it is emitted.
+
+        :type block: numpy.ndarray
+        :param block: input samples.
+        :type start: float
+        :param start: GPS time of the first one.
+        :return: py4tsa.tsa.SeqView_double_t -- the decimated block.
+        """
+        self._check_decimation_phase(block)
+        if self.state is None:
+            self.state = sosfilt_zi(self.sos) * block[0]
+        filtered, self.state = sosfilt(self.sos, block, zi=self.state)
+        return self._decimated_view(filtered[::self.ResamplingFactor], start)
+
+    def response_db(self, freq):
+        """The response the data receive, in dB, at frequencies in Hz.
+
+        ``20 log10 |H|^2`` for the zero-phase form, run forward and backward,
+        and ``20 log10 |H|`` for the causal one, run forward only.
+
+        :type freq: numpy.ndarray
+        :param freq: frequencies, Hz.
+        :return: numpy.ndarray -- the gain, dB.
+        """
+        _, response = sosfreqz(self.sos, worN=np.atleast_1d(np.asarray(freq, dtype=float)),
+                               fs=self.sampling)
+        power = 2.0 if self.phase == "zero" else 1.0
+        return 20.0 * np.log10(np.abs(response) ** power + 1e-300)
+
+    @property
+    def alias_frequency(self):
+        """The lowest input frequency that folds onto the low-pass corner after
+        decimation, ``resampling - corner``, Hz."""
+        return float(self.resampling - self.cutoff_frequency)
+
+    def alias_attenuation_db(self):
+        """How far down the response the data receive is at and above
+        `alias_frequency`, up to the input Nyquist frequency: a positive number
+        of dB, read on the designed sections.
+
+        :return: float -- minus the largest gain over that range, dB.
+        """
+        freq = np.linspace(self.alias_frequency, 0.5 * self.sampling, 4097)[:-1]
+        return float(-self.response_db(freq).max())
+
+    def _order_for_alias(self, highpass):
+        """The smallest low-pass order whose cascade with `highpass` meets the
+        alias requirement.
+
+        :raises ValueError: if no order up to `MAX_LOWPASS_ORDER` meets it.
+        """
+        for order in range(1, MAX_LOWPASS_ORDER + 1):
+            self.sos = np.vstack([highpass, butter(order, self.cutoff_frequency, btype='lowpass',
+                                                   fs=self.sampling, output='sos')])
+            if self.alias_attenuation_db() >= self.alias_requirement_db:
+                return order
+        raise ValueError(
+            f"no low-pass order up to {MAX_LOWPASS_ORDER} at {self.cutoff_frequency:.1f} Hz "
+            f"reaches {self.alias_requirement_db:.1f} dB at {self.alias_frequency:.1f} Hz")
+
     def passband(self, level_db=-3.0, resolution_hz=1.0 / 1024.0):
         """The band where the conditioning passes the data, read off its design.
 
-        The filter is applied forward and backward, so the response the data
-        receive is ``|H|^2``; the edges are the first and the last frequency of
+        The response is the one the data receive (`response_db`): ``|H|^2``
+        for the zero-phase form, ``|H|`` for the causal one; the edges are the first and the last frequency of
         the decimated band at which ``20 log10 |H|^2`` is at least `level_db`.
         They are measured on the designed sections, not assumed from the
         corner frequencies the design was given: a Chebyshev type II reaches
@@ -317,8 +442,7 @@ class BandPassDownSampling(object):
         :raises ValueError: if the response nowhere reaches `level_db`.
         """
         freq = np.arange(0.0, 0.5 * self.resampling, float(resolution_hz))
-        _, response = sosfreqz(self.sos, worN=freq, fs=self.sampling)
-        gain_db = 20.0 * np.log10(np.abs(response) ** 2 + 1e-300)
+        gain_db = self.response_db(freq)
         inside = np.flatnonzero(gain_db >= float(level_db))
         if inside.size == 0:
             raise ValueError(f"the band-pass response never reaches {level_db} dB")
@@ -326,7 +450,9 @@ class BandPassDownSampling(object):
 
     @property
     def latency_s(self):
-        """Seconds of data read but not yet emitted. Zero in estimation mode."""
+        """Seconds of data read but not yet emitted. Zero in estimation mode
+        and in the causal form, whose delay is the filter's group delay and is
+        not compensated."""
         return sum(len(s) for s, _ in self.pending) / self.sampling
 
     def _decimated_view(self, y_ds, start):

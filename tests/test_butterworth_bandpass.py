@@ -149,3 +149,73 @@ def test_the_worker_records_the_band_pass_it_used(tmp_outdir, family):
     assert used["BandPassFilter"] == family
     low, high = used["BandPassPassband"]
     assert used["LowFrequencyCut"] < low < high < 0.5 * used["resampling"]
+
+
+def test_the_corner_is_a_fraction_of_the_decimated_nyquist():
+    filt = BandPassDownSampling(parameters(LowPassCornerFraction=0.8))
+    assert filt.cutoff_frequency == pytest.approx(0.8 * 0.5 * RESAMPLING)
+
+
+@pytest.mark.parametrize("sampling, order", [(4096, 8), (16384, 12)])
+def test_the_order_follows_the_alias_requirement(sampling, order):
+    """At 16384 -> 2048 Hz order 8 reaches only about 35 dB at 1148 Hz; the
+    order is the smallest that meets AliasAttenuationDB at resampling - corner."""
+    filt = BandPassDownSampling(parameters(sampling=sampling, ResamplingFactor=sampling // RESAMPLING))
+    assert filt.lowpass_order == order
+    assert filt.alias_frequency == pytest.approx(RESAMPLING - 900.0)
+    assert filt.alias_attenuation_db() >= 50.0
+    lower = BandPassDownSampling(parameters(sampling=sampling, ResamplingFactor=sampling // RESAMPLING,
+                                            AliasAttenuationDB=0.0, LowPassOrder=order - 1))
+    assert lower.alias_attenuation_db() < 50.0
+
+
+def test_an_order_below_the_alias_requirement_is_refused():
+    with pytest.raises(ValueError, match="AliasAttenuationDB"):
+        BandPassDownSampling(parameters(sampling=16384, ResamplingFactor=8, LowPassOrder=8))
+
+
+def test_the_causal_form_needs_a_higher_order_for_the_same_requirement():
+    zero = BandPassDownSampling(parameters())
+    causal = BandPassDownSampling(parameters(BandPassPhase="causal"))
+    assert causal.lowpass_order > zero.lowpass_order
+    assert causal.alias_attenuation_db() >= 50.0
+    assert causal.latency_s == 0.0
+
+
+def test_the_causal_form_is_the_whole_stream_filtered_forward():
+    """Blocks emitted at once, with the state carried: the stream filtered
+    forward in one shot, from the same initial state."""
+    from scipy.signal import sosfilt, sosfilt_zi
+
+    filt = BandPassDownSampling(parameters(BandPassPhase="causal"))
+    samples = np.random.default_rng(2).standard_normal(SAMPLING * 6)
+    reference = sosfilt(filt.sos, samples, zi=sosfilt_zi(filt.sos) * samples[0])[0][::FACTOR]
+    blocks, starts = stream(filt, samples, block=SAMPLING // 4)
+    assert len(blocks) == 24 and starts[0] == 0.0
+    np.testing.assert_allclose(np.concatenate(blocks), reference, rtol=0, atol=1e-12)
+
+
+def test_the_causal_form_reads_nothing_ahead():
+    """Changing the input after a time changes nothing emitted before it."""
+    filt_a = BandPassDownSampling(parameters(BandPassPhase="causal"))
+    filt_b = BandPassDownSampling(parameters(BandPassPhase="causal"))
+    x = np.random.default_rng(3).standard_normal(SAMPLING * 4)
+    y = x.copy()
+    y[3 * SAMPLING:] += 100.0
+    a, _ = stream(filt_a, x, block=SAMPLING // 2)
+    b, _ = stream(filt_b, y, block=SAMPLING // 2)
+    np.testing.assert_array_equal(np.concatenate(a[:6]), np.concatenate(b[:6]))
+
+
+def test_an_unknown_phase_is_refused():
+    with pytest.raises(ValueError, match="BandPassPhase"):
+        BandPassDownSampling(parameters(BandPassPhase="minimum"))
+
+
+def test_the_low_frequency_cut_has_one_default():
+    from wdf.config.Parameters import DEFAULT_LOW_FREQUENCY_CUT_HZ, low_frequency_cut
+
+    par = parameters()
+    del par.LowFrequencyCut
+    assert low_frequency_cut(par) == DEFAULT_LOW_FREQUENCY_CUT_HZ
+    assert BandPassDownSampling(par).low_freq_hp == DEFAULT_LOW_FREQUENCY_CUT_HZ
