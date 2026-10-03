@@ -42,10 +42,24 @@ def test_the_names_reach_the_core_as_one_comma_separated_list():
 
 
 def test_without_bases_the_default_pyramids_compete_and_are_recorded():
+    # The default list is the core's own (p4TSA 3.4.0: DEFAULT_BASES; from
+    # feature/long-wavelets on, Elena's list by filter length): the search
+    # leaves it untouched and records it.
     packets_or_skip()
+    from py4tsa.tsa import WDF2Classify
+
     par = search_parameters()
     wdf(par)
-    assert par.bases == DEFAULT_BASES
+    assert par.bases == WDF2Classify(1024, 256, 0.1, 1.0, 1024).GetBases().split(",")
+    assert len(par.bases) == len(DEFAULT_BASES) and par.bases[0] == "Haar"
+
+
+def test_bases_under_its_capitalised_key_is_read_and_recorded():
+    packets_or_skip()
+    par = search_parameters(Bases="DaubC8, Coif1P6")
+    search = wdf(par)
+    assert search.wdf2classify.GetBases() == "DaubC8,Coif1P6"
+    assert par.Bases == par.bases == ["DaubC8", "Coif1P6"]
 
 
 def test_the_bases_given_are_the_ones_that_compete_and_are_recorded():

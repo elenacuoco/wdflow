@@ -41,11 +41,15 @@ DERIVED_COLUMNS = ["gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
 # Symlet 4/8, Coiflet 1/2. All orthonormal. The biorthogonal B-spline family
 # (Bspline*/BsplineC*) and a plain (non-wavelet-packet) DCT both remain
 # excluded -- see WDF2Classify.cpp for why.
+# The long orthonormal mothers p4TSA added later (feature/long-wavelets; four
+# of them, Coif3, DaubC24, Sym12, Coif5, are in its default list there) and the
+# local cosine bases (feature/cosine-packets) are orthonormal too.
 ORTHONORMAL_WAVES = {
     "Haar",
     "DaubC4", "DaubC8", "DaubC12", "DaubC16", "DaubC20",
     "Sym4", "Sym8",
     "Coif1", "Coif2",
+    "DaubC24", "DaubC32", "DaubC40", "Sym10", "Sym12", "Sym16", "Sym20", "Coif3", "Coif4", "Coif5",
 }
 
 

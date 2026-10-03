@@ -20,6 +20,15 @@ the rate. Two layouts exist:
   frequency order, band `b` occupying indices `[b L, (b+1) L)` with
   `L = Ncoeff / 2^D`, and coefficient `k` of a band tiling the samples
   `[k 2^D, (k+1) 2^D)`.
+- **A local cosine basis** (``"LocalCos"`` followed by the segment length
+  `M`, a power of 2, e.g. ``"LocalCos128"``; p4TSA's `WaveletTransform` mode
+  `LocalCos`): a Coifman-Meyer bell of half-width `M / 2` and a DCT-IV per
+  segment, written by p4TSA frequency-major with the layout of the packet
+  level of depth `D = log2 M`: row `k` (DCT-IV bin `k`, `[k, k+1) fs / 2M`)
+  occupies indices `[k L, (k+1) L)` with `L = Ncoeff / M`, and coefficient `j`
+  of a row covers segment `j`, the samples `[j M, (j+1) M)`. Its geometry is
+  that of the packet level of the same depth; the bell's overlap of `M / 2`
+  on each side is not drawn (as a packet tile's filter leakage is not).
 
 Either way the index alone places the coefficient once the layout is known,
 and the layout is fixed for a given basis, `Ncoeff` and `fs`, the same for any
@@ -51,12 +60,28 @@ from __future__ import annotations
 import numpy as np
 
 
+LOCAL_COSINE = "LocalCos"
+
+
+def _local_cosine_segment(name: str) -> int:
+    """The segment length M of a ``LocalCos<M>`` name, checked as p4TSA does."""
+    digits = name[len(LOCAL_COSINE):]
+    if not digits.isdigit() or digits[0] == "0":
+        raise ValueError(f"basis {name!r}: LocalCos takes a segment length, as LocalCos128")
+    m = int(digits)
+    if m < 2 or m & (m - 1):
+        raise ValueError(f"basis {name!r}: the segment length must be a power of 2, at least 2")
+    return m
+
+
 def packet_depth(wave) -> int:
     """The wavelet-packet depth a basis name declares, 0 for the pyramid.
 
     A name is a mother (``"Haar"``, ``"DaubC8"``, ...) for its pyramidal
     transform, or a mother followed by ``P`` and a depth for that uniform
-    level of its packet tree, as p4TSA's `WDF2Classify.SetBases` reads it.
+    level of its packet tree, as p4TSA's `WDF2Classify.SetBases` reads it,
+    or ``LocalCos`` followed by a segment length M for the local cosine basis,
+    whose layout is that of the packet level of depth log2 M.
 
     Every function of this module that takes a `wave` reads it through here,
     so an integer depth may stand for a name wherever only the layout matters.
@@ -65,8 +90,9 @@ def packet_depth(wave) -> int:
     :param wave: the basis name a trigger records, or a packet depth; None is
         the pyramid.
     :return: int -- the depth, 0 for the pyramid.
-    :raises ValueError: if the name declares a depth of 0, or the depth given
-        is negative.
+    :raises ValueError: if the name declares a depth of 0, a LocalCos name
+        a segment length that is not a power of 2 of at least 2, or the depth
+        given is negative.
     """
     if wave is None:
         return 0
@@ -75,6 +101,8 @@ def packet_depth(wave) -> int:
             raise ValueError(f"a packet depth cannot be negative, got {wave}")
         return int(wave)
     name = str(wave)
+    if name.startswith(LOCAL_COSINE):
+        return int(_local_cosine_segment(name)).bit_length() - 1
     at = name.rfind("P")
     if at <= 0 or at == len(name) - 1 or not name[at + 1:].isdigit():
         return 0
@@ -87,11 +115,17 @@ def packet_depth(wave) -> int:
 def mother_wavelet(wave: str) -> str:
     """The mother a basis name is built on: the name without its packet depth.
 
+    For a local cosine name (``"LocalCos128"``) it is ``"LocalCos"``, the
+    `py4tsa.WaveletTransform` mode, whose depth is log2 of the segment.
+
     :type wave: str
     :param wave: the basis name a trigger records.
     :return: str -- the mother's name, as `py4tsa.WaveletTransform` calls it.
     """
     name = str(wave)
+    if name.startswith(LOCAL_COSINE):
+        _local_cosine_segment(name)
+        return LOCAL_COSINE
     return name[:name.rfind("P")] if packet_depth(name) else name
 
 

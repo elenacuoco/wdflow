@@ -33,7 +33,9 @@ def inverse_transform(coefficients, wave):
     :type wave: str
     :param wave: name of the basis that produced them, as recorded on the
         trigger: a mother for its pyramid, or a mother followed by ``P`` and a
-        depth for that uniform wavelet-packet level
+        depth for that uniform wavelet-packet level, or ``LocalCos`` and a
+        segment length M for the local cosine basis, inverted as
+        ``WaveletTransform(n, LocalCos, log2 M)``
         (`wdf.analysis.wavelets.packet_depth`).
     :return: numpy.ndarray -- the reconstructed samples.
     """

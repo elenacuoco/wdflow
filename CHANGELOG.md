@@ -5,6 +5,28 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### A run chooses its bases: packet levels, local cosine, and a minimum frequency
+
+- `Bases` (or `bases`) names the candidates of the per-window competition, a
+  list or one comma-separated string, passed to p4TSA's `SetBases`; without
+  it the core's own default list competes. The list that competed is written
+  back, so `parametersUsed` names it. A name is a mother (pyramid), a mother
+  with `P` and a depth (a uniform wavelet-packet level, e.g. `Coif1P6`), or
+  `LocalCos` with a segment length M (the local cosine basis, e.g.
+  `LocalCos128`, which needs p4TSA feature/cosine-packets).
+- Every reading of a trigger's coefficients places them by the basis it won
+  (`wave`): `packet_depth`, `mother_wavelet`, `coeff_levels`,
+  `coeff_freq_bands` and `coeff_time_bounds` take it, and the maps, graphs,
+  scales, meta-features and the reconstruction pass it. `LocalCos<M>` reads
+  as packet depth log2 M (rows of fs / 2M, tiles of M samples) and inverts
+  through `WaveletTransform(n, LocalCos, log2 M)`; `P<digits>` names are
+  read as before. Packet and LocalCos tiles are drawn on the octave ladder of
+  the maps and keep their own band in the tiles.
+- `MinFrequency` (Hz, default 0) leaves the coefficients whose tile's upper
+  edge is at or below it out of sigma, the block rule and EnWDF
+  (`use_min_frequency`, p4TSA `WDF2Classify.SetMinFrequency`, d335d33 or
+  later); 0 makes no call, and the search is the core's own bit for bit.
+
 ### The truncated whitening is its own class
 
 `ZeroPhaseFilter = "truncated"` runs `TruncatedWhitening`: the model's
