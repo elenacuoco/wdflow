@@ -5,6 +5,27 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### An online worker, causal end to end: `wdfUnitOnline`
+
+`wdf.processes.wdfUnitOnline` searches one detector's stream without using
+information from the future, block by block of `len` seconds: the causal
+Butterworth band-pass and decimation; the prediction-error filter of an
+autoregressive model fitted on the past only (`learn` seconds ending
+`ARFitGap` before it starts, after `ARFitContext` of band-pass settling),
+refitted every `ARRefitInterval` from the past and warmed up on the last
+`ARWarmup` samples; the WDF search with every choice from the parameters; and
+the causal ridge on the running wavegram of the window coefficients. There is
+no glitch subtraction and no gating: triggers are labelled "glitch" when they
+won one of `GlitchLabelBases`, and kept. Every trigger, ridge candidate,
+running-best slot and refit carries its emission time and latency; altering
+the input after a time changes nothing emitted before it (tested). It reads
+frames (`FrameSource`) or arrays (`ArraySource`).
+
+Configuration files are TOML, read by `wdf.config.Parameters.load_config`,
+with `[detectors.<IFO>]` tables overriding the top level for one detector;
+JSON files are still read. `BandPassDownSampling.process_array` runs the
+causal form on NumPy blocks.
+
 ### Ridge tracking: a path along the cells, offline and causal
 
 `wdf.analysis.ridge_tracking` finds tracks; `wdf.analysis.ridge` still only

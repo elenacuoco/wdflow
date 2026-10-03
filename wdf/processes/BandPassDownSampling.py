@@ -370,11 +370,30 @@ class BandPassDownSampling(object):
         :param start: GPS time of the first one.
         :return: py4tsa.tsa.SeqView_double_t -- the decimated block.
         """
+        filtered, start = self.process_array(block, start)
+        return self._decimated_view(filtered, start)
+
+    def process_array(self, samples, start):
+        """The causal form on a NumPy block: filtered forward with the carried
+        state and decimated, emitted at once.
+
+        :type samples: numpy.ndarray
+        :param samples: input samples at `sampling`.
+        :type start: float
+        :param start: GPS time of the first.
+        :return: tuple -- (decimated samples, GPS time of the first).
+        :raises ValueError: in the zero-phase form, which needs the block's
+            future and runs through `Process`.
+        """
+        if self.phase != "causal":
+            raise ValueError("process_array runs the causal form; the zero-phase form reads "
+                             "ahead and runs through Process")
+        block = np.asarray(samples, dtype=float)
         self._check_decimation_phase(block)
         if self.state is None:
             self.state = sosfilt_zi(self.sos) * block[0]
         filtered, self.state = sosfilt(self.sos, block, zi=self.state)
-        return self._decimated_view(filtered[::self.ResamplingFactor], start)
+        return filtered[::self.ResamplingFactor], float(start)
 
     def response_db(self, freq):
         """The response the data receive, in dB, at frequencies in Hz.

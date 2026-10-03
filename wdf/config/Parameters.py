@@ -153,3 +153,46 @@ def threshold_rule(par):
     if name not in THRESHOLD_RULES:
         raise ValueError(f"ThresholdRule is {name!r}; expected one of {THRESHOLD_RULES}")
     return getattr(WaveletThreshold, name)
+
+
+#: The table of a configuration file whose sub-tables override the run's
+#: values for one detector.
+DETECTOR_TABLE = "detectors"
+
+
+def load_config(path, ifo=None, **overrides):
+    """A run configuration from a TOML file, for one detector.
+
+    The file's top-level keys are the run's parameters; a ``[detectors.<IFO>]``
+    table overrides them for that detector (its AR order, its channel, ...).
+    JSON files, the format `Parameters.load` reads, are accepted as well and
+    have no detector tables. Keyword arguments override both. The file and the
+    detector are recorded as `ConfigFile` and `itf`.
+
+    :type path: str
+    :param path: a ``.toml`` or ``.json`` file.
+    :type ifo: str or None
+    :param ifo: the detector whose table applies, e.g. "H1"; None applies none.
+    :param overrides: values that replace the file's.
+    :return: Parameters
+    :raises KeyError: if `ifo` is given and the file has no table for it while
+        it has detector tables.
+    """
+    import os
+    import tomllib
+
+    if str(path).endswith(".json"):
+        with open(path) as fh:
+            data = json.load(fh)
+    else:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    tables = data.pop(DETECTOR_TABLE, {})
+    if ifo is not None:
+        if tables and ifo not in tables:
+            raise KeyError(f"{path} has no [{DETECTOR_TABLE}.{ifo}] table; it has {sorted(tables)}")
+        data.update(tables.get(ifo, {}))
+        data["itf"] = ifo
+    data.update(overrides)
+    data["ConfigFile"] = os.path.abspath(str(path))
+    return Parameters(**data)
