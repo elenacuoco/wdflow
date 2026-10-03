@@ -175,7 +175,7 @@ def alpha_grid(segment_s, alpha_max, step=None):
     :param segment_s: the tile's duration T (the local cosine segment, M / fs),
         s; the tolerance is set by it, not by the window.
     :type alpha_max: float
-    :param alpha_max: largest |alpha| on the grid, Hz/s (the physical range:
+    :param alpha_max: largest ``|alpha|`` on the grid, Hz/s (the physical range:
         a BBH within 50 ms of its merger sweeps at a few hundred Hz/s).
     :type step: float or None
     :param step: grid step, Hz/s; ``1 / (2 T^2)`` when None.

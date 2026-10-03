@@ -323,8 +323,8 @@ def tile_geometry(n, fs, basis, alpha=0.0):
 
 
 def window_sigma(coefficients, f_hi, f_low):
-    """Each window's noise scale: the median |c| over the coefficients whose
-    tile reaches above `f_low`, over 0.6745.
+    """Each window's noise scale: the median of ``|c|`` over the coefficients
+    whose tile reaches above `f_low`, over 0.6745.
 
     :return: numpy.ndarray -- one scale per window.
     """
