@@ -5,6 +5,22 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### An offline worker: `wdfUnitOffline`, and `offline_network`
+
+`wdf.processes.wdfUnitOffline` is `wdfUnitDSWorker` with, each switched by a
+parameter: M4 glitch subtraction (`GlitchSubtraction`), with the census and the
+fit in a pre-pass, the fit stretch cleaned and refitted
+(`GlitchCleanFitStretch`), and the seeds coincident with another detector's
+census (`GlitchCoincidenceSeeds`) protected; and the ridge over the segment
+(`Ridge`), whose candidates, cells and z are written beside the triggers.
+`offline_network` runs several detectors: their census first, so that each
+protects the seeds coincident with the others, then each segment, then the
+network ridge on the minimum of their z maps. With M4 and the ridge off it
+gives `wdfUnitDSWorker`'s triggers from the same parameters (tested).
+`wdfUnitDSWorker` is split into `_conditioning` and hooks (`_after_fit`,
+`_prepare_segment`, `_read_block`, `_on_whitened`, `_finish_segment`) that do
+nothing there; its triggers are unchanged.
+
 ### An online worker, causal end to end: `wdfUnitOnline`
 
 `wdf.processes.wdfUnitOnline` searches one detector's stream without using
