@@ -53,10 +53,16 @@ ORTHONORMAL_WAVES = {
 }
 
 
+# The competition the fixtures were written with: p4TSA's default list before
+# feature/long-wavelets changed it. Pinned, so that the fixtures test the
+# pipeline and not which list the installed core defaults to.
+GOLDEN_BASES = "Haar,DaubC4,DaubC8,DaubC12,DaubC16,DaubC20,Sym4,Sym8,Coif1,Coif2"
+
+
 @pytest.mark.parametrize("rule, fixture", rules())
 def test_segment_process_matches_golden_output(tmp_outdir, rule, fixture):
     golden = pd.read_parquet(fixture)
-    result = run_segment_process(tmp_outdir, rule=rule)
+    result = run_segment_process(tmp_outdir, rule=rule, Bases=GOLDEN_BASES)
 
     assert len(result) == len(golden), (
         f"trigger count changed: {len(result)} vs golden {len(golden)}. "
@@ -96,7 +102,7 @@ def test_the_golden_coefficients_are_reproduced(tmp_outdir, rule, fixture):
     nothing about the pipeline.
     """
     golden = pd.read_parquet(fixture)
-    result = run_segment_process(tmp_outdir, rule=rule)
+    result = run_segment_process(tmp_outdir, rule=rule, Bases=GOLDEN_BASES)
     ulp = float(np.finfo(np.float32).eps)
 
     for row, (index, value) in enumerate(zip(golden.wt_index, golden.wt_value)):

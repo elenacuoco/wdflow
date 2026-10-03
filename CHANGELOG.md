@@ -5,6 +5,45 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The Butterworth band-pass: a corner relative to the rate, an order from the alias requirement, a causal form
+
+- `BandPassFilter = "butterworth"`: a high-pass of `HighPassOrder` (default 4)
+  at `LowFrequencyCut` cascaded with a low-pass at `LowPassCorner` Hz, or at
+  `LowPassCornerFraction` of the decimated Nyquist frequency (default
+  0.87890625, 900 Hz at 2048 Hz). The low-pass order is no longer fixed: unset,
+  `LowPassOrder` is the smallest order whose response, as the data receive it,
+  is `AliasAttenuationDB` (default 50 dB) down at and above resampling -
+  corner, the lowest input frequency that folds onto the corner; given, it is
+  checked against that requirement and refused below it. Order 8 at 900 Hz
+  meets 50 dB from 4096 Hz (53 dB) but reaches only 35 dB from 16384 Hz, where
+  the requirement asks for order 12.
+- `BandPassPhase` "zero" (the default) is the zero-phase band-pass as before;
+  "causal" filters forward only with the state carried across blocks
+  (`sosfilt`), reads nothing ahead and emits each block as it is read. Its
+  response is `|H|`, not `|H|^2`, so the same requirement asks for a higher
+  order; `response_db`, `alias_attenuation_db` and `passband` read the form in
+  force.
+- `LowFrequencyCut` has one default, `DEFAULT_LOW_FREQUENCY_CUT_HZ` (4 Hz),
+  read through `wdf.config.Parameters.low_frequency_cut` by the band-pass and
+  the worker alike.
+
+### The search reads its rule, its block rule and its name from the parameters
+
+- `ThresholdRule` ("block", the default, "dohonojohnston" or "cuoco") chooses
+  the rule for a window's coefficients (`threshold_rule`); `wdf` and
+  `wdfUnitDSWorker.segmentProcess` read it when no rule is passed, and record it.
+- `BlockLength` (coefficients, 0 for round(ln window)) and `BlockLambda` set
+  the block rule's L and lambda through p4TSA's `WDF2Classify.SetBlock`
+  (feature/cosine-packets a6e8d3e); the values in force are recorded. Unset,
+  the search is the core's own bit for bit.
+- `SearchName` names a search in its trigger and `parametersUsed` file names
+  (`wdf.analysis.io.trigger_file_name`, `parameters_file_name`,
+  `run_parameters`): two searches with the same window, overlap and threshold
+  no longer overwrite each other's files. A window that the schedule repeats
+  gets its position appended. Without a name the files are named as before.
+- The golden-output test pins the competition its fixtures were written with,
+  since the core's default list changed (p4TSA feature/long-wavelets).
+
 ### A run chooses its bases: packet levels, local cosine, and a minimum frequency
 
 - `Bases` (or `bases`) names the candidates of the per-window competition, a

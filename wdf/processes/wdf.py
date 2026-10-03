@@ -15,6 +15,7 @@ from py4tsa.tsa import WaveletThreshold, WDF2Classify, EventFullFeatured
 
 from wdf.observers.observable import Observable
 from wdf.config import Parameters
+from wdf.config.Parameters import threshold_rule
 
 
 def use_bases(classify, bases):
@@ -76,6 +77,39 @@ def use_min_frequency(classify, f_min, fs):
     return f_min
 
 
+def use_block(classify, length, lam):
+    """Set the block rule's length L and its lambda in every candidate.
+
+    L is in coefficients, 0 for round(ln window) (Cai's choice, p4TSA's
+    default); lambda is the energy threshold in units of L sigma^2, 4.505 in
+    p4TSA (calibrated for L of about 7). Called before the bases are set, so
+    that `SetBases` checks its bands against the L in force.
+
+    :type classify: py4tsa.tsa.WDF2Classify
+    :param classify: the search to set.
+    :type length: int or None
+    :param length: L, coefficients; None keeps the core's.
+    :type lam: float or None
+    :param lam: lambda; None keeps the core's.
+    :return: tuple -- (L, lambda) in force, or (None, None) when the installed
+        py4tsa cannot report them.
+    :raises RuntimeError: if a value is asked of a py4tsa without
+        `WDF2Classify.SetBlock`.
+    """
+    has = hasattr(classify, "SetBlock")
+    if length is None and lam is None:
+        return ((int(classify.GetBlockLength()), float(classify.GetBlockLambda()))
+                if has else (None, None))
+    if not has:
+        raise RuntimeError(
+            "the installed py4tsa has no WDF2Classify.SetBlock; BlockLength and BlockLambda need "
+            "p4TSA feature/cosine-packets a6e8d3e or later")
+    length = 0 if length is None else int(length)
+    lam = float(classify.GetBlockLambda()) if lam is None else float(lam)
+    classify.SetBlock(length, lam)
+    return int(classify.GetBlockLength()), float(classify.GetBlockLambda())
+
+
 BLOCK_REMAINDERS = ("legacy", "merge", "scaled")
 
 
@@ -117,7 +151,7 @@ class wdf(Observable):
     The main WDF class responsible for the communication with the p4TSA library regarding the application of WDF onto data
     """
 
-    def __init__(self, WdfParams: Parameters, wTh=WaveletThreshold.block):
+    def __init__(self, WdfParams: Parameters, wTh=None):
         """
         The main WDF class responsible for the communication with the p4TSA library regarding the application of WDF onto data
 
@@ -125,9 +159,15 @@ class wdf(Observable):
         :param parameters: Set of WDF parameters
 
         :type wth: py4tsa.WaveletThreshold
-        :param wavThresh: the rule for the coefficients of a window; default `WaveletThreshold.block`,
-            contiguous coefficients of one level judged together (Cai 1999). `dohonojohnston` is the
-            universal threshold on each coefficient alone, which the method paper's runs used.
+        :param wavThresh: the rule for the coefficients of a window; None (the default) reads it
+            from `WdfParams.ThresholdRule` (`wdf.config.Parameters.threshold_rule`, "block" when
+            unset): `block`, contiguous coefficients of one level judged together (Cai 1999), or
+            `dohonojohnston`, the universal threshold on each coefficient alone, which the method
+            paper's runs used. The rule in force is written back to `ThresholdRule`.
+
+        `WdfParams.BlockLength` (coefficients, 0 for round(ln window)) and `WdfParams.BlockLambda`
+        set the block rule's L and lambda (`use_block`); unset keeps p4TSA's. The values in
+        force are written back when the core reports them.
 
         The candidate bases are `WdfParams.Bases` (or `WdfParams.bases`) where it is given,
         a list or one comma-separated string (`use_bases`), and the core's own default list
@@ -143,7 +183,10 @@ class wdf(Observable):
         block rule judges blocks shorter than round(ln window) (`use_block_remainder`).
         """
         Observable.__init__(self)
-        self.parameters = WdfParams 
+        self.parameters = WdfParams
+        if wTh is None:
+            wTh = threshold_rule(self.parameters)
+        self.parameters.ThresholdRule = wTh.name
         self.wdf2classify = WDF2Classify(
             self.parameters.window,
             self.parameters.overlap,
@@ -152,6 +195,10 @@ class wdf(Observable):
             self.parameters.Ncoeff,
             wTh,
         )
+        length, lam = use_block(self.wdf2classify, getattr(self.parameters, "BlockLength", None),
+                                getattr(self.parameters, "BlockLambda", None))
+        if length is not None:
+            self.parameters.BlockLength, self.parameters.BlockLambda = length, lam
         given = getattr(self.parameters, "Bases", None)
         bases = given if given is not None else getattr(self.parameters, "bases", None)
         if bases is not None:

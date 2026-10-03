@@ -131,12 +131,61 @@ def covered_livetime_days(spans) -> float:
     return total / 86400.0
 
 
+#: Characters a search name may hold in a file name.
+_SEARCH_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def search_suffix(par) -> str:
+    """The part of a search's file names that names the search.
+
+    Two searches of one run that share a window, overlap and threshold (two
+    basis sets, an online and an offline search, ...) write to the same
+    segment directory; `SearchName` keeps their files apart. Without one the
+    suffix is empty and the names are those of a run before search names.
+
+    :param par: the search's configuration.
+    :return: str -- ``"-Search<name>"``, or "" without `SearchName`.
+    :raises ValueError: if the name holds characters other than letters,
+        digits and underscores.
+    """
+    name = getattr(par, "SearchName", None)
+    if name in (None, ""):
+        return ""
+    name = str(name)
+    if not _SEARCH_NAME.match(name):
+        raise ValueError(f"SearchName {name!r} may hold only letters, digits and underscores")
+    return "-Search" + name
+
+
+def trigger_file_name(par) -> str:
+    """The name of a search's trigger file, without its directory.
+
+    :param par: the search's configuration (channel, gps, ARorder, window,
+        overlap, threshold, and `SearchName` when given).
+    :return: str
+    """
+    return "WDFTriggers-%s-GPS%s-AR%s-Win%s-Ov%s-EnWDF%s%s.parquet" % (
+        par.channel.replace(':', '-'), int(par.gps), par.ARorder, par.window,
+        par.overlap, str(par.threshold), search_suffix(par))
+
+
+def parameters_file_name(par) -> str:
+    """The name of the configuration a search dumps beside its triggers.
+
+    :param par: the search's configuration (window, and `SearchName` when
+        given).
+    :return: str
+    """
+    return "parametersUsed-Win%s%s.json" % (par.window, search_suffix(par))
+
+
 def run_parameters(trigger_path: str):
     """The run configuration a trigger file was produced under.
 
     A run searching several analysis window lengths writes one configuration
     per length, beside that length's trigger file in the same segment
-    directory, and both file names carry the window length.
+    directory, and both file names carry the window length, and the search's
+    name when it has one (`search_suffix`).
 
     :type trigger_path: str
     :param trigger_path: a trigger file written by `TriggerWriter`.
@@ -145,14 +194,17 @@ def run_parameters(trigger_path: str):
     """
     from wdf.config.Parameters import Parameters
 
-    match = re.search(r"-Win(\d+)-", os.path.basename(trigger_path))
+    name = os.path.basename(trigger_path)
+    match = re.search(r"-Win(\d+)-", name)
     if match is None:
         raise FileNotFoundError(
             f"{trigger_path} does not name its analysis window, so the run "
             "configuration written beside it cannot be identified"
         )
+    search = re.search(r"-Search([A-Za-z0-9_]+)\.[A-Za-z]+$", name)
     path = os.path.join(os.path.dirname(trigger_path),
-                        "parametersUsed-Win%s.json" % match.group(1))
+                        "parametersUsed-Win%s%s.json" % (
+                            match.group(1), "-Search" + search.group(1) if search else ""))
     if not os.path.isfile(path):
         raise FileNotFoundError(f"no run configuration at {path}")
     par = Parameters()

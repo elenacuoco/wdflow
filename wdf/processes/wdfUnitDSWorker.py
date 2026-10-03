@@ -31,8 +31,10 @@ from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 discard_edges,
                                                 read_conditioned)
-from wdf.config.Parameters import Parameters, window_schedule
+from wdf.config.Parameters import (Parameters, low_frequency_cut, threshold_rule,
+                                   window_schedule)
 from wdf.processes.wdf import wdf
+from wdf.analysis.io import parameters_file_name
 from wdf.processes.Whitening import CausalWhitening, Whitening
 from wdf.processes.zero_phase_whitening import (
     DEFAULT_BAND_BLEND_HZ,
@@ -69,6 +71,29 @@ import os
 
 
 
+
+
+def search_names(schedule, name=None):
+    """The schedule's searches with the name each one's files carry.
+
+    The searches of a schedule that share a window length would write the same
+    files; each of them gets the run's `SearchName` (or "s") followed by its
+    position in the schedule. A window searched once keeps the run's name.
+
+    :type schedule: list[tuple[int, int]]
+    :param schedule: (window, overlap) pairs, as `window_schedule` returns them.
+    :type name: str or None
+    :param name: the run's `SearchName`.
+    :return: list[tuple[int, int, str or None]] -- (window, overlap, name).
+    """
+    windows = [w for w, _ in schedule]
+    out = []
+    for i, (window, overlap) in enumerate(schedule):
+        own = name
+        if windows.count(window) > 1:
+            own = f"{name or 's'}{i}"
+        out.append((window, overlap, own))
+    return out
 
 
 class wdfUnitDSWorker(object):
@@ -148,7 +173,7 @@ class wdfUnitDSWorker(object):
                 f"{raw.GetStart()}")
         return discard_edges(front.Process(raw), context)
 
-    def segmentProcess(self, segment, wavThresh=WaveletThreshold.block):
+    def segmentProcess(self, segment, wavThresh=None):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
         warm-up read, then stream the rest of the segment through
@@ -159,7 +184,9 @@ class wdfUnitDSWorker(object):
         :param segment: (gpsStart, gpsEnd) bounds of the segment to analyze.
         :type wavThresh: py4tsa.tsa.WaveletThreshold.WaveletThresholding
         :param wavThresh: the rule for the coefficients of a window, passed to WDF's C++
-            engine. The default `block` judges contiguous coefficients of one level
+            engine; None (the default) reads `Parameters.ThresholdRule`
+            (`wdf.config.Parameters.threshold_rule`, "block" when unset), and an explicit
+            value overrides it. `block` judges contiguous coefficients of one level
             together, so that a signal spread over neighbouring coefficients, each below
             the universal threshold, survives as a block; `dohonojohnston` is that universal
             threshold on each coefficient alone. The rule is recorded beside the triggers
@@ -205,6 +232,10 @@ class wdfUnitDSWorker(object):
         the estimation window, the window is taken from the segment end instead.
         """
         gpsStart, gpsEnd = segment[0],segment[1]
+        if wavThresh is None:
+            wavThresh = threshold_rule(self.par)
+        self.par.ThresholdRule = wavThresh.name
+        self.par.LowFrequencyCut = low_frequency_cut(self.par)
         logging.info(
             "Analyzing segment: %s-%s for channel %s downsampled at %dHz"
             % (gpsStart, gpsEnd, self.par.channel, self.par.resampling)
@@ -337,7 +368,7 @@ class wdfUnitDSWorker(object):
                              f"{band[0]:.3f}-{band[1]:.3f} Hz ({level:g} dB), "
                              f"blend {blend:g} Hz")
             else:
-                band, blend = (self.par.LowFrequencyCut, 0.5 * self.par.resampling), 0.0
+                band, blend = (low_frequency_cut(self.par), 0.5 * self.par.resampling), 0.0
                 held = {}
             if zero_phase == "causal" and (model == "spectrum" or hold):
                 raise ValueError("ZeroPhaseFilter 'causal' runs the fitted "
@@ -499,17 +530,19 @@ class wdfUnitDSWorker(object):
             # done once, while each window length has its own stride, its own
             # coefficient grid and its own trigger file.
             searches, writers = [], []
-            for window, overlap in self.schedule:
+            for window, overlap, name in search_names(self.schedule,
+                                                      getattr(self.par, "SearchName", None)):
                 par = Parameters()
                 par.copy(self.par)
                 par.window, par.overlap, par.Ncoeff = window, overlap, window
+                par.SearchName = name
                 par.waveletThreshold = wavThresh.name
                 search = wdf(par, wavThresh)
                 savetrigger = SingleEventPrintTriggers(par)
                 parameterestimation = ParameterEstimation(par)
                 parameterestimation.register(savetrigger)
                 search.register(parameterestimation)
-                par.dump("%sparametersUsed-Win%s.json" % (par.dir, window))
+                par.dump(par.dir + parameters_file_name(par))
                 searches.append(search)
                 writers.append(savetrigger)
             # Start detection loop

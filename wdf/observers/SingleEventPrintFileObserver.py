@@ -22,6 +22,7 @@ __status__ = "Development"
 import os.path
 
 from wdf.analysis.coefficients import TriggerWriter
+from wdf.analysis.io import trigger_file_name
 from wdf.observers.observer import Observer
 
 
@@ -36,18 +37,12 @@ class SingleEventPrintTriggers(Observer):
     def __init__(self, par, flush_every=500):
         """
         :type par: wdf.config.Parameters.Parameters
-        :param par: run configuration, read for the output path.
+        :param par: run configuration, read for the output path
+            (`wdf.analysis.io.trigger_file_name`, which carries `SearchName`).
         :type flush_every: int
         :param flush_every: triggers buffered per Parquet row group.
         """
-        self.filesave = par.dir + "WDFTriggers-%s-GPS%s-AR%s-Win%s-Ov%s-EnWDF%s.parquet" % (
-            par.channel.replace(':', '-'),
-            int(par.gps),
-            par.ARorder,
-            par.window,
-            par.overlap,
-            str(par.threshold),
-        )
+        self.filesave = par.dir + trigger_file_name(par)
         if os.path.isfile(self.filesave):
             try:
                 os.remove(self.filesave)
