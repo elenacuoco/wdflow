@@ -1,0 +1,104 @@
+# Offline WDF search: wdf.processes.wdfUnitOffline.wdfUnitOffline.
+# Load with wdf.config.Parameters.load_config("configs/offline_default.toml", ifo="H1", file=..., ...).
+# The values are the chain Elena decided on 1-3 Oct 2026 (wdf-catalogue STATUS.md, TRIALS.md).
+# Units: window, overlap, ARorder, ARWarmup and RidgeWindow/RidgeOverlap are in SAMPLES of the
+# decimated stream; durations are in seconds; frequencies in Hz.
+
+SearchName = "offline"          # name in every output file, so that two searches never overwrite each other
+run = "offline"                 # output subfolder under outdir
+outdir = "./wdf_output/"        # output root; override per run
+ResamplingFactor = 2            # decimation factor: 4096 Hz GWOSC strain -> 2048 Hz (use 8 for 16384 Hz)
+
+# ---- band-pass: Butterworth, zero phase
+BandPassFilter = "butterworth"  # high-pass and low-pass Butterworth cascade, no zeros inside the band
+BandPassPhase = "zero"          # forward-backward with real past and future (sosfiltfilt), offline
+LowFrequencyCut = 8.0           # high-pass corner, Hz; also the M4 bank's lowest frequency
+HighPassOrder = 4               # high-pass order
+LowPassCornerFraction = 0.87890625  # low-pass corner as a fraction of the decimated Nyquist (900 Hz at 2048 Hz)
+AliasAttenuationDB = 50.0       # required |H|^2 attenuation at resampling - corner; sets the low-pass order (8 from 4096 Hz, 12 from 16384 Hz)
+
+# ---- noise model and whitening
+ARorder = 3000                  # autoregressive order, samples (lattice order); V1 overrides below
+learn = 300                     # fit stretch, s; V1 overrides below
+AREstimationOffset = 50.0       # fit stretch start, s after the segment start (a quiet stretch: choose per segment)
+ARFitContext = 5.0              # real data read on each side of the fit stretch and dropped after the band-pass, s
+preWhite = 4                    # warm-up, s (lengthened automatically to the whitening's latency)
+len = 120.0                     # read block, s (I/O batching; the zero-phase band-pass emits one block late)
+ZeroPhaseFilter = "truncated"   # TruncatedWhitening: the model's inverse ASD truncated to ZeroPhaseDuration
+ZeroPhaseDuration = 16.0        # truncation of the whitening filter, s; V1 overrides below
+WhiteningModel = "burg"         # the whitening is built from the Burg AR model
+HoldOutsideBand = false         # whiten the full band (the whitening also inverts the band-pass)
+
+# ---- the WDF search
+window = 1024                   # analysis window, samples (0.5 s at 2048 Hz)
+overlap = 256                   # overlap of consecutive windows, samples
+threshold = 5.0                 # EnWDF threshold of a window
+ThresholdRule = "block"         # rule for a window's coefficients: block (Cai), dohonojohnston or cuoco
+BlockLength = 0                 # block rule's L, coefficients; 0 = round(ln window) = 7 at 1024
+BlockLambda = 4.505             # block rule's lambda (calibrated for L about 7)
+BlockRemainder = "merge"        # a run's short remainder joins the block before it
+MinFrequency = 16.0             # coefficients whose tile lies at or below 16 Hz leave sigma, the block rule and EnWDF
+Bases = ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]  # Elena's 10 bases
+
+# ---- M4 glitch subtraction, with coincidence protection
+GlitchSubtraction = true        # subtract whitened sine-Gaussians fitted to the loud transients
+GlitchQs = [1.0, 2.0, 4.0, 8.0, 16.0]  # quality factors of the atom bank
+GlitchFrequencyCount = 40       # bank frequencies, log-spaced from LowFrequencyCut
+GlitchTopFraction = 0.83984375  # top bank frequency over the decimated Nyquist (860 Hz at 2048 Hz)
+GlitchAtomCutTau = 5.0          # atoms cut at this many tau on each side
+GlitchTrigger = 13.64           # smallest census peak (robust sigma) that seeds a fit
+GlitchFlag = 6.0                # census flag level (robust sigma)
+GlitchMergeGap = 0.25           # largest gap inside one transient, s
+GlitchCensusLow = 16.0          # lowest census octave, Hz (= MinFrequency)
+GlitchExtentLow = 64.0          # lowest octave a transient's extent is read from, Hz (skips the whitening's memory)
+GlitchSeedPad = 0.1             # added to half the extent, s
+GlitchStopSNR = 6.0             # the pursuit stops when the best atom is below this whitened SNR
+GlitchMaxAtoms = 100            # ... or after this many atoms per seed
+GlitchOctaveOrder = 8           # Butterworth order of the census's octave filters
+GlitchCleanFitStretch = true    # the AR fit stretch is cleaned by M4 and refitted when it holds a transient
+GlitchProtectCoincident = true  # a seed in two or more detectors within light travel + jitter is NOT subtracted
+GlitchCoincidenceJitter = 0.01  # added to the light travel time, s
+
+# ---- ridge over the segment
+Ridge = true                    # offline ridge with backward and forward extension
+RidgeBasis = "LocalCos128"      # dense window coefficients of the map: 62.5 ms x 8 Hz tiles at 2048 Hz
+RidgeWindow = 1024              # map window, samples
+RidgeOverlap = 256              # map overlap, samples; each window's central 768 samples are used
+RidgeDechirpAlphas = []         # dechirped local cosine sweeps, Hz/s; empty = none (not in the default)
+RidgeSlot = 0.03125             # slot, s (1/32 s)
+RidgeOctaveStep = 0.25          # state width, octaves
+RidgeLowFrequency = 16.0        # lowest state edge, Hz
+RidgeBackground = 256.0         # rolling background, s (centred offline)
+RidgeBackgroundUpdate = 8.0     # background update period, s
+RidgeBackgroundMinimum = 64.0   # background needed before a slot is scored, s
+RidgeBackgroundClip = 5.0       # background sigma clipping, standard deviations
+RidgeBackgroundIterations = 3   # clipping iterations
+RidgeLambda = 0.502             # penalty per octave beyond the allowance: 1 / (2.262 - 0.27), ridge v2
+RidgeAllowance = 0.27           # free move per slot, octaves (fastest inspiral sweep, IMRPhenomD Mc 1-30)
+RidgeDrift = "calibrate"        # per-cell drift b: calibrated on the background (ridge v2 rule)
+RidgeXDrop = "calibrate"        # episode X-drop: calibrated with b
+RidgeThreshold = 0.0            # smallest candidate score written; no false-alarm calibration exists yet
+RidgeMaxSlots = 512             # longest path, slots (16 s)
+RidgeWaveformStates = 1         # states added on each side of the path for its waveform
+RidgeWaveforms = 10             # candidates whose waveform energy is computed
+RidgeCalibrationSeeds = 2000    # random starts of the drift calibration
+RidgeCalibrationSteps = 64      # slots each start is followed
+RidgeCalibrationKept = 2.0      # largest median extension into noise, slots
+RidgeCalibrationGridStep = 0.05  # step of the drifts tried, from 0
+RidgeCalibrationGridMax = 3.0   # largest drift tried
+RidgeXDropSlots = 8             # span of the drop, slots
+RidgeXDropPercentile = 99.0     # noise percentile that sets X
+
+# ---- per detector
+[detectors.H1]
+ARorder = 3000                  # AR order, samples
+learn = 300                     # fit stretch, s
+
+[detectors.L1]
+ARorder = 3000                  # AR order, samples
+learn = 300                     # fit stretch, s
+
+[detectors.V1]
+ARorder = 16000                 # V1 needs 16000 to resolve its lines (GW170817: misplaced bins 33/266 -> 7/8)
+learn = 600                     # fit stretch, s
+ZeroPhaseDuration = 32.0        # with 16 s V1's lines are not resolved

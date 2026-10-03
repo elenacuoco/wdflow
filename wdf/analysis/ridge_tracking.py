@@ -102,8 +102,9 @@ class RidgeSettings:
         (`RidgeCalibrationSteps`).
     :param calibration_kept: the largest median extension into noise the
         calibrated drift allows, slots (`RidgeCalibrationKept`).
-    :param calibration_grid: the drifts tried, ascending
-        (`RidgeCalibrationGrid`).
+    :param calibration_step: step of the drifts tried, from 0
+        (`RidgeCalibrationGridStep`).
+    :param calibration_max: largest drift tried (`RidgeCalibrationGridMax`).
     :param xdrop_slots: span over which the drop is measured, slots
         (`RidgeXDropSlots`).
     :param xdrop_percentile: percentile of the noise drops that sets X
@@ -133,7 +134,8 @@ class RidgeSettings:
     calibration_seeds: int
     calibration_steps: int
     calibration_kept: float
-    calibration_grid: tuple
+    calibration_step: float
+    calibration_max: float
     xdrop_slots: int
     xdrop_percentile: float
 
@@ -148,7 +150,8 @@ class RidgeSettings:
                 threshold="RidgeThreshold", max_slots="RidgeMaxSlots",
                 waveform_states="RidgeWaveformStates", calibration_seeds="RidgeCalibrationSeeds",
                 calibration_steps="RidgeCalibrationSteps", calibration_kept="RidgeCalibrationKept",
-                calibration_grid="RidgeCalibrationGrid", xdrop_slots="RidgeXDropSlots",
+                calibration_step="RidgeCalibrationGridStep",
+                calibration_max="RidgeCalibrationGridMax", xdrop_slots="RidgeXDropSlots",
                 xdrop_percentile="RidgeXDropPercentile")
 
     #: Defaults, those in samples or Hz stated relative to the rate where
@@ -162,7 +165,7 @@ class RidgeSettings:
                     lam=1.0 / (2.262 - 0.27), allowance=0.27, drift=None, xdrop=None,
                     threshold=0.0, waveform_states=1, calibration_seeds=2000,
                     calibration_steps=64, calibration_kept=2.0,
-                    calibration_grid=tuple(np.round(np.arange(0.0, 3.0001, 0.05), 2)),
+                    calibration_step=0.05, calibration_max=3.0,
                     xdrop_slots=8, xdrop_percentile=99.0)
 
     @classmethod
@@ -212,7 +215,8 @@ class RidgeSettings:
             calibration_seeds=int(get("calibration_seeds", d["calibration_seeds"])),
             calibration_steps=int(get("calibration_steps", d["calibration_steps"])),
             calibration_kept=float(get("calibration_kept", d["calibration_kept"])),
-            calibration_grid=tuple(float(b) for b in get("calibration_grid", d["calibration_grid"])),
+            calibration_step=float(get("calibration_step", d["calibration_step"])),
+            calibration_max=float(get("calibration_max", d["calibration_max"])),
             xdrop_slots=int(get("xdrop_slots", d["xdrop_slots"])),
             xdrop_percentile=float(get("xdrop_percentile", d["xdrop_percentile"])))
         for field, key in cls.KEYS.items():
@@ -235,6 +239,13 @@ class RidgeSettings:
     def n_states(self):
         """Number of states."""
         return self.edges().size - 1
+
+    @property
+    def calibration_grid(self):
+        """The drifts the calibration tries: 0 to `calibration_max` by
+        `calibration_step`."""
+        count = int(np.floor(self.calibration_max / self.calibration_step + 1e-9))
+        return np.round(np.arange(count + 1) * self.calibration_step, 10)
 
     def penalty(self):
         """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c)``."""
@@ -697,7 +708,8 @@ def _drops_and_kept(G, span):
 def calibrate_drift(Z, settings, seed=1):
     """The drift b and the X-drop from noise, as ridge v2 fixes them.
 
-    b is the smallest of `calibration_grid` for which a greedy extension from
+    b is the smallest of `calibration_grid` (0 to `calibration_max` by
+    `calibration_step`) for which a greedy extension from
     random starts into the background keeps, in median, at most
     `calibration_kept` slots before a drop of X; X is the
     `xdrop_percentile` of the largest drop of the cumulative gain within
