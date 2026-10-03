@@ -5,6 +5,31 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### Glitches are subtracted with whitened sine-Gaussians (M4), with every choice a parameter
+
+`wdf.processes.glitch_subtraction` (ported from feature/glitch-subtraction
+a1bff75, census fix included) fits loud transients with sine-Gaussian atoms
+defined in the conditioned stream and seen through the whitening's zero-phase
+taps, by greedy matching pursuit with the exact two-parameter least squares of
+each atom, and subtracts them before the whitening. Its census lives in
+`wdf.processes.census` (the census of feature/gated-search, without gates).
+
+- Every choice is a run parameter, read and recorded by
+  `M4Settings.from_parameters`: `GlitchQs` (1, 2, 4, 8, 16),
+  `GlitchFrequencyCount` (40), `GlitchTopFraction` (860/1024 of the Nyquist
+  frequency), the bank's bottom `LowFrequencyCut`, `GlitchAtomCutTau` (5),
+  `GlitchTrigger` (13.64), `GlitchFlag` (6), `GlitchMergeGap` (0.25 s),
+  `GlitchCensusLow` (the search's `MinFrequency`, else `LowFrequencyCut`),
+  `GlitchExtentLow` (4 times the census's lowest frequency), `GlitchSeedPad`
+  (0.1 s), `GlitchStopSNR` (6), `GlitchMaxAtoms` (100), `GlitchOctaveOrder`
+  (8). The bank's frequencies follow the rate (`bank_frequencies`).
+- **Protection:** a seed found in two or more detectors within their light
+  travel time plus `GlitchCoincidenceJitter` (0.01 s) may be a gravitational
+  wave and is not subtracted (`protect_coincident`; `GlitchProtectCoincident`,
+  default on). A network run takes each detector's census
+  (`whitened_census`), marks the coincident seeds and fits the rest
+  (`fit_seeds`).
+
 ### The Butterworth band-pass: a corner relative to the rate, an order from the alias requirement, a causal form
 
 - `BandPassFilter = "butterworth"`: a high-pass of `HighPassOrder` (default 4)
