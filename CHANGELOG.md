@@ -5,6 +5,24 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The local cosine in NumPy, and the dechirped local cosine
+
+- `wdf.analysis.local_cosine`: `local_cosine` and `inverse_local_cosine`
+  (Coifman-Meyer bell, DCT-IV, on the circle), laid out as p4TSA's
+  `LocalCos<M>` and equal to its forward transform to rounding, over many
+  windows at once; `local_cosine_geometry` gives each coefficient's tile.
+- `wdf.analysis.dechirp`: the analytic signal times
+  `exp(-i pi alpha (t - t_mid)^2)`, real part, then the local cosine
+  (`dechirped_local_cosine`); its inverse, the re-chirp
+  (`inverse_dechirped_local_cosine`, `rechirp`); the parallelogram tiles with
+  their bounding rectangles (`dechirped_geometry`); and a symmetric sweep grid
+  whose step is set by the tile, `1 / (2 T_seg^2)`, over a range given as a
+  parameter (`alpha_grid`). The analytic signal is computed on the window
+  padded with zeros, so nothing wraps from one end to the other
+  (`analytic_signal`). **It is not an orthonormal basis:** the real part folds
+  the bands the sweep moves across 0 Hz or the Nyquist frequency, so it cannot
+  enter WDF2Classify's competition; it is in no default configuration.
+
 ### Glitches are subtracted with whitened sine-Gaussians (M4), with every choice a parameter
 
 `wdf.processes.glitch_subtraction` (ported from feature/glitch-subtraction
