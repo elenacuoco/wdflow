@@ -5,6 +5,34 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### Ridge tracking: a path along the cells, offline and causal
+
+`wdf.analysis.ridge_tracking` finds tracks; `wdf.analysis.ridge` still only
+describes the track of an event already found. Ported from the catalogue's
+ridge_stage.py and ridge_v2.py:
+
+- cell maps from the dense coefficients of the analysis windows (`RidgeBasis`,
+  default `LocalCos128`; optionally the dechirped local cosine at
+  `RidgeDechirpAlphas`, each cell its largest value over them), slots of
+  `RidgeSlot` by states of `RidgeOctaveStep` octaves from `RidgeLowFrequency`,
+  only each window's central stretch (`stream_cells`; `StreamingCells`, the
+  same block by block, with a ring of the recent windows' coefficients);
+- a per-row z from a rolling background, sigma-clipped (`RidgeBackground`,
+  `RidgeBackgroundUpdate`, `RidgeBackgroundClip`): centred offline, strictly
+  past online (`background_z`, `CausalBackground`); the network cell is the
+  minimum of the detectors' z (`combine_min`);
+- a local alignment scoring `z - b` per cell with a symmetric penalty
+  `RidgeLambda * max(0, |d log2 f| - RidgeAllowance)` per move; b and the
+  X-drop are calibrated on the background (`calibrate_drift`) unless given;
+- `offline_ridge`: the episodes of the alignment over a segment, each
+  extended greedily backward and forward; `StreamingRidge`: the same slot by
+  slot from the past only, with a running best path ending at the current
+  slot, candidates emitted when their episode ends with their latency, and a
+  backward extension into the held past;
+- `ridge_waveform`: the waveform under a path's cells, inverted from the
+  window coefficients, and its integrated energy; `box_scores` and
+  `standardise` for the per-duration standardisation of ridge v2.
+
 ### The local cosine in NumPy, and the dechirped local cosine
 
 - `wdf.analysis.local_cosine`: `local_cosine` and `inverse_local_cosine`
