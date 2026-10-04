@@ -268,8 +268,28 @@ spread measured on a run's injections).
   factor is 1 within the window and falls with the excess, the same for
   either sign. It is 0 when the lag cannot be measured.
 
+A single detector's census labels a loud merger as a glitch, because one
+detector cannot tell the two apart. The network can. Given the detectors'
+census (`run_network(..., census=)`: the online `GlitchCensusOnline` tables
+or the offline census; online, `NetworkStream.add(..., census=)`), each pair
+carries `glitch_i` and `glitch_j`. An event that overlaps a census transient
+of its detector is a glitch only when the other detector has no transient
+within the light travel time plus `NetworkGlitchTolerance` (0.01 s), so
+coincident transients are not glitches. `glitch_single_ifo` is true when
+either event is a glitch. `NetworkGlitchVeto` sets its use:
+
+- "none" (the default) only reports it;
+- "veto" drops the pair;
+- "penalty" multiplies the ranking column by `NetworkGlitchFactor` (0.1)
+  into `network_rank_statistic`.
+
+Online, the decision needs the other detector's census at the same latency as
+its triggers: run the network stage once both detectors' outputs reach the
+same data time.
+
 The screens run inside the finder (`wdf.analysis.pair_screen.ScreenedFinder`),
-so the time slides measure each slid pair's lag as the zero-lag pairs'.
+so the time slides measure each slid pair as the zero-lag pairs, moving each
+detector's reconstruction and census with its events.
 
 ### The track path
 
@@ -421,6 +441,9 @@ waveform, so `TimeSlideFAR` runs on it.
 | `NetworkLagTolerance` | 0.01 s | added to the light travel time |
 | `NetworkLagScale` | 0.01 s | scale of the lag penalty |
 | `NetworkLagSearch` | 0.25 s | half-width of the lag search |
+| `NetworkGlitchVeto` | "none" | wavegram path: "none", "veto" or "penalty" on `glitch_single_ifo` |
+| `NetworkGlitchTolerance` | 0.01 s | added to the light travel time for coincident transients |
+| `NetworkGlitchFactor` | 0.1 | rank factor of a single-detector glitch |
 | `TrackLookback` | 4.0 s | map searched before a seed's window |
 | `TrackHorizon` | 1.0 s | map searched after it |
 | `TrackBasis` | `RidgeBasis` | `LocalCos<M>` or `CosinePackets<m>` |

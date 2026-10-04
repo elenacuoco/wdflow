@@ -5,6 +5,18 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The network's glitch decision
+
+Given the detectors' census of transients (`run_network(..., census=)`,
+`NetworkStream.add(..., census=)`), each pair of the paper path carries
+`glitch_i`, `glitch_j` and `glitch_single_ifo`. An event that overlaps a
+census transient of its detector is a glitch only when the other detector has
+no transient within the light travel time plus `NetworkGlitchTolerance`
+(0.01 s); coincident transients are not glitches. `NetworkGlitchVeto` (default
+"none", report only) is "veto" to drop those pairs or "penalty" to multiply
+their rank by `NetworkGlitchFactor` (0.1). Time slides move each detector's
+census with its events.
+
 ### Optional lag criterion on the paper path
 
 `NetworkLagCut` (default "none", the paper path as before) measures each

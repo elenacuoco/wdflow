@@ -83,3 +83,42 @@ def test_the_screen_runs_on_time_slides():
 def test_an_unknown_criterion_is_refused():
     with pytest.raises(ValueError, match="NetworkLagCut"):
         run_network(Parameters(NetworkLagCut="gate"), triggers=triggers())
+
+
+# ================================================================ glitch decision
+CHIRP = (snap.T0 + snap.CHIRP_AT, snap.T0 + snap.CHIRP_AT + snap.CHIRP_S)
+
+
+def census(*spans):
+    return pd.DataFrame(dict(extent_first=[a for a, _ in spans], extent_last=[b for _, b in spans],
+                             peak=[30.0] * len(spans)))
+
+
+def test_a_coincident_loud_transient_is_not_a_glitch():
+    """Both detectors' census hold the chirp (5 ms apart): no glitch."""
+    both = {"H1": census(CHIRP), "L1": census((CHIRP[0] + 0.005, CHIRP[1] + 0.005))}
+    row = on_chirp(run_network(Parameters(), triggers=triggers(), census=both).candidates).iloc[0]
+    assert not row["glitch_single_ifo"] and not row["glitch_i"] and not row["glitch_j"]
+
+
+def test_a_single_detector_transient_is_flagged_and_vetoed_or_penalised():
+    """Only H1's census holds the transient; L1 sees noise there: the H1
+    event is a single-detector glitch."""
+    one = {"H1": census(CHIRP), "L1": census((CHIRP[0] - 30.0, CHIRP[0] - 29.9))}
+    row = on_chirp(run_network(Parameters(), triggers=triggers(), census=one).candidates).iloc[0]
+    assert row["glitch_single_ifo"] and row["glitch_i"] and not row["glitch_j"]
+    vetoed = run_network(Parameters(NetworkGlitchVeto="veto"), triggers=triggers(), census=one)
+    assert on_chirp(vetoed.candidates).empty
+    pen = run_network(Parameters(NetworkGlitchVeto="penalty"), triggers=triggers(), census=one)
+    row = on_chirp(pen.candidates).iloc[0]
+    assert row["network_rank_statistic"] == pytest.approx(0.1 * row["network_morphology"])
+
+
+def test_the_glitch_decision_needs_the_census_and_runs_in_slides():
+    with pytest.raises(ValueError, match="census"):
+        run_network(Parameters(NetworkGlitchVeto="veto"), triggers=triggers())
+    both = {"H1": census(CHIRP), "L1": census((CHIRP[0] + 0.005, CHIRP[1] + 0.005))}
+    par = Parameters(NetworkGlitchVeto="penalty", NetworkSlides=5, NetworkSlideStep=4.0)
+    result = run_network(par, triggers=triggers(), census=both)
+    if len(result.background):
+        assert "glitch_single_ifo" in result.background

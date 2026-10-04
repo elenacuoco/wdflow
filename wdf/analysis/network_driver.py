@@ -232,7 +232,8 @@ def _with_identities(candidates, nodes):
     return candidates
 
 
-def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=None):
+def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=None,
+                census=None):
     """Stages 2, 3 and 4 on the path `par` selects.
 
     :param par: run configuration (`Reconstruction`, `Coincidence`, `Scorer`,
@@ -247,6 +248,10 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
     :param waveforms: ``{ifo: {cluster_id: (t0, waveform)}}`` (track path).
     :param segment_bounds: ``{ifo: (start, end)}`` for the time slides; from
         the triggers or events when None.
+    :param census: ``{ifo: census table}`` (wavegram path): the online
+        worker's ``GlitchCensusOnline`` or the offline census. With it, the
+        pairs carry the network's glitch decision (`glitch_single_ifo`),
+        used as `NetworkGlitchVeto` says.
     :return: NetworkResult
     """
     from wdf.analysis.network_graph import TriggerGraphBuilder, WavegramCoincidenceFinder
@@ -280,10 +285,10 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         finder = WavegramCoincidenceFinder(IndexedCoincidenceFinder(), builder, maps,
                                            comparison=comparison, events=events, scorer=scorer)
         screen = PairScreenSettings.from_parameters(par)
-        if screen.active:
+        if screen.active or census is not None:
             fs = float(pd.to_numeric(next(iter(triggers.values()))["fs"]).iloc[0])
             finder = ScreenedFinder(finder, events, _reconstructions(graphs, labels), fs, screen,
-                                    rank_column)
+                                    rank_column, census=census)
             if screen.penalised:
                 rank_column = RANK_STATISTIC
         candidates = finder.find(events)
@@ -372,9 +377,10 @@ class NetworkStream:
         self.ifos = list(ifos)
         self.tables = {i: pd.DataFrame() for i in self.ifos}
         self.waveforms = {i: {} for i in self.ifos}
+        self.census = {i: pd.DataFrame() for i in self.ifos}
         self.latest = -np.inf
 
-    def add(self, ifo, rows, waveforms=None):
+    def add(self, ifo, rows, waveforms=None, census=None):
         """Hold one detector's new rows.
 
         :param ifo: the detector.
@@ -382,8 +388,13 @@ class NetworkStream:
             and `wt_value` (wavegram path), or track events (track path,
             `OnlineResult.tracks`).
         :param waveforms: ``{cluster_id: (t0, waveform)}`` of track events.
+        :param census: new census transients of the detector
+            (`OnlineResult.census`), for the glitch decision.
         :return: None
         """
+        if census is not None and len(census):
+            frame_c = census if isinstance(census, pd.DataFrame) else pd.DataFrame(list(census))
+            self.census[ifo] = pd.concat([self.census[ifo], frame_c], ignore_index=True)
         frame = rows if isinstance(rows, pd.DataFrame) else pd.DataFrame(list(rows))
         if frame.empty:
             return
@@ -396,6 +407,11 @@ class NetworkStream:
 
     def _forget(self):
         horizon = self.latest - self.settings.memory_s
+        for i, c in self.census.items():
+            if len(c):
+                from wdf.analysis.pair_screen import census_extents
+
+                self.census[i] = c[census_extents(c)[1] >= horizon].reset_index(drop=True)
         for i in self.ifos:
             t = self.tables[i]
             if t.empty:
@@ -419,4 +435,6 @@ class NetworkStream:
             return NetworkResult(candidates=pd.DataFrame(), events={}, settings=self.settings)
         if self.settings.reconstruction == "track":
             return run_network(self.par, tracks=held, waveforms=self.waveforms)
-        return run_network(self.par, triggers=held)
+        census = ({i: c for i, c in self.census.items()}
+                  if any(len(c) for c in self.census.values()) else None)
+        return run_network(self.par, triggers=held, census=census)

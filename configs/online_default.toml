@@ -94,6 +94,9 @@ NetworkLagCut = "none"          # wavegram path: lag of the two stitched reconst
 NetworkLagTolerance = 0.01      # wavegram path: s added to the light travel time; about the spread of the reconstruction lag, set from a run's injections
 NetworkLagScale = 0.01          # wavegram path: s, scale of the lag penalty
 NetworkLagSearch = 0.25         # wavegram path: half-width of the lag search, s
+NetworkGlitchVeto = "none"      # wavegram path, with the detectors' census: a census transient with none in the other detector within light travel + NetworkGlitchTolerance is a single-detector glitch (glitch_single_ifo): "none" = report, "veto" = drop the pair, "penalty" = rank x NetworkGlitchFactor
+NetworkGlitchTolerance = 0.01   # wavegram path: s added to the light travel time for two transients to be coincident
+NetworkGlitchFactor = 0.1       # wavegram path: rank factor of a single-detector glitch with "penalty"
 NetworkSlides = 0               # time slides of the background (0 = no background, no FAR)
 NetworkSlideStep = 4.0          # step between two slides, s
 NetworkMemory = 64.0            # s of detector outputs NetworkStream holds online

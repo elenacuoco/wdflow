@@ -79,7 +79,9 @@ def test_the_driver_reproduces_the_catalogue_paper_path():
         pd.testing.assert_frame_equal(result.events[ifo],
                                       frozen(f"paper_path_events_{ifo}.parquet"), check_exact=True)
     assert set(vars(par)) == {"NetworkLagCut", "NetworkLagTolerance", "NetworkLagScale",
-                              "NetworkLagSearch"} and par.NetworkLagCut == "none"
+                              "NetworkLagSearch", "NetworkGlitchVeto", "NetworkGlitchTolerance",
+                              "NetworkGlitchFactor"}
+    assert par.NetworkLagCut == "none" and par.NetworkGlitchVeto == "none"
 
 
 def test_the_driver_draws_a_background_when_asked():
