@@ -42,7 +42,7 @@ __license__ = "GPL"
 __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -68,6 +68,66 @@ TRACK_COLUMNS = [
 TRACK_EVENT_COLUMNS = DETECTOR_EVENT_COLUMNS + TRACK_COLUMNS
 
 
+# ================================================================ the track's penalty
+#: G Msun / c^3, s.
+SOLAR_MASS_S = 4.925490947e-6
+
+
+def chirp_allowance(f, chirp_mass, slot_s):
+    """The largest sweep of an inspiral in one slot from frequency `f`,
+    octaves: ``df/dt = (96/5) pi^(8/3) (G Mc / c^3)^(5/3) f^(11/3)``
+    integrated over `slot_s`, ``f'^(-8/3) = f^(-8/3) - (8/3) K slot_s``;
+    infinite where the inspiral would reach coalescence within the slot.
+
+    :param f: frequency, Hz (array).
+    :param chirp_mass: chirp mass, solar masses (detector frame).
+    :param slot_s: slot, s.
+    :return: numpy.ndarray -- octaves.
+    """
+    f = np.asarray(f, dtype=float)
+    k = (96.0 / 5.0) * np.pi ** (8.0 / 3.0) * (chirp_mass * SOLAR_MASS_S) ** (5.0 / 3.0)
+    rest = f ** (-8.0 / 3.0) - (8.0 / 3.0) * k * slot_s
+    with np.errstate(divide="ignore", invalid="ignore"):
+        end = np.where(rest > 0, rest ** (-3.0 / 8.0), np.inf)
+    return np.log2(end / f)
+
+
+@dataclass
+class TrackRidgeSettings(RidgeSettings):
+    """The map's settings with the track's penalty.
+
+    A move between states s and s' costs ``lam * max(0, |d log2 f| - c)``,
+    ``c`` the largest sweep an inspiral of chirp mass up to the top of
+    `mc_range` makes in one slot from the LOWER of the two states' centres
+    (`chirp_allowance`), at most `allowance_max`. The allowance depends on
+    the pair of states only, not on the direction of the move, so the
+    penalty is symmetric: a falling track costs as a rising one. A sweep
+    grows with the chirp mass, so the top of the range bounds it over the
+    range. `lam` is the stiff penalty beyond the allowance (`TrackLambda`).
+
+    :param mc_range: (smallest, largest) chirp mass, solar masses
+        (`TrackMcRange`).
+    :param allowance_max: largest allowance, octaves per slot
+        (`TrackAllowanceMax`), which bounds it near coalescence.
+    """
+
+    mc_range: tuple = (1.0, 30.0)
+    allowance_max: float = 0.27
+
+    def allowances(self):
+        """``[from, to]`` allowance, octaves."""
+        centre = np.sqrt(self.edges()[:-1] * self.edges()[1:])
+        low = np.minimum(centre[:, None], centre[None, :])
+        return np.minimum(chirp_allowance(low, max(self.mc_range), self.slot_s),
+                          self.allowance_max)
+
+    def penalty(self):
+        """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c(f))``."""
+        centre = np.log2(self.edges()[:-1]) + 0.5 * self.octave_step
+        return self.lam * np.maximum(0.0, np.abs(centre[:, None] - centre[None, :])
+                                     - self.allowances())
+
+
 # ================================================================ settings
 @dataclass
 class TrackSettings:
@@ -84,7 +144,12 @@ class TrackSettings:
         may pass through and still contain it (`TrackSeedStates`).
     :param packet_cost: cost of the cosine-packet best basis
         (`TrackPacketCost`), one of `PACKET_COSTS`.
-    :param ridge: the map's and the path's settings (`RidgeSettings`).
+    :param ridge: the map's settings with the track's penalty
+        (`TrackRidgeSettings`): `TrackLambda` (default 3.7 per octave),
+        `TrackMcRange` (default 1 to 30 solar masses), `TrackAllowanceMax`
+        (default 0.27 octave), and the track's own drift and X-drop
+        (`TrackDrift`, `TrackXDrop`, default calibrated on the background
+        with this penalty).
     """
 
     lookback: float
@@ -97,6 +162,10 @@ class TrackSettings:
     KEYS = dict(lookback="TrackLookback", horizon="TrackHorizon", basis="TrackBasis",
                 seed_states="TrackSeedStates", packet_cost="TrackPacketCost")
     DEFAULTS = dict(lookback=4.0, horizon=1.0, seed_states=1, packet_cost="entropy")
+    #: The track penalty's parameters and defaults: the stiff penalty of
+    #: ridge v1, which followed inspirals, beyond a chirp allowance.
+    PENALTY = dict(TrackLambda=3.7, TrackMcRange=(1.0, 30.0), TrackAllowanceMax=0.27,
+                   TrackDrift="calibrate", TrackXDrop="calibrate")
 
     @classmethod
     def from_parameters(cls, par, rate, ridge=None):
@@ -112,6 +181,7 @@ class TrackSettings:
             negative lookback or horizon.
         """
         ridge = RidgeSettings.from_parameters(par, rate) if ridge is None else ridge
+        ridge = cls.track_ridge(par, ridge)
 
         def get(name, default):
             value = getattr(par, cls.KEYS[name], None)
@@ -127,6 +197,31 @@ class TrackSettings:
         for name, key in cls.KEYS.items():
             setattr(par, key, getattr(out, name))
         return out
+
+    @classmethod
+    def track_ridge(cls, par, ridge):
+        """`ridge` with the track's penalty, drift and X-drop, from `par`
+        (values written back)."""
+        values = {}
+        for key, default in cls.PENALTY.items():
+            value = getattr(par, key, None)
+            values[key] = default if value is None else value
+        mc = tuple(float(m) for m in values["TrackMcRange"])
+        if len(mc) != 2 or not 0 < mc[0] <= mc[1]:
+            raise ValueError(f"TrackMcRange {values['TrackMcRange']}: two positive chirp masses, "
+                             "smallest first")
+        if float(values["TrackLambda"]) <= 0 or float(values["TrackAllowanceMax"]) < 0:
+            raise ValueError("TrackLambda must be positive and TrackAllowanceMax not negative")
+        drift, xdrop = values["TrackDrift"], values["TrackXDrop"]
+        base = {k: v for k, v in asdict(ridge).items()}
+        base.update(lam=float(values["TrackLambda"]),
+                    drift=None if drift in (None, "calibrate") else float(drift),
+                    xdrop=None if xdrop in (None, "calibrate") else float(xdrop))
+        for key, value in values.items():
+            setattr(par, key, list(value) if isinstance(value, tuple) else value)
+        par.TrackMcRange = list(mc)
+        return TrackRidgeSettings(**base, mc_range=mc,
+                                  allowance_max=float(values["TrackAllowanceMax"]))
 
     def check(self, rate):
         """Refuse settings the reconstruction cannot run."""
@@ -389,12 +484,60 @@ def _make_track(slots, states, score, Z, X, origin, rs, seeds, method):
                  f_low=edges[states], f_high=edges[states + 1], seeds=list(seeds), method=method)
 
 
+def calibrate_track_drift(Z, settings, seed=1):
+    """The drift b and the X-drop of the track's alignment, from noise.
+
+    As `calibrate_drift`, with the alignment the track uses (the best path
+    over every state sequence from a start, `anchored_path`) in place of the
+    greedy extension: from `calibration_seeds` random starts (at most 500)
+    in the background, at the start's loudest state, the best score after k
+    slots is followed for `calibration_steps` slots. X is the
+    `xdrop_percentile` of its largest drop within `xdrop_slots` slots, and b
+    the smallest drift of `calibration_grid` for which the median number of
+    slots kept before a drop of X is at most `calibration_kept`.
+
+    :return: tuple -- (b, X).
+    """
+    Z = np.asarray(Z, dtype=float)
+    Z = Z[np.all(np.isfinite(Z), axis=1)]
+    steps = settings.calibration_steps
+    if len(Z) < steps + 2:
+        raise ValueError(f"{len(Z)} slots of background cannot calibrate the drift over {steps}")
+    rng = np.random.default_rng(seed)
+    starts = rng.integers(0, len(Z) - steps - 1, min(settings.calibration_seeds, 500))
+    pen = settings.penalty()
+    s0 = np.argmax(Z[starts], axis=1)
+    result = None
+    for b in settings.calibration_grid:
+        H = np.full((starts.size, Z.shape[1]), -np.inf)
+        H[np.arange(starts.size), s0] = 0.0
+        best = np.zeros((starts.size, steps + 1))
+        for k in range(1, steps + 1):
+            H = Z[starts + k] - b + (H[:, :, None] - pen[None]).max(axis=1)
+            best[:, k] = H.max(axis=1)
+        drops = np.zeros(starts.size)
+        for d in range(1, settings.xdrop_slots + 1):
+            drops = np.maximum(drops, (best[:, :-d] - best[:, d:]).max(axis=1))
+        X = float(np.percentile(drops, settings.xdrop_percentile))
+        peak = np.maximum.accumulate(best, axis=1)
+        stopped = best < peak - X
+        stop = np.where(stopped.any(1), stopped.argmax(1), best.shape[1])
+        masked = np.where(np.arange(best.shape[1])[None, :] < stop[:, None], best, -np.inf)
+        kept = np.argmax(masked, axis=1)
+        result = (float(b), X)
+        if np.median(kept) <= settings.calibration_kept:
+            break
+    return result
+
+
 def calibrated(settings, Z):
     """The ridge settings with drift and X-drop, calibrated on `Z` where they
-    are left to calibrate."""
+    are left to calibrate: by `calibrate_track_drift` for the track's
+    penalty (`TrackRidgeSettings`), by `calibrate_drift` otherwise."""
     rs = settings.ridge
     if rs.drift is None or rs.xdrop is None:
-        b, x = calibrate_drift(Z, rs)
+        calibrate = calibrate_track_drift if isinstance(rs, TrackRidgeSettings) else calibrate_drift
+        b, x = calibrate(Z, rs)
         rs = replace(rs, drift=rs.drift if rs.drift is not None else b,
                      xdrop=rs.xdrop if rs.xdrop is not None else x)
     return replace(settings, ridge=rs)

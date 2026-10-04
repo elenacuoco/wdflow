@@ -328,12 +328,13 @@ class wdfUnitOffline(wdfUnitDSWorker):
         """Stage 2 of the track path over the segment: the triggers as seeds
         of tracks through its map, written beside the triggers as
         ``TrackEvents`` (CSV) and ``TrackWaveforms`` (npz)."""
-        from dataclasses import replace
-
-        from wdf.analysis.track_reconstruction import reconstruct, save_tracks
+        from wdf.analysis.track_reconstruction import calibrated, reconstruct, save_tracks
 
         rate = float(self.par.resampling)
-        settings = replace(self.track_settings, ridge=used)
+        # The track's drift and X-drop, with its own penalty, on the segment.
+        settings = calibrated(self.track_settings, Z)
+        self.par.TrackDriftUsed = settings.ridge.drift
+        self.par.TrackXDropUsed = settings.ridge.xdrop
         events, waveforms, _ = reconstruct(self._tracker.records, Z, X, origin, rate, settings,
                                            getattr(self.par, "itf", None), coefficients, sigmas,
                                            starts, stream=(self._whitened_start, x))

@@ -820,6 +820,11 @@ class wdfUnitOnline:
             k = len(running["slot_end"])
             z = st["background"].update(row)
             ridge = st["ridge"]
+            if (ridge is not None and self._tracker is not None and self._track_calibrated is None
+                    and np.all(np.isfinite(z))):
+                # A drift given for the ridge leaves its background unread:
+                # the track's calibration reads it.
+                st["zpast"].append(z)
             if ridge is None and np.all(np.isfinite(z)):
                 st["zpast"].append(z)
                 if len(st["zpast"]) >= rs.slots(rs.background_min_s):
@@ -866,8 +871,18 @@ class wdfUnitOnline:
 
         st, par = self._ridge_state, self.par
         cells = st["cells"]
-        calibrated = (replace(self.track_settings, ridge=st["rs"])
-                      if st["ridge"] is not None else None)
+        need = self.track_settings.ridge.calibration_steps + 2
+        if (self._track_calibrated is None and st["ridge"] is not None
+                and (len(st["zpast"]) >= need or (self.track_settings.ridge.drift is not None
+                                                   and self.track_settings.ridge.xdrop is not None))):
+            from wdf.analysis.track_reconstruction import calibrated as _calibrated
+
+            # The track's drift and X-drop, with its own penalty, on the past
+            # background the streaming ridge was calibrated on.
+            self._track_calibrated = _calibrated(self.track_settings, np.array(st["zpast"]))
+            tr = self._track_calibrated.ridge
+            par.TrackDriftUsed, par.TrackXDropUsed = tr.drift, tr.xdrop
+        calibrated = self._track_calibrated
         rows, waveforms = self._tracker.drain(cells.origin, cells.next_slot, list(st["zrows"]),
                                               cells.held(), calibrated)
         for row in rows:
@@ -922,6 +937,7 @@ class wdfUnitOnline:
                                  cells=None, background=None, zpast=None, ridge=None)
         self._searches_on, self._writers = [], []
         self._tracker = None
+        self._track_calibrated = None
         self._running = dict(slot_end=[], score=[], state=[], emitted_at=[])
         if self.mode == "zerophase":
             self._running["data_time"] = []

@@ -111,23 +111,64 @@ def test_overlapping_seeds_make_one_track(planted):
 
 
 def test_the_anchored_path_has_no_preferred_direction():
-    """The same map mirrored in frequency gives the mirrored path and the
-    same score: a falling track scores as a rising one."""
+    """The penalty is symmetric, and a falling track, the rising one played
+    backward in time over the same frequencies, gets the same path and score."""
     ts, _ = settings()
     rs = ts.ridge
     from dataclasses import replace
 
+    pen = rs.penalty()
+    np.testing.assert_allclose(pen, pen.T)
     rs = replace(rs, drift=1.0, xdrop=5.0)
     rng = np.random.default_rng(1)
     Z = rng.standard_normal((200, rs.n_states))
     for k in range(60, 120):
-        Z[k, 2 + (k - 60) // 4] += 6.0
-    up = anchored_path(Z, 90, 2 + 30 // 4, rs)
-    down = anchored_path(Z[:, ::-1], 90, rs.n_states - 1 - (2 + 30 // 4), rs)
+        Z[k, 2 + (k - 60) // 8] += 6.0
+    up = anchored_path(Z, 90, 2 + 30 // 8, rs)
+    down = anchored_path(Z[::-1], 199 - 90, 2 + 30 // 8, rs)
     assert up[2] == pytest.approx(down[2])
-    np.testing.assert_array_equal(up[0], down[0])
-    np.testing.assert_array_equal(up[1], rs.n_states - 1 - down[1])
+    np.testing.assert_array_equal(up[0], 199 - down[0][::-1])
+    np.testing.assert_array_equal(up[1], down[1][::-1])
     assert up[0][0] <= 62 and up[0][-1] >= 117
+
+
+def test_the_track_penalty_follows_the_chirp_scaling():
+    """The allowance grows with frequency as an inspiral's sweep, is bounded
+    by TrackAllowanceMax, and beyond it a move costs TrackLambda per octave."""
+    from wdf.analysis.track_reconstruction import chirp_allowance
+
+    ts, par = settings(TrackMcRange=[1.0, 30.0])
+    rs = ts.ridge
+    assert (rs.lam, par.TrackLambda, par.TrackMcRange) == (3.7, 3.7, [1.0, 30.0])
+    c = rs.allowances()
+    assert np.all(np.diff(np.diag(c)) >= 0) and c.max() <= rs.allowance_max
+    assert chirp_allowance(30.0, 30.0, rs.slot_s) < 0.1 < chirp_allowance(60.0, 30.0, rs.slot_s)
+    assert chirp_allowance(30.0, 1.0, rs.slot_s) < chirp_allowance(30.0, 30.0, rs.slot_s)
+    pen = rs.penalty()
+    assert pen[0, 4] == pytest.approx(3.7 * (1.0 - c[0, 4]))
+    with pytest.raises(ValueError, match="TrackMcRange"):
+        settings(TrackMcRange=[30.0, 1.0])
+
+
+#: Largest median and 90th percentile of |d log2 f| between a planted chirp's
+#: track and its f(t), over the chirp's loud part, octaves (states are 0.25
+#: octave wide).
+WANDER_MEDIAN, WANDER_P90 = 0.15, 0.35
+
+
+@pytest.mark.parametrize("at", [81.0, 82.0, 82.6])
+def test_a_planted_chirp_track_does_not_wander(planted, at):
+    """Seeded anywhere on the chirp, the track stays on its f(t) and does not
+    run into the noise before it."""
+    seed = trigger(at - 0.5, at, float(planted_f(T0 + at)))
+    (_, _, tracks), ts, _ = run(planted, "LocalCos64", [seed], RidgeBasis="LocalCos64")
+    t = tracks[0]
+    loud = (t.times() > T0 + CHIRP_AT + 0.5) & (t.times() < T0 + CHIRP_AT + CHIRP_S - 0.5)
+    err = np.abs(np.log2(t.frequencies()[loud] / planted_f(t.times()[loud])))
+    reach = min(at + ts.horizon, CHIRP_AT + CHIRP_S - 0.5) - (CHIRP_AT + 0.5)
+    assert loud.sum() > 0.8 * reach / ts.ridge.slot_s
+    assert np.median(err) < WANDER_MEDIAN and np.percentile(err, 90) < WANDER_P90
+    assert t.t_start > T0 + CHIRP_AT - 1.0 and t.t_end < T0 + CHIRP_AT + CHIRP_S + 1.0
 
 
 # ================================================================ online

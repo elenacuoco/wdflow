@@ -108,6 +108,11 @@ TrackHorizon = 1.0              # track path: s of map after it; adds to the dec
 TrackBasis = "LocalCos128"      # track path: waveform basis, LocalCos64 | LocalCos128 | CosinePackets<m> (best basis, segments from m samples)
 TrackSeedStates = 1             # track path: states either side of the seed's loudest tile the track must pass
 TrackPacketCost = "entropy"     # track path: cosine-packet best-basis cost, l1 | entropy | wdfUniversal | wdfBlock
+TrackLambda = 3.7               # track path: penalty per octave of a move beyond the allowance (stiff, as ridge v1)
+TrackMcRange = [1.0, 30.0]      # track path: chirp masses (solar, detector frame) whose largest one-slot sweep from the lower state is the allowance
+TrackAllowanceMax = 0.27        # track path: largest allowance, octaves per slot (bounds it near coalescence); symmetric up and down
+TrackDrift = "calibrate"        # track path: per-cell drift of the track's alignment; calibrated on the background with the track's penalty
+TrackXDrop = "calibrate"        # track path: X-drop of the track's alignment; calibrated with TrackDrift
 TrackTimingJitter = 0.0035      # track path: s added to the light travel time for the lag search and the f(t) comparison
 TrackFrequencyTolerance = 0.5   # track path: largest |d log2 f| between two compatible tracks, octaves
 TrackGraphBasis = "LocalCos64"  # track path with Scorer = "gnn": basis of the node maps drawn from the waveforms
