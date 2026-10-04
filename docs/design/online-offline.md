@@ -286,7 +286,8 @@ write `TrackEvents` (CSV) and `TrackWaveforms` (npz), read back with
   `track_common_s` and `track_compatible`: the two tracks' spans and f(t)
   compared within the light travel time plus `TrackTimingJitter`, with
   tolerance `TrackFrequencyTolerance` octaves. `track_common_s` is the time
-  over which they agree within it;
+  over which they agree within it, `track_common_fraction` that time over the
+  shorter track and `track_common_cycles` the cycles in it;
 - `track_lag_s`, `track_coherence` and `track_phase`: the lag of the largest
   modulus `|Gamma|` of the complex cross-correlation of the two waveforms'
   analytic signals, searched over `TrackLagSearch`, that modulus (0 to 1) and
@@ -294,7 +295,13 @@ write `TrackEvents` (CSV) and `TrackWaveforms` (npz), read back with
 
 It admits a pair only when all three hold:
 
-1. the tracks are compatible: `track_common_s >= TrackMinCommonDuration`;
+1. the tracks are compatible: the time their f(t) agree, `track_common_s`, is
+   at least `TrackMinCommonFraction` (0.5) of the shorter track, holds at least
+   `TrackMinCommonCycles` (2) cycles at the tracks' frequency, and is at least
+   `TrackMinCommonDuration` (an optional floor, 0 by default). The rule is
+   relative because a track is as long as its signal: a merger lasts a few
+   tenths of a second, an inspiral seconds. Coherence over fewer than about two
+   cycles says nothing about the phase;
 2. the lag is physical: `|track_lag_s|` is at most the light travel time plus
    `TrackTimingJitter`;
 3. `track_coherence >= TrackCoherenceMin`.
@@ -322,7 +329,10 @@ track in the other scores as the weak one. `|Gamma|` is the fraction of that
 energy the two waveforms share at a physical lag. `network_enwdf`, the seed
 triggers' statistic, stays a column. On the track path `dt_s` is the coherence
 lag `track_lag_s`, and the difference of the events' instants is
-`dt_instant_s`.
+`dt_instant_s`. Every lag is the first detector of `ifos_involved` minus the
+second, `t_H1 - t_L1` for "H1,L1". This holds for `dt_s` on both paths,
+`network_wavegram_match_dt` and `arrival_time_difference`, and the lag is
+positive when L1 leads.
 
 A time slide moves an event's times. The finder reads each event's
 displacement from its `gpsPeak` and applies it to the event's track and
@@ -361,7 +371,9 @@ waveform, so `TimeSlideFAR` runs on it.
 | `TrackPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |
 | `TrackTimingJitter` | 0.0035 s | added to the light travel time |
 | `TrackFrequencyTolerance` | 0.5 octave | f(t) tolerance between two tracks |
-| `TrackMinCommonDuration` | 0.25 s | admission 1: least time the two f(t) agree |
+| `TrackMinCommonFraction` | 0.5 | admission 1: least fraction of the shorter track the two f(t) agree over |
+| `TrackMinCommonCycles` | 2 | admission 1: least cycles over that time |
+| `TrackMinCommonDuration` | 0 s | admission 1: optional absolute floor on that time |
 | `TrackLagSearch` | 0.1 s | half-width of the coherence's lag search |
 | `TrackCoherenceMin` | "calibrate" | admission 3: least `\|Gamma\|` |
 | `TrackCoherencePercentile` | 99 | noise percentile of the calibration |

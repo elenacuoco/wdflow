@@ -34,8 +34,9 @@ network table are unchanged (tested against a snapshot).
   alignment, holding the `TrackCalibrationQuantile` percentile of its run into
   noise at `RidgeCalibrationKept`.
 - `wdf.analysis.track_coincidence.TrackCoincidenceFinder`: of the pairs the
-  classical finder forms, it admits those whose f(t) agree for at least
-  `TrackMinCommonDuration`, whose coherence lag (searched over
+  classical finder forms, it admits those whose f(t) agree over at least
+  `TrackMinCommonFraction` of the shorter track and `TrackMinCommonCycles`
+  cycles (with `TrackMinCommonDuration` as an optional floor), whose coherence lag (searched over
   `TrackLagSearch`) is within the light travel time plus `TrackTimingJitter`,
   and whose coherence is at least `TrackCoherenceMin`. The threshold is
   calibrated by default on the run's time-slid pairs
@@ -44,7 +45,8 @@ network table are unchanged (tested against a snapshot).
   `TrackCoherenceMinUsed`. Pairs are ranked on `track_statistic =
   min(rho_1, rho_2) |Gamma|`, rho the SNR along each track, which is the track
   path's default `NetworkRankColumn`. On the track path `dt_s` is the coherence
-  lag, and the difference of instants is `dt_instant_s`. A time slide's
+  lag, and the difference of instants is `dt_instant_s`. Every lag is the
+  first detector of `ifos_involved` minus the second. A time slide's
   displacement is applied to the tracks and waveforms. A GNN reads the track
   features through `cross_edge_dim`; the shipped models were fitted without
   them.
