@@ -5,6 +5,23 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### A third flow: the online worker with the offline whitening, at a fixed latency
+
+`wdfUnitOnline` takes `WhiteningMode`, which defaults to "causal" and gives
+the same outputs as before. "zerophase" whitens with the offline
+`TruncatedWhitening` of `ZeroPhaseDuration`, built on the AR model fitted on
+the past only. `BandPassPhase` defaults to "zero" in this mode (the offline
+band-pass), and "causal" is also accepted. The flow reads ahead by a fixed
+latency, `Latency_s = BandPassLookahead_s + WhiteningLookahead_s`: the zero-phase
+band-pass's held blocks plus the filter's half-support. The latency is recorded
+in `parametersUsed` and logged; it is 10 s at 2048 Hz with the shipped file. Every
+output carries `data_time = emitted_at - Latency_s`. Altering the input after t
+changes no output whose data time is at or before `t - Latency_s` (tested).
+Glitches are labelled and kept, and the causal ridge runs on the whitened
+stream. The configuration is `configs/online_zerophase_default.toml`, which is
+`online_default.toml` except for the whitening, the band-pass phase and the
+names.
+
 ### An offline worker: `wdfUnitOffline`, and `offline_network`
 
 `wdf.processes.wdfUnitOffline` is `wdfUnitDSWorker` with, each switched by a
