@@ -15,7 +15,8 @@ described by `TRACK_EDGE_FEATURES`:
   the lag of its largest modulus, that modulus ``|Gamma|`` (0 to 1) and its
   phase.
 
-A pair is **admitted** only when all three hold:
+A pair is **admitted** when (a) and (b) hold, and (c) when a coherence
+threshold is set:
 
 (a) the tracks are compatible: the time their f(t) agree, `track_common_s`,
     is at least `TrackMinCommonFraction` of the shorter track, holds at least
@@ -26,9 +27,11 @@ A pair is **admitted** only when all three hold:
     fails);
 (c) ``track_coherence >= TrackCoherenceMin``.
 
-`TrackCoherenceMin` is set from noise alone (`calibrate_coherence_min`): the
-`TrackCoherencePercentile` of ``|Gamma|`` over time-slid pairs that pass (a)
-and (b).
+By default `TrackCoherenceMin` is "none": no coherence cut. The coherence then
+enters the ranking only, through `track_statistic`, and the false-alarm rate
+of the time slides decides. `TrackCoherenceMin` may instead be a number, or
+"calibrate": the `TrackCoherencePercentile` of ``|Gamma|`` over time-slid
+pairs that pass (a) and (b) (`calibrate_coherence_min`).
 
 The pair's statistic is `track_statistic`, ``min(rho_1, rho_2) |Gamma|``,
 ``rho = sqrt(track_energy)`` each detector's SNR integrated along its track
@@ -106,8 +109,10 @@ class TrackCoincidenceSettings:
         (`TrackMinCommonDuration`, default 0: none).
     :param lag_search_s: half-width of the coherence's lag search, s
         (`TrackLagSearch`); at least the light travel time plus the jitter.
-    :param coherence_min: least ``|Gamma|`` admitted (`TrackCoherenceMin`);
-        None ("calibrate") sets it with `calibrate_coherence_min`.
+    :param coherence_min: least ``|Gamma|`` admitted (`TrackCoherenceMin`):
+        0.0 ("none", the default) for no coherence cut, the coherence then
+        ranking only; None ("calibrate") sets it with
+        `calibrate_coherence_min`.
     :param percentile: the noise percentile the calibration takes
         (`TrackCoherencePercentile`).
     :param calibration_slides: time slides of the calibration
@@ -124,7 +129,7 @@ class TrackCoincidenceSettings:
     min_common_cycles: float = 2.0
     min_common_s: float = 0.0
     lag_search_s: float = 0.1
-    coherence_min: float = None
+    coherence_min: float = 0.0
     percentile: float = 99.0
     calibration_slides: int = 100
     calibration_minimum: int = 20
@@ -140,20 +145,25 @@ class TrackCoincidenceSettings:
 
     @classmethod
     def from_parameters(cls, par):
-        """The settings a run asks for, defaults filled in and written back
-        (`TrackCoherenceMin` as "calibrate" when it is to be calibrated)."""
+        """The settings a run asks for, defaults filled in and written back.
+
+        `TrackCoherenceMin` is "none" (default, no cut), "calibrate", or a
+        number.
+        """
         out = cls()
         for name, key in cls.KEYS.items():
             value = getattr(par, key, None)
-            if name == "coherence_min" and value in (None, "calibrate"):
-                value = None
-            elif value is not None:
-                value = int(value) if name.startswith("calibration") else float(value)
+            if name == "coherence_min":
+                word = str(value).strip().lower() if isinstance(value, str) else value
+                out.coherence_min = (0.0 if word in (None, "none", "off") else
+                                     None if word == "calibrate" else float(value))
+                setattr(par, key, "none" if out.coherence_min == 0.0 and word in (None, "none", "off")
+                        else "calibrate" if out.coherence_min is None else out.coherence_min)
+                continue
             if value is not None:
+                value = int(value) if name.startswith("calibration") else float(value)
                 setattr(out, name, value)
-            current = getattr(out, name)
-            setattr(par, key, "calibrate" if name == "coherence_min" and current is None
-                    else current)
+            setattr(par, key, getattr(out, name))
         if not 0 < out.percentile < 100:
             raise ValueError(f"TrackCoherencePercentile {out.percentile}: between 0 and 100")
         return out
@@ -365,8 +375,8 @@ class TrackCoincidenceFinder:
     :param comparison: the comparison maps, scorer only (None: the assembly
         maps).
     :type gate: str
-    :param gate: what is admitted, one of `GATES`; "full" needs
-        `settings.coherence_min`.
+    :param gate: what is admitted, one of `GATES`; "full" applies
+        `settings.coherence_min` (0: no coherence cut), which must be set.
     """
 
     def __init__(self, finder, events, waveforms, fs, settings=None, scorer=None, builder=None,
@@ -374,8 +384,8 @@ class TrackCoincidenceFinder:
         if gate not in GATES:
             raise ValueError(f"gate {gate!r}: use one of {GATES}")
         if gate == "full" and (settings is None or settings.coherence_min is None):
-            raise ValueError("the track finder admits on TrackCoherenceMin: give it, or "
-                             "calibrate it on noise with calibrate_coherence_min")
+            raise ValueError("TrackCoherenceMin is to be calibrated: calibrate it on noise "
+                             "with calibrate_coherence_min, or give a value (0 for no cut)")
         self.gate = gate
         self.finder = finder
         self.config = finder.config

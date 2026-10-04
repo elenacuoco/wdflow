@@ -67,8 +67,8 @@ def detectors():
     return build({"H1": lambda n: chirp(n, 0.0), "L1": lambda n: chirp(n, -LAG)})
 
 
-#: A threshold for the tests that do not calibrate one.
-COHERENCE_MIN = 0.3
+#: The default: no coherence cut.
+COHERENCE_MIN = 0.0
 
 
 def finder(detectors, gate="full", coherence_min=COHERENCE_MIN):
@@ -113,23 +113,31 @@ def test_the_noise_pair_is_formed_but_not_admitted(detectors):
     every = finder(detectors, gate="classic").find(detectors[0])
     noise = every[(every["gps_candidate"] - T0 - 97.0).between(0, 2)]
     assert len(noise)
-    fails = ((noise["track_compatible"] < 1) | (noise["track_lag_physical"] < 1)
-             | (noise["track_coherence"] < COHERENCE_MIN))
+    fails = (noise["track_compatible"] < 1) | (noise["track_lag_physical"] < 1)
     assert fails.all()
     admitted = finder(detectors).find(detectors[0])
     assert len(admitted) < len(every)
     assert (admitted["gps_candidate"] - T0 - 97.0).between(0, 2).sum() == 0
 
 
-@pytest.mark.parametrize("other", ["falling", "absent"])
-def test_incompatible_or_incoherent_tracks_are_rejected(other):
-    """L1 holds a chirp falling over the same band (incompatible f(t)), or no
-    chirp at all (its track is noise): no pair is admitted on the chirp."""
-    signal = {"falling": lambda n: chirp(n, -LAG, 200.0, 40.0), "absent": lambda n: 0.0}[other]
-    events, waveforms = build({"H1": lambda n: chirp(n, 0.0), "L1": signal})
-    every = finder((events, waveforms), gate="classic").find(events)
-    assert len(on_chirp(every))
+def test_an_incompatible_track_is_rejected():
+    """L1 holds a chirp falling over the same band: the f(t) disagree, and
+    admission (a) rejects the pair."""
+    events, waveforms = build({"H1": lambda n: chirp(n, 0.0),
+                               "L1": lambda n: chirp(n, -LAG, 200.0, 40.0)})
+    assert len(on_chirp(finder((events, waveforms), gate="classic").find(events)))
     assert on_chirp(finder((events, waveforms)).find(events)).empty
+
+
+def test_an_incoherent_partner_ranks_far_below_the_coherent_one(detectors):
+    """L1 without the chirp: its noise track may pass (a) and (b); with no
+    coherence cut it is then admitted, and its track_statistic is a small
+    fraction of the coherent pair's, so the time slides rank it as noise."""
+    coherent = on_chirp(finder(detectors).find(detectors[0])).iloc[0]
+    events, waveforms = build({"H1": lambda n: chirp(n, 0.0), "L1": lambda n: 0.0})
+    alone = on_chirp(finder((events, waveforms)).find(events))
+    assert alone.empty or alone["track_statistic"].max() < 0.1 * coherent["track_statistic"]
+    assert alone.empty or alone["track_coherence"].max() < 0.2
 
 
 def test_slid_noise_is_incoherent_and_the_displacement_is_applied(detectors):
@@ -260,14 +268,14 @@ def merger(n, delay, at=MERGER_AT, seconds=0.2, f0=100.0, f1=300.0, snr=20.0):
     return c * snr / np.sqrt(np.sum(c ** 2))
 
 
-def merger_pair(delay_l1, l1_signal=True):
+def merger_pair(delay_l1, l1_signal=True, snr=20.0):
     n = int(SECONDS * FS)
     ts = track_settings()
     events, waveforms = {}, {}
     for k, ifo in enumerate(("H1", "L1")):
         x = np.random.default_rng(60 + k).standard_normal(n)
         if ifo == "H1" or l1_signal:
-            x = x + merger(n, 0.0 if ifo == "H1" else delay_l1)
+            x = x + merger(n, 0.0 if ifo == "H1" else delay_l1, snr=snr)
         seeds = [trigger(MERGER_AT - 0.3, MERGER_AT + 0.1, 200.0)]
         events[ifo], waveforms[ifo] = detector(ifo, x, seeds, ts)
     return events, waveforms
@@ -307,3 +315,31 @@ def test_the_lag_sign_is_first_minus_second_detector(h1_minus_l1):
     two = one.assign(ifo="L1", gpsPeak=T0)
     edge = IndexedCoincidenceFinder().candidate_edge_array(one, two)
     assert edge[0, 3] == pytest.approx(h1_minus_l1, abs=1e-6)
+
+
+def test_a_coincident_pair_below_a_calibrated_threshold_is_admitted_by_default():
+    """With no coherence cut (the default), a planted coincident merger whose
+    |Gamma| is below a threshold calibrated at the 99th percentile of noise
+    is admitted, ranked by track_statistic; the same threshold set as
+    TrackCoherenceMin rejects it."""
+    events, waveforms = merger_pair(0.005, snr=12.0)
+    assert TrackCoincidenceSettings().coherence_min == 0.0
+    table = TrackCoincidenceFinder(IndexedCoincidenceFinder(), events, waveforms, FS,
+                                   TrackCoincidenceSettings()).find(events)
+    assert len(table) == 1
+    row = table.iloc[0]
+    threshold = min(0.95, row["track_coherence"] + 0.05)
+    assert row["track_statistic"] > 0 and row["track_coherence"] < threshold
+    cut = TrackCoincidenceFinder(IndexedCoincidenceFinder(), events, waveforms, FS,
+                                 TrackCoincidenceSettings(coherence_min=threshold)).find(events)
+    assert cut.empty
+
+
+def test_the_coherence_cut_is_read_from_the_parameters():
+    from types import SimpleNamespace
+
+    for given, value, written in ((None, 0.0, "none"), ("none", 0.0, "none"),
+                                  ("calibrate", None, "calibrate"), (0.4, 0.4, 0.4)):
+        par = SimpleNamespace(TrackCoherenceMin=given)
+        assert TrackCoincidenceSettings.from_parameters(par).coherence_min == value
+        assert par.TrackCoherenceMin == written

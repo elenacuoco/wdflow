@@ -293,7 +293,7 @@ write `TrackEvents` (CSV) and `TrackWaveforms` (npz), read back with
   analytic signals, searched over `TrackLagSearch`, that modulus (0 to 1) and
   its phase.
 
-It admits a pair only when all three hold:
+It admits a pair when:
 
 1. the tracks are compatible: the time their f(t) agree, `track_common_s`, is
    at least `TrackMinCommonFraction` (0.5) of the shorter track, holds at least
@@ -303,18 +303,22 @@ It admits a pair only when all three hold:
    tenths of a second, an inspiral seconds. Coherence over fewer than about two
    cycles says nothing about the phase;
 2. the lag is physical: `|track_lag_s|` is at most the light travel time plus
-   `TrackTimingJitter`;
-3. `track_coherence >= TrackCoherenceMin`.
+   `TrackTimingJitter`.
 
-`TrackCoherenceMin = "calibrate"` (the default) sets the threshold from noise
-alone (`calibrate_coherence_min`). It is the `TrackCoherencePercentile`
-percentile of `|Gamma|` over the run's time-slid pairs that pass 1 and 2, with
-`TrackCalibrationSlides` slides of `NetworkSlideStep`. When fewer than
-`TrackCalibrationMinimum` slid pairs pass, every slid pair the classical rule
-forms is used. The value and its population are recorded as
-`TrackCoherenceMinUsed` and `TrackCoherenceCalibration`. Online, give
-`TrackCoherenceMin` a value calibrated offline, or `NetworkStream` calibrates
-it on what it holds at each call.
+The coherence is not cut on by default (`TrackCoherenceMin = "none"`). It
+enters the ranking statistic, and the false-alarm rate of the time slides
+decides. Two options set a third condition, `track_coherence >=
+TrackCoherenceMin`:
+
+- a number;
+- "calibrate": the `TrackCoherencePercentile` percentile of `|Gamma|` over the
+  run's time-slid pairs that pass 1 and 2 (`calibrate_coherence_min`, with
+  `TrackCalibrationSlides` slides of `NetworkSlideStep`). When fewer than
+  `TrackCalibrationMinimum` slid pairs pass, every slid pair the classical
+  rule forms is used.
+
+The value applied is recorded as `TrackCoherenceMinUsed` (0 for none), and a
+calibration's population as `TrackCoherenceCalibration`.
 
 The pair's statistic, and the track path's default `NetworkRankColumn`, is
 
@@ -375,8 +379,8 @@ waveform, so `TimeSlideFAR` runs on it.
 | `TrackMinCommonCycles` | 2 | admission 1: least cycles over that time |
 | `TrackMinCommonDuration` | 0 s | admission 1: optional absolute floor on that time |
 | `TrackLagSearch` | 0.1 s | half-width of the coherence's lag search |
-| `TrackCoherenceMin` | "calibrate" | admission 3: least `\|Gamma\|` |
-| `TrackCoherencePercentile` | 99 | noise percentile of the calibration |
+| `TrackCoherenceMin` | "none" | optional coherence cut: "none", a number, or "calibrate" |
+| `TrackCoherencePercentile` | 99 | noise percentile of "calibrate" |
 | `TrackCalibrationSlides` | 100 | slides of the calibration |
 | `TrackCalibrationMinimum` | 20 | slid pairs passing 1 and 2 needed |
 | `TrackLambda` | 3.7 per octave | penalty beyond the allowance |

@@ -117,8 +117,7 @@ def test_the_track_path_runs_from_the_configuration(track_runs):
     assert best["track_coherence"] > 0.5 and best["track_compatible"] == 1.0
     assert best["track_lag_s"] == pytest.approx(snap.DELAY["H1"] - snap.DELAY["L1"], abs=2e-3)
     assert best["dt_s"] == best["track_lag_s"] and "network_enwdf" in cand
-    assert best["track_coherence"] >= par.TrackCoherenceMinUsed
-    assert par.TrackCoherenceMin == "calibrate" and par.TrackCoherenceCalibration["pairs"] > 0
+    assert par.TrackCoherenceMin == "none" and par.TrackCoherenceMinUsed == 0.0
     assert par.TrackTimingJitter == 0.0035
     expected = cand.groupby("ifos_involved")["track_statistic"].rank(ascending=False, method="min")
     assert (cand["rank"] == expected.astype(int)).all()

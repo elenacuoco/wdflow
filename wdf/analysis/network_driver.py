@@ -18,11 +18,12 @@ Two paths, which do not mix (`wdf.config.Parameters.network_path`):
   pairs and a `TriggerGraphBuilder(ifos)`.
 - **"track"**: the detectors' track events (`TrackEvents` written by the
   workers with `Reconstruction` "track", or `reconstruct` on a map), then
-  `TrackCoincidenceFinder`, which admits a pair only when its tracks are
-  compatible, its coherence lag physical and its coherence at least
-  `TrackCoherenceMin`; left to "calibrate", that threshold is set on the
-  run's own time-slid pairs (`calibrate_coherence_min`, step
-  `NetworkSlideStep`) and recorded as `TrackCoherenceMinUsed`.
+  `TrackCoincidenceFinder`, which admits a pair when its tracks are
+  compatible and its coherence lag physical. The coherence ranks the pair
+  (`track_statistic`) and is not cut on by default (`TrackCoherenceMin`
+  "none"); with "calibrate", a threshold is set on the run's own time-slid
+  pairs (`calibrate_coherence_min`, step `NetworkSlideStep`). The value used
+  is recorded as `TrackCoherenceMinUsed`.
 
 Stage 4 is "classic", the column `NetworkRankColumn` (default
 "network_enwdf" on the wavegram path, "track_statistic" on the track path),

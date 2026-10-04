@@ -38,11 +38,12 @@ network table are unchanged (tested against a snapshot).
   `TrackMinCommonFraction` of the shorter track and `TrackMinCommonCycles`
   cycles (with `TrackMinCommonDuration` as an optional floor), whose coherence lag (searched over
   `TrackLagSearch`) is within the light travel time plus `TrackTimingJitter`,
-  and whose coherence is at least `TrackCoherenceMin`. The threshold is
-  calibrated by default on the run's time-slid pairs
-  (`calibrate_coherence_min`, `TrackCoherencePercentile`,
-  `TrackCalibrationSlides`, `TrackCalibrationMinimum`) and recorded as
-  `TrackCoherenceMinUsed`. Pairs are ranked on `track_statistic =
+  and makes no coherence cut by default (`TrackCoherenceMin = "none"`): the
+  coherence ranks the pair and the time-slide FAR decides. A number, or
+  "calibrate" (the `TrackCoherencePercentile` of `|Gamma|` on the run's
+  time-slid pairs, `calibrate_coherence_min`, `TrackCalibrationSlides`,
+  `TrackCalibrationMinimum`), sets a coherence cut; the value applied is
+  recorded as `TrackCoherenceMinUsed`. Pairs are ranked on `track_statistic =
   min(rho_1, rho_2) |Gamma|`, rho the SNR along each track, which is the track
   path's default `NetworkRankColumn`. On the track path `dt_s` is the coherence
   lag, and the difference of instants is `dt_instant_s`. Every lag is the
