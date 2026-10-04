@@ -82,7 +82,8 @@ from scipy.signal import lfilter
 import math
 
 from wdf.analysis.io import parameters_file_name, search_suffix
-from wdf.config.Parameters import Parameters, check_bases, low_frequency_cut, window_schedule
+from wdf.config.Parameters import (Parameters, check_bases, low_frequency_cut, reconstruction_mode,
+                                   window_schedule)
 from wdf.observers.observer import Observer
 
 #: Basis names whose triggers are labelled "glitch" when none are given: the
@@ -276,6 +277,12 @@ class OnlineResult:
     :param refits: one dict per model fit: ``emitted_at``, ``fit_start``,
         ``fit_end``, ``sigma``.
     :param parameters: the parameters used.
+    :param tracks: with `Reconstruction` "track", one dict per track
+        (`TRACK_EVENT_COLUMNS`), with ``seed_end`` (the end of its last
+        seed's window), ``emitted_at``, ``latency`` (``emitted_at -
+        seed_end``) and ``search``.
+    :param track_waveforms: ``{cluster_id: (GPS of the first sample,
+        waveform)}`` of those tracks.
 
     In the "zerophase" mode every row also holds ``data_time``,
     ``emitted_at - Latency_s``: the end of the whitened stream at emission.
@@ -286,6 +293,8 @@ class OnlineResult:
     running: dict = field(default_factory=dict)
     refits: list = field(default_factory=list)
     parameters: object = None
+    tracks: list = field(default_factory=list)
+    track_waveforms: dict = field(default_factory=dict)
 
     def before(self, t):
         """Everything emitted at or before GPS `t`, as plain lists (NaN as
@@ -302,8 +311,13 @@ class OnlineResult:
         mask = np.asarray(self.running.get("emitted_at", []), dtype=float) <= t
         running = {k: [plain(x) for x in np.asarray(v)[mask].tolist()]
                    for k, v in self.running.items()}
+        def plain_track(row):
+            return {k: (plain(v) if not isinstance(v, (list, np.ndarray)) else
+                        [plain(float(x)) for x in v]) for k, v in row.items()}
+
+        tracks = [plain_track(r) for r in self.tracks if r["emitted_at"] <= t]
         return dict(triggers=keep(self.triggers), candidates=keep(self.candidates),
-                    running=running, refits=keep(self.refits))
+                    running=running, refits=keep(self.refits), tracks=tracks)
 
 
 class _TriggerLog(Observer):
@@ -374,6 +388,46 @@ class wdfUnitOnline:
         self.latency = None
         if mode == "zerophase":
             self._declare_latency()
+        #: Stage 2 the worker feeds: "wavegram" (nothing beyond the triggers)
+        #: or "track" (`TrackObserver`).
+        self.reconstruction = reconstruction_mode(par)
+        self.track_settings = None
+        if self.reconstruction == "track":
+            self._declare_track_latency()
+
+    def _declare_track_latency(self):
+        """With `Reconstruction` "track": the track settings and the declared
+        latency of a track, `TrackLatency_s`.
+
+        A track is built once the map is complete `TrackHorizon` seconds past
+        its last seed's window: the map's slot and the part of its last window
+        past the slot (`TrackSettings.completion_s`) are read too, on top of
+        the stream's own latency (`Latency_s`, 0 in the causal mode).
+
+        :raises ValueError: without `Ridge`, or for a slice longer than the
+            map's ring holds.
+        """
+        from wdf.analysis.track_reconstruction import TrackSettings
+
+        par = self.par
+        if not par.Ridge:
+            raise ValueError("Reconstruction 'track' reads the ridge's map: set Ridge = true")
+        par.Reconstruction = "track"
+        rate = float(par.resampling)
+        ts = TrackSettings.from_parameters(par, rate)
+        rs = ts.ridge
+        window_s = max(w for w, _ in self.schedule) / rate
+        need = ts.lookback + window_s + ts.horizon + ts.completion_s(rate)
+        held = rs.max_slots * rs.slot_s
+        if need > held:
+            raise ValueError(f"TrackLookback + window + TrackHorizon, {need:g} s, is longer than "
+                             f"the map's ring, RidgeMaxSlots x RidgeSlot = {held:g} s")
+        self.track_settings = ts
+        par.TrackCompletion_s = ts.completion_s(rate)
+        par.TrackLatency_s = (self.latency or 0.0) + ts.horizon + par.TrackCompletion_s
+        logging.info(f"online track: declared latency {par.TrackLatency_s:g} s = stream "
+                     f"{self.latency or 0.0:g} s + TrackHorizon {ts.horizon:g} s + map "
+                     f"completion {par.TrackCompletion_s:g} s")
 
     def _declare_latency(self):
         """Set the "zerophase" mode's parameters and its latency, and log it.
@@ -441,6 +495,8 @@ class wdfUnitOnline:
             search = wdf(par)
             estimation = ParameterEstimation(par)
             estimation.register(_TriggerLog(self, par))
+            if self._tracker is not None:
+                estimation.register(self._tracker)
             if self.dir is not None:
                 writer = SingleEventPrintTriggers(par)
                 estimation.register(writer)
@@ -529,6 +585,11 @@ class wdfUnitOnline:
         par = self.par
         par.AnalysisStart = origin
         par.sigma = sigma
+        if self.reconstruction == "track":
+            from wdf.observers.TrackObserver import TrackObserver
+
+            self._tracker = TrackObserver(self.track_settings, float(par.resampling),
+                                          getattr(par, "itf", None))
         self._searches_on, self._writers = self._searches(sigma)
         st = self._ridge_state
         if par.Ridge:
@@ -538,6 +599,8 @@ class wdfUnitOnline:
             st["zpast"] = deque(maxlen=rs.slots(rs.background_s))
             if rs.drift is not None and rs.xdrop is not None:
                 st["ridge"] = StreamingRidge(rs, st["cells"].origin)
+            if self._tracker is not None:
+                st["zrows"] = deque(maxlen=rs.max_slots)
 
     def _consume(self, w, w_start):
         """Search a whitened chunk and run the ridge over it."""
@@ -593,6 +656,28 @@ class wdfUnitOnline:
             running["emitted_at"].append(self.now)
             if self.latency is not None:
                 running["data_time"].append(self.now - self.latency)
+            if self._tracker is not None:
+                st["zrows"].append((k, z, row))
+        if self._tracker is not None:
+            self._drain_tracks()
+
+    def _drain_tracks(self):
+        """The tracks whose seeds' slices of the map are complete."""
+        from dataclasses import replace
+
+        st, par = self._ridge_state, self.par
+        cells = st["cells"]
+        calibrated = (replace(self.track_settings, ridge=st["rs"])
+                      if st["ridge"] is not None else None)
+        rows, waveforms = self._tracker.drain(cells.origin, cells.next_slot, list(st["zrows"]),
+                                              cells.held(), calibrated)
+        for row in rows:
+            row.update(emitted_at=self.now, latency=self.now - row["seed_end"],
+                       search=par.SearchName)
+            if self.latency is not None:
+                row["data_time"] = self.now - self.latency
+            self.result.tracks.append(row)
+        self.result.track_waveforms.update(waveforms)
 
     def process(self, source, gps_start, gps_end):
         """Run over ``[gps_start, gps_end)`` without writing, unless
@@ -635,6 +720,7 @@ class wdfUnitOnline:
         self._ridge_state = dict(rs=RidgeSettings.from_parameters(par, rate) if par.Ridge else None,
                                  cells=None, background=None, zpast=None, ridge=None)
         self._searches_on, self._writers = [], []
+        self._tracker = None
         self._running = dict(slot_end=[], score=[], state=[], emitted_at=[])
         if self.mode == "zerophase":
             self._running["data_time"] = []
@@ -718,6 +804,12 @@ class wdfUnitOnline:
         if par.Ridge:
             par.RidgeSettingsUsed = {k: (list(v) if isinstance(v, tuple) else v)
                                      for k, v in self._ridge_state["rs"].record().items()}
+        if self._tracker is not None:
+            par.TrackSeeds = len(self._tracker.records)
+            par.TrackSeedsDropped = self._tracker.dropped
+            par.TrackSeedsAbsorbed = self._tracker.absorbed
+            par.TrackSeedsPending = len(self._tracker.queue)
+            par.TrackCount = len(self.result.tracks)
         self.result.running = {k: np.asarray(v) for k, v in self._running.items()}
         self.result.parameters = par
         return self.result
@@ -731,4 +823,11 @@ class wdfUnitOnline:
         pd.DataFrame(result.candidates).to_csv(f"{self.dir}RidgeCandidates{suffix}.csv", index=False)
         pd.DataFrame(result.refits).to_csv(f"{self.dir}ARRefits{suffix}.csv", index=False)
         np.savez(f"{self.dir}RidgeRunning{suffix}.npz", **result.running)
+        if self.reconstruction == "track":
+            from wdf.analysis.track_reconstruction import TRACK_EVENT_COLUMNS, save_tracks
+
+            columns = TRACK_EVENT_COLUMNS + ["seed_end", "emitted_at", "latency", "search"] + (
+                ["data_time"] if self.latency is not None else [])
+            save_tracks(pd.DataFrame(result.tracks, columns=columns), result.track_waveforms,
+                        f"{self.dir}TrackEvents{suffix}.csv", f"{self.dir}TrackWaveforms{suffix}.npz")
         par.dump(f"{self.dir}parametersUsed-Online{suffix}.json")

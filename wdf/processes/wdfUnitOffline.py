@@ -70,6 +70,29 @@ class wdfUnitOffline(wdfUnitDSWorker):
         search_suffix(self.par)
         self._glitches = None
         self._settings = gs.M4Settings.from_parameters(self.par) if self.par.GlitchSubtraction else None
+        from wdf.config.Parameters import reconstruction_mode
+
+        self.reconstruction = reconstruction_mode(self.par)
+        self._tracker = None
+        if self.reconstruction == "track":
+            if not self.par.Ridge:
+                raise ValueError("Reconstruction 'track' reads the ridge's map: set Ridge = true")
+            from wdf.analysis.track_reconstruction import TrackSettings
+
+            self.par.Reconstruction = "track"
+            self.track_settings = TrackSettings.from_parameters(self.par, float(self.par.resampling))
+
+    def _observers(self, par):
+        """With `Reconstruction` "track", the `TrackObserver` that keeps the
+        segment's triggers as seeds."""
+        if self.reconstruction != "track":
+            return []
+        if self._tracker is None:
+            from wdf.observers.TrackObserver import TrackObserver
+
+            self._tracker = TrackObserver(self.track_settings, float(self.par.resampling),
+                                          getattr(self.par, "itf", None))
+        return [self._tracker]
 
     # ------------------------------------------------------------ M4
     def _bank(self, whitening):
@@ -284,6 +307,31 @@ class wdfUnitOffline(wdfUnitDSWorker):
                  slot=settings.slot_s, edges=settings.edges(), drift=used.drift, xdrop=used.xdrop)
         self.ridge_candidates = found
         self.par.RidgeCandidates = len(found)
+        if self._tracker is not None:
+            self._segment_tracks(Z, X, origin, used, coeffs[alpha], sigmas[alpha], starts, x,
+                                 dir_chunk)
+
+    def _segment_tracks(self, Z, X, origin, used, coefficients, sigmas, starts, x, dir_chunk):
+        """Stage 2 of the track path over the segment: the triggers as seeds
+        of tracks through its map, written beside the triggers as
+        ``TrackEvents`` (CSV) and ``TrackWaveforms`` (npz)."""
+        from dataclasses import replace
+
+        from wdf.analysis.track_reconstruction import reconstruct, save_tracks
+
+        rate = float(self.par.resampling)
+        settings = replace(self.track_settings, ridge=used)
+        events, waveforms, _ = reconstruct(self._tracker.records, Z, X, origin, rate, settings,
+                                           getattr(self.par, "itf", None), coefficients, sigmas,
+                                           starts, stream=(self._whitened_start, x))
+        suffix = search_suffix(self.par)
+        save_tracks(events, waveforms, f"{dir_chunk}TrackEvents{suffix}.csv",
+                    f"{dir_chunk}TrackWaveforms{suffix}.npz")
+        self.track_events, self.track_waveforms = events, waveforms
+        self.par.TrackSeeds = len(self._tracker.records)
+        self.par.TrackCount = len(events)
+        self._tracker.records = []
+        self._tracker.queue = []
 
 
 def _aligned(maps):

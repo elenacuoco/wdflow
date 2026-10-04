@@ -415,6 +415,15 @@ class wdfUnitDSWorker(object):
         :return: None
         """
 
+    def _observers(self, par):
+        """Observers registered, beside the trigger writer, on each search's
+        parameter estimation; none here, a subclass may add its own.
+
+        :param par: the search's parameters.
+        :return: list of `Observer`
+        """
+        return []
+
     def _finish_segment(self, dir_chunk):
         """Called once the segment's stream is exhausted, before the trigger
         files are closed.
@@ -606,6 +615,8 @@ class wdfUnitDSWorker(object):
                 savetrigger = SingleEventPrintTriggers(par)
                 parameterestimation = ParameterEstimation(par)
                 parameterestimation.register(savetrigger)
+                for observer in self._observers(par):
+                    parameterestimation.register(observer)
                 search.register(parameterestimation)
                 par.dump(par.dir + parameters_file_name(par))
                 searches.append(search)

@@ -249,3 +249,59 @@ def load_config(path, ifo=None, **overrides):
     data.update(overrides)
     data["ConfigFile"] = os.path.abspath(str(path))
     return Parameters(**data)
+
+
+#: Stage 2 of the network workflow (`Reconstruction`): "wavegram", the
+#: paper's detector graph and event wavegrams (`wdf.analysis.detector_graph`);
+#: "track", tracks seeded by the triggers through the full cell map and the
+#: waveform along them (`wdf.analysis.track_reconstruction`).
+RECONSTRUCTIONS = ("wavegram", "track")
+#: Stage 3 (`Coincidence`): "wavegram", `WavegramCoincidenceFinder`; "track",
+#: `TrackCoincidenceFinder`.
+COINCIDENCES = ("wavegram", "track")
+#: Stage 4 (`Scorer`): "classic", a column of the candidate table
+#: (`NetworkRankColumn`); "gnn", `GNNCoincidenceScorer` loaded from `GNNModel`.
+SCORERS = ("classic", "gnn")
+#: The paper path is the default of every stage.
+DEFAULT_RECONSTRUCTION, DEFAULT_COINCIDENCE, DEFAULT_SCORER = "wavegram", "wavegram", "classic"
+
+
+def _choice(par, key, allowed, default):
+    value = str(getattr(par, key, None) or default).strip().lower()
+    if value not in allowed:
+        raise ValueError(f"{key} {value!r}: use one of {allowed}")
+    return value
+
+
+def reconstruction_mode(par):
+    """The run's `Reconstruction`, one of `RECONSTRUCTIONS`, default
+    "wavegram".
+
+    :raises ValueError: on an unknown value.
+    """
+    return _choice(par, "Reconstruction", RECONSTRUCTIONS, DEFAULT_RECONSTRUCTION)
+
+
+def network_path(par):
+    """The run's stages 2, 3 and 4: (`Reconstruction`, `Coincidence`,
+    `Scorer`).
+
+    The two paths do not mix: a track reconstruction is compared by
+    `TrackCoincidenceFinder` and the event wavegrams by
+    `WavegramCoincidenceFinder`. "gnn" needs `GNNModel`, the path of a model
+    `GNNCoincidenceScorer.save` wrote.
+
+    :return: tuple of str
+    :raises ValueError: on an unknown value, a mixed path, or "gnn" without a
+        model.
+    """
+    reconstruction = reconstruction_mode(par)
+    coincidence = _choice(par, "Coincidence", COINCIDENCES, DEFAULT_COINCIDENCE)
+    scorer = _choice(par, "Scorer", SCORERS, DEFAULT_SCORER)
+    if reconstruction != coincidence:
+        raise ValueError(f"Reconstruction {reconstruction!r} with Coincidence {coincidence!r}: "
+                         "the wavegram and the track paths do not mix; set both to "
+                         "'wavegram' or both to 'track'")
+    if scorer == "gnn" and not getattr(par, "GNNModel", None):
+        raise ValueError("Scorer 'gnn' needs GNNModel, the path of a saved GNNCoincidenceScorer")
+    return reconstruction, coincidence, scorer
