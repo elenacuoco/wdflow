@@ -25,8 +25,11 @@ The chain, block by block of `len` seconds:
    `MinFrequency`, `ThresholdRule`, `BlockLength`, `BlockLambda` and
    `BlockRemainder` from the parameters. **No glitch subtraction and no
    gating:** the online search finds glitches too. Each trigger is labelled
-   ("glitch" when the basis it won is one of `GlitchLabelBases`, else
-   "candidate") and kept.
+   and kept: with `GlitchLabel` "census" (the default) "glitch" when its
+   window meets a transient of the causal census of the whitened stream
+   (`wdf.processes.causal_census.CausalCensus`, written as
+   ``GlitchCensusOnline``), with "bases" when the basis it won is one of
+   `GlitchLabelBases`; "candidate" otherwise. A label removes nothing.
 4. **The ridge (`Ridge`):** the running wavegram of the window coefficients
    (`StreamingCells`, a ring of the recent windows' dense coefficients), a
    per-row z from the past only (`CausalBackground`), and the causal local
@@ -276,6 +279,10 @@ class OnlineResult:
         running best path and ``emitted_at``.
     :param refits: one dict per model fit: ``emitted_at``, ``fit_start``,
         ``fit_end``, ``sigma``.
+    :param census: with `GlitchLabel` "census", one dict per transient of the
+        causal census (`CausalCensus`) once closed: ``first``, ``last``,
+        ``peak``, ``peak_time``, ``extent_first``, ``extent_last``,
+        ``emitted_at``.
     :param parameters: the parameters used.
     :param tracks: with `Reconstruction` "track", one dict per track
         (`TRACK_EVENT_COLUMNS`), with ``seed_end`` (the end of its last
@@ -295,6 +302,7 @@ class OnlineResult:
     parameters: object = None
     tracks: list = field(default_factory=list)
     track_waveforms: dict = field(default_factory=dict)
+    census: list = field(default_factory=list)
 
     def before(self, t):
         """Everything emitted at or before GPS `t`, as plain lists (NaN as
@@ -317,7 +325,8 @@ class OnlineResult:
 
         tracks = [plain_track(r) for r in self.tracks if r["emitted_at"] <= t]
         return dict(triggers=keep(self.triggers), candidates=keep(self.candidates),
-                    running=running, refits=keep(self.refits), tracks=tracks)
+                    running=running, refits=keep(self.refits), tracks=tracks,
+                    census=keep(self.census))
 
 
 class _TriggerLog(Observer):
@@ -332,10 +341,14 @@ class _TriggerLog(Observer):
     def update(self, event):
         row = {k: v for k, v in event.record().items() if k not in ("wt_index", "wt_value")}
         now = self.worker.now
-        row.update(window_end=row["gps"] + self.duration, emitted_at=now,
-                   latency=now - (row["gps"] + self.duration),
-                   label="glitch" if row["wave"] in self.label_bases else "candidate",
-                   search=self.par.SearchName)
+        end = row["gps"] + self.duration
+        census = self.worker._census
+        if census is None:
+            glitch = row["wave"] in self.label_bases
+        else:
+            glitch = census.overlaps(row["gps"], end)
+        row.update(window_end=end, emitted_at=now, latency=now - end,
+                   label="glitch" if glitch else "candidate", search=self.par.SearchName)
         if self.worker.latency is not None:
             row["data_time"] = now - self.worker.latency
         self.worker.result.triggers.append(row)
@@ -374,6 +387,14 @@ class wdfUnitOnline:
         par.Ncoeff = max(w for w, _ in self.schedule)
         par.Ridge = bool(getattr(par, "Ridge", True))
         par.GlitchLabelBases = list(getattr(par, "GlitchLabelBases", None) or DEFAULT_GLITCH_LABEL_BASES)
+        from wdf.processes.causal_census import GLITCH_LABELS, CensusSettings
+
+        label = str(getattr(par, "GlitchLabel", None) or GLITCH_LABELS[0]).lower()
+        if label not in GLITCH_LABELS:
+            raise ValueError(f"GlitchLabel {label!r}: use one of {GLITCH_LABELS}")
+        par.GlitchLabel = label
+        self.census_settings = CensusSettings.from_parameters(par) if label == "census" else None
+        self._census = None
         par.ARFitGap = float(getattr(par, "ARFitGap", None) or 0.0)
         par.ARFitContext = float(getattr(par, "ARFitContext", None) or DEFAULT_FIT_CONTEXT_S)
         par.ARRefitInterval = float(getattr(par, "ARRefitInterval", None) or 0.0)
@@ -585,6 +606,10 @@ class wdfUnitOnline:
         par = self.par
         par.AnalysisStart = origin
         par.sigma = sigma
+        if self.census_settings is not None:
+            from wdf.processes.causal_census import CausalCensus
+
+            self._census = CausalCensus(self.census_settings, float(par.resampling))
         if self.reconstruction == "track":
             from wdf.observers.TrackObserver import TrackObserver
 
@@ -609,6 +634,12 @@ class wdfUnitOnline:
         from wdf.analysis.ridge_tracking import StreamingRidge, calibrate_drift, ridge_waveform
 
         par, rate = self.par, float(self.par.resampling)
+        if self._census is not None:
+            for row in self._census.push(w, w_start):
+                row["emitted_at"] = self.now
+                if self.latency is not None:
+                    row["data_time"] = self.now - self.latency
+                self.result.census.append(row)
         view = self._view(w, w_start)
         for search in self._searches_on:
             search.SetData(view)
@@ -822,6 +853,9 @@ class wdfUnitOnline:
         pd.DataFrame(result.triggers).to_csv(f"{self.dir}TriggerLatency{suffix}.csv", index=False)
         pd.DataFrame(result.candidates).to_csv(f"{self.dir}RidgeCandidates{suffix}.csv", index=False)
         pd.DataFrame(result.refits).to_csv(f"{self.dir}ARRefits{suffix}.csv", index=False)
+        if self._census is not None:
+            pd.DataFrame(result.census).to_csv(f"{self.dir}GlitchCensusOnline{suffix}.csv",
+                                               index=False)
         np.savez(f"{self.dir}RidgeRunning{suffix}.npz", **result.running)
         if self.reconstruction == "track":
             from wdf.analysis.track_reconstruction import TRACK_EVENT_COLUMNS, save_tracks

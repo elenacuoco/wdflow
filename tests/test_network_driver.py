@@ -24,7 +24,7 @@ def frozen(name):
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("paper"))
-    return {ifo: snap.run_detector(ifo, out) for ifo in snap.DELAY}
+    return {ifo: snap.run_detector(ifo, out, **snap.FROZEN) for ifo in snap.DELAY}
 
 
 def test_the_defaults_are_the_paper_path():

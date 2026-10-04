@@ -38,7 +38,14 @@ MinFrequency = 16.0             # coefficients whose tile lies at or below 16 Hz
 # Bases: the 10 wavelet bases. LocalCos removed from the competition 4 Oct 2026; used as ridge/reconstruction map.
 # LocalCos64 (or LocalCos128, valid with the block rule only for window >= 128 L) can be added to the list as an 11th basis.
 Bases = ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]  # wavelet competition of each window
-GlitchLabelBases = ["Haar", "DaubC4"]  # a trigger won by one of these bases is labelled "glitch" (kept)
+GlitchLabel = "census"          # label of a trigger (kept either way): "census" = "glitch" when its window meets a transient of the causal census of the whitened stream; "bases" = won by GlitchLabelBases
+GlitchLabelBases = ["Haar", "DaubC4"]  # with GlitchLabel = "bases": a trigger won by one of these bases is labelled "glitch"
+GlitchTrigger = 13.64           # census: smallest peak of a transient, robust sigma of each octave from GlitchCensusLow (default MinFrequency)
+GlitchFlag = 6.0                # census: level of a transient's samples, robust sigma
+GlitchMergeGap = 0.25           # census: largest gap inside one transient, s
+GlitchSeedPad = 0.1             # census: s added on each side of a transient's extent (broadband and octaves from 4 x GlitchCensusLow)
+GlitchCensusMemory = 64.0       # census: s of past each octave's robust sigma is measured on
+GlitchCensusMinimum = 8.0       # census: s of past needed before the census starts
 
 # ---- causal ridge on the running wavegram of the window coefficients
 Ridge = true                    # streaming ridge, past only

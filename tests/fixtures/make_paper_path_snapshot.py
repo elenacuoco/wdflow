@@ -26,6 +26,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FS, T0, SECONDS = 4096.0, 1.0e9, 110.0
 CHIRP_AT, CHIRP_S, DELAY = 80.0, 3.0, {"H1": 0.0, "L1": 0.005}
 SEGMENT = (T0 + 26.0, T0 + SECONDS)
+#: Stage-1 settings the snapshot was taken with, which later defaults may
+#: change: the label from the winning basis.
+FROZEN = dict(GlitchLabel="bases")
 
 
 def parameters(ifo, outdir, **kw):
@@ -94,7 +97,7 @@ def paper_network(triggers):
 
 def main():
     with tempfile.TemporaryDirectory() as outdir:
-        runs = {ifo: run_detector(ifo, outdir) for ifo in DELAY}
+        runs = {ifo: run_detector(ifo, outdir, **FROZEN) for ifo in DELAY}
     triggers = {ifo: r[0] for ifo, r in runs.items()}
     events, cand = paper_network(triggers)
     for ifo in DELAY:
