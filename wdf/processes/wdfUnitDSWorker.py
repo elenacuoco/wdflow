@@ -16,6 +16,7 @@ __version__ = "1.0.0"
 __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 __status__ = "Development"
+import copy
 import time
 
 import numpy as np
@@ -432,7 +433,8 @@ class wdfUnitDSWorker(object):
         """
 
     #: Keys of a search's own parameters, which the end of the segment does not
-    #: overwrite in its parametersUsed file.
+    #: overwrite in its parametersUsed file; only the values set or changed
+    #: during the search are added.
     SEARCH_KEYS = ("window", "overlap", "Ncoeff", "SearchName", "waveletThreshold", "filename")
 
     def _record_end(self, searched, gpsEnd, ds, search_pars):
@@ -466,10 +468,12 @@ class wdfUnitDSWorker(object):
             par.BandPassPassband = list(ds.passband())
         logging.info(f"searched up to {par.gpsEndSearched:.1f}, {par.UnsearchedTail_s:.1f} s "
                      f"before the segment's end {gpsEnd:.1f}")
+        before = getattr(self, "_par_at_start", {})
+        changed = {k: v for k, v in vars(par).items()
+                   if k not in self.SEARCH_KEYS and (k not in before or before[k] != v)}
         for sp in search_pars:
-            for key, value in vars(par).items():
-                if key not in self.SEARCH_KEYS:
-                    setattr(sp, key, value)
+            for key, value in changed.items():
+                setattr(sp, key, value)
             sp.dump(sp.dir + parameters_file_name(sp))
 
     def segmentProcess(self, segment, wavThresh=None):
@@ -669,6 +673,7 @@ class wdfUnitDSWorker(object):
                 searches.append(search)
                 writers.append(savetrigger)
                 search_pars.append(par)
+            self._par_at_start = copy.deepcopy(vars(self.par))
             # Start detection loop
             logging.info("Starting detection loop")
             data = SV()
