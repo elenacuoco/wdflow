@@ -155,6 +155,59 @@ def threshold_rule(par):
     return getattr(WaveletThreshold, name)
 
 
+def block_length_of(window):
+    """The block rule's default L for a window, ``round(ln window)``, at least 1,
+    as p4TSA's `WaveletThreshold::BlockLengthOf` computes it.
+
+    :param window: samples.
+    :return: int
+    """
+    import math
+
+    return max(1, int(math.floor(math.log(int(window)) + 0.5)))
+
+
+def check_bases(par, schedule):
+    """Refuse, before any data is read, a `Bases` list the block rule cannot run.
+
+    Under the block rule a band of a packet or local cosine basis must hold at
+    least one block: ``window / M >= L`` for ``LocalCos<M>`` (``window >> depth
+    >= L`` for a packet level), L being `BlockLength` or, at 0, ``round(ln
+    window)``. p4TSA's `WDF2Classify.SetBases` refuses the same bases when the
+    search is built; this check runs when the worker is built and names the
+    parameters. Each window of the schedule is checked with its own L.
+
+    :param par: run configuration: `Bases` (or `bases`), `ThresholdRule`,
+        `BlockLength`.
+    :param schedule: `window_schedule(par)`.
+    :return: None
+    :raises ValueError: naming the basis, `Bases`, the window, L and the
+        largest M allowed there.
+    """
+    from wdf.analysis.wavelets import packet_depth
+
+    names = getattr(par, "Bases", None) or getattr(par, "bases", None)
+    rule = str(getattr(par, "ThresholdRule", None) or DEFAULT_THRESHOLD_RULE).strip().lower()
+    if not names or rule != "block":
+        return
+    if isinstance(names, str):
+        names = [n.strip() for n in names.split(",") if n.strip()]
+    given = int(getattr(par, "BlockLength", 0) or 0)
+    for window, _ in schedule:
+        length = given if given > 0 else block_length_of(window)
+        for name in names:
+            depth = packet_depth(str(name))
+            if depth > 0 and (int(window) >> depth) < length:
+                largest = int(window) // length
+                largest = 1 << (largest.bit_length() - 1) if largest >= 1 else 0
+                raise ValueError(
+                    f"Bases holds {name!r}, whose bands are shorter than one block of the block "
+                    f"rule at window {window} (BlockLength L {length}"
+                    f"{'' if given > 0 else ' = round(ln window)'}): a basis of segment M needs "
+                    f"window / M >= L, so at most M = {largest} here (LocalCos{largest}). "
+                    f"Remove it from Bases, lower its M, or lengthen the window.")
+
+
 #: The table of a configuration file whose sub-tables override the run's
 #: values for one detector.
 DETECTOR_TABLE = "detectors"

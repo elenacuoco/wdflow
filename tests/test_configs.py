@@ -12,6 +12,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = {name: os.path.join(ROOT, "configs", f"{name}_default.toml") for name in ("online", "online_zerophase", "offline")}
 SOURCE = "\n".join(open(p).read() for p in glob.glob(os.path.join(ROOT, "wdf", "**", "*.py"),
                                                      recursive=True))
+#: Elena's 10 bases, before LocalCos128 joined them (4 Oct 2026).
+TEN_BASES = ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12",
+             "Coif5"]
 #: Keys the configurations set that only the run layout reads.
 LAYOUT = {"run", "outdir"}
 
@@ -37,8 +40,7 @@ def test_the_detector_tables_apply(name):
     v1 = load_config(CONFIGS[name], "V1")
     assert (h1.ARorder, v1.ARorder) == (3000, 16000)
     assert h1.itf == "H1" and v1.learn == 600
-    assert h1.Bases == ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24",
-                        "Sym12", "Coif5"]
+    assert h1.Bases == TEN_BASES + ["LocalCos128"]
     assert (h1.window, h1.overlap, h1.threshold, h1.MinFrequency, h1.BlockRemainder) == \
         (1024, 256, 5.0, 16.0, "merge")
     with pytest.raises(KeyError):
@@ -101,3 +103,55 @@ def test_the_workers_build(name):
     par = load_config(CONFIGS[name], "L1", sampling=4096, channel="L1:X", file="x.gwf")
     worker = (wdfUnitOnline if name.startswith("online") else wdfUnitOffline)(par)
     assert worker.par.SearchName == name
+
+
+def build(name, **kw):
+    from wdf.processes.wdfUnitOffline import wdfUnitOffline
+    from wdf.processes.wdfUnitOnline import wdfUnitOnline
+
+    par = load_config(CONFIGS[name], "H1", sampling=4096, channel="H1:X", file="x.gwf", **kw)
+    return (wdfUnitOnline if name.startswith("online") else wdfUnitOffline)(par)
+
+
+@pytest.mark.parametrize("name", sorted(CONFIGS))
+def test_the_ten_bases_remain_reachable(name):
+    pytest.importorskip("py4tsa")
+    assert build(name, Bases=TEN_BASES).par.Bases == TEN_BASES
+
+
+@pytest.mark.parametrize("name", sorted(CONFIGS))
+def test_a_local_cosine_beyond_the_block_cap_is_refused_before_running(name):
+    """LocalCos128 needs window / 128 >= L: 1024 (L 7) passes, 512 (L 6) does
+    not, and the error names Bases, the window and the largest M allowed."""
+    pytest.importorskip("py4tsa")
+    with pytest.raises(ValueError, match=r"Bases holds 'LocalCos128'.*window 512.*LocalCos64"):
+        build(name, window=512, overlap=128)
+    with pytest.raises(ValueError, match=r"Bases holds 'LocalCos256'.*window 1024.*LocalCos128"):
+        build(name, Bases=TEN_BASES + ["LocalCos256"])
+    build(name, window=512, overlap=128, Bases=TEN_BASES + ["LocalCos64"])
+    build(name, window=512, overlap=128, ThresholdRule="dohonojohnston")
+
+
+@pytest.mark.parametrize("window, basis", [(1024, "LocalCos128"), (1024, "LocalCos256"),
+                                           (512, "LocalCos128"), (512, "LocalCos64"),
+                                           (2048, "LocalCos256"), (1024, "HaarP4")])
+def test_the_check_agrees_with_the_core(window, basis):
+    """`check_bases` refuses exactly what p4TSA's SetBases refuses."""
+    pytest.importorskip("py4tsa")
+    from wdf.config.Parameters import Parameters, check_bases
+    from wdf.processes.wdf import wdf
+
+    par = Parameters(window=window, overlap=window // 4, Bases=["Haar", basis],
+                     ThresholdRule="block", BlockLength=0, threshold=5.0, sampling=2048,
+                     resampling=2048, Ncoeff=window, MinFrequency=16.0, sigma=1.0)
+    try:
+        wdf(par)
+        core = True
+    except ValueError:
+        core = False
+    try:
+        check_bases(par, [(window, window // 4)])
+        ours = True
+    except ValueError:
+        ours = False
+    assert ours == core

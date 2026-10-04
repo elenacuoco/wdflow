@@ -82,7 +82,7 @@ from scipy.signal import lfilter
 import math
 
 from wdf.analysis.io import parameters_file_name, search_suffix
-from wdf.config.Parameters import Parameters, low_frequency_cut, window_schedule
+from wdf.config.Parameters import Parameters, check_bases, low_frequency_cut, window_schedule
 from wdf.observers.observer import Observer
 
 #: Basis names whose triggers are labelled "glitch" when none are given: the
@@ -356,6 +356,7 @@ class wdfUnitOnline:
         par.SearchName = getattr(par, "SearchName", None) or default_name
         search_suffix(par)
         self.schedule = window_schedule(par)
+        check_bases(par, self.schedule)
         par.Ncoeff = max(w for w, _ in self.schedule)
         par.Ridge = bool(getattr(par, "Ridge", True))
         par.GlitchLabelBases = list(getattr(par, "GlitchLabelBases", None) or DEFAULT_GLITCH_LABEL_BASES)

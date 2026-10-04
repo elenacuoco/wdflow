@@ -5,6 +5,17 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### LocalCos128 is the 11th basis of the shipped configurations
+
+`configs/online_default.toml`, `online_zerophase_default.toml` and
+`offline_default.toml` append "LocalCos128" to `Bases`. The core's default list
+is unchanged, and setting `Bases` to the previous ten restores the 10-basis
+search. Both workers now check `Bases` against every scheduled window when they
+are built, before any data is read (`wdf.config.Parameters.check_bases`). Under
+the block rule, `LocalCos<M>` needs `window / M >= L`. An error names `Bases`,
+the window, L and the largest M allowed, so a window of 512 (L 6) refuses
+LocalCos128. The check refuses exactly what p4TSA's `SetBases` refuses (tested).
+
 ### A third flow: the online worker with the offline whitening, at a fixed latency
 
 `wdfUnitOnline` takes `WhiteningMode`, which defaults to "causal" and gives

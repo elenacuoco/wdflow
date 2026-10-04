@@ -31,7 +31,7 @@ from wdf.observers.SingleEventPrintFileObserver import SingleEventPrintTriggers
 from wdf.processes.BandPassDownSampling import (BandPassDownSampling,
                                                 discard_edges,
                                                 read_conditioned)
-from wdf.config.Parameters import (Parameters, low_frequency_cut, threshold_rule,
+from wdf.config.Parameters import (Parameters, check_bases, low_frequency_cut, threshold_rule,
                                    window_schedule)
 from wdf.processes.wdf import wdf
 from wdf.analysis.io import parameters_file_name
@@ -108,6 +108,7 @@ class wdfUnitDSWorker(object):
         self.par = Parameters()
         self.par.copy(parameters)
         self.schedule = window_schedule(parameters)
+        check_bases(parameters, self.schedule)
         self.par.Ncoeff = max(window for window, _ in self.schedule)
         self.par.channel = parameters.channel
         self.learn = parameters.learn
