@@ -70,6 +70,14 @@ of at least 128 L, can still be added to `Bases`. Both workers check `Bases`
 against every scheduled window when they are built
 (`wdf.config.Parameters.check_bases`).
 
+### Online model history, written and reusable
+
+Every online run writes the noise models it applied, with their switch and
+fit-stretch times, to `ARModels-<itf>-Search<name>.h5` (`ARModelsFile`;
+`save_ar_models`, `load_ar_models`). With `ARModelsFrom` set to such a file, a
+run fits nothing and applies that run's models at its switch times, so an
+injection run and its background run whiten with one model history.
+
 ### Online glitch label from a causal census
 
 `GlitchLabel = "census"`, the new default, labels a trigger "glitch" when its

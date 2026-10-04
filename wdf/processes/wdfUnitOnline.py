@@ -27,7 +27,15 @@ The chain, block by block of `len` seconds:
    `GlitchTrigger` and, for a refit, whose power in each octave from
    `GlitchCensusLow` through the current model stays within
    `ARFitLevelRatio` of white; a refit with none keeps the current model,
-   the first fit takes the candidate of smallest census peak.
+   the first fit takes the candidate of smallest census peak. Every model
+   applied is written, with its switch time and fit stretch, to
+   ``ARModels-<itf><suffix>.h5`` (`save_ar_models`; path `ARModelsFile`).
+   With `ARModelsFrom` set to such a file the worker fits nothing: it applies
+   that run's models at that run's switch times (the first model when its
+   switch time is reached, each later one at its own), so two runs over the
+   same stretch (a background and an injection run) whiten with one model
+   history. Each model was fitted on data before its switch time, so the run
+   stays causal, at the same latency.
 3. **The search:** `wdf` at each window of the schedule, with `Bases`,
    `MinFrequency`, `ThresholdRule`, `BlockLength`, `BlockLambda` and
    `BlockRemainder` from the parameters. **No glitch subtraction and no
@@ -279,6 +287,55 @@ class LookaheadWhitening:
         return fftconvolve(stream[a - k:b + k], self.taps, mode="valid")
 
 
+# ================================================================ model history
+#: Datasets of a model-history file (`save_ar_models`).
+AR_MODEL_FIELDS = ("switch_gps", "fit_start", "fit_end", "sigma", "ar")
+
+
+def save_ar_models(path, models, attributes):
+    """Write the time-stamped sequence of noise models a run applied.
+
+    HDF5, one row per model in switch order: ``switch_gps`` (GPS from which
+    the model whitens: the read time in the causal mode, the end of the
+    conditioned stream in the "zerophase" mode), ``fit_start`` and
+    ``fit_end`` (its fit stretch, GPS), ``sigma`` (its whitening's scale) and
+    ``ar`` (``(models, ARorder + 1)``, the scale in column 0 and the
+    prediction coefficients after it, as `fit_autoregressive` returns them).
+    The run's ``ARorder``, ``WhiteningMode``, ``resampling``,
+    ``ZeroPhaseDuration`` and ``itf`` are file attributes.
+
+    :param path: the file.
+    :param models: list of dicts with those fields.
+    :param attributes: dict of the file attributes.
+    :return: None
+    """
+    import h5py
+
+    with h5py.File(path, "w") as h5:
+        for name in AR_MODEL_FIELDS[:-1]:
+            h5.create_dataset(name, data=np.array([m[name] for m in models], dtype=float))
+        order = int(attributes["ARorder"])
+        h5.create_dataset("ar", data=np.array([m["ar"] for m in models], dtype=float).reshape(
+            len(models), order + 1))
+        for key, value in attributes.items():
+            h5.attrs[key] = value
+
+
+def load_ar_models(path):
+    """Read what `save_ar_models` wrote.
+
+    :return: tuple -- (list of dicts in switch order, dict of attributes).
+    """
+    import h5py
+
+    with h5py.File(path, "r") as h5:
+        columns = {name: np.asarray(h5[name]) for name in AR_MODEL_FIELDS}
+        attributes = {k: (v.decode() if isinstance(v, bytes) else v) for k, v in h5.attrs.items()}
+    models = [{name: (columns[name][i] if name == "ar" else float(columns[name][i]))
+               for name in AR_MODEL_FIELDS} for i in range(columns["switch_gps"].size)]
+    return sorted(models, key=lambda m: m["switch_gps"]), attributes
+
+
 # ================================================================ outputs
 @dataclass
 class OnlineResult:
@@ -293,6 +350,8 @@ class OnlineResult:
         running best path and ``emitted_at``.
     :param refits: one dict per model fit: ``emitted_at``, ``fit_start``,
         ``fit_end``, ``sigma``.
+    :param models: the noise models applied, in switch order (the fields of
+        `save_ar_models`).
     :param census: with `GlitchLabel` "census", one dict per transient of the
         causal census (`CausalCensus`) once closed: ``first``, ``last``,
         ``peak``, ``peak_time``, ``extent_first``, ``extent_last``,
@@ -317,6 +376,7 @@ class OnlineResult:
     tracks: list = field(default_factory=list)
     track_waveforms: dict = field(default_factory=dict)
     census: list = field(default_factory=list)
+    models: list = field(default_factory=list)
 
     def before(self, t):
         """Everything emitted at or before GPS `t`, as plain lists (NaN as
@@ -566,10 +626,13 @@ class wdfUnitOnline:
         ending `ARFitGap` before `now`, that passes the quality rule.
         """
         par, rate = self.par, float(self.par.resampling)
-        chosen = self._choose_stretch(past, past_start, now)
+        chosen = (self._reused_model(now) if self._reused is not None
+                  else self._choose_stretch(past, past_start, now))
         if chosen is None:
             return None
         fit_start, fit_end, ar, filt, quality = chosen
+        self.result.models.append(dict(switch_gps=float(now), fit_start=float(fit_start),
+                                       fit_end=float(fit_end), ar=np.asarray(ar, dtype=float)))
         if self.mode == "causal":
             warm = past[past.size - par.ARWarmup:]
             self.result.refits.append(dict(emitted_at=self.now, fit_start=fit_start,
@@ -585,8 +648,55 @@ class wdfUnitOnline:
             logging.info(f"online zerophase: AR {par.ARorder} fitted on {fit_start:.1f}-"
                          f"{fit_end:.1f}, TruncatedWhitening {par.ZeroPhaseDuration:g} s from "
                          f"{now:.1f}, sigma {filt.sigma:.4g}")
+        self.result.models[-1]["sigma"] = float(filt.sigma)
         self._model = filt
         return filt
+
+    def _reused_model(self, now):
+        """With `ARModelsFrom`: the model the other run switched to at `now`,
+        or None when it switched to none then. No stretch is fitted or
+        judged."""
+        rate = float(self.par.resampling)
+        for m in self._reused:
+            if abs(m["switch_gps"] - now) <= 0.5 / rate:
+                ar = np.asarray(m["ar"], dtype=float)
+                filt = self._filter_of(ar, now) if self.mode == "zerophase" else None
+                return m["fit_start"], m["fit_end"], ar, filt, dict(accepted=True, reused=True)
+        return None
+
+    def _next_switch(self, after):
+        """When to try the next model: `ARRefitInterval` after `after`, or,
+        with `ARModelsFrom`, the other run's next switch time."""
+        if self._reused is not None:
+            rate = float(self.par.resampling)
+            later = [m["switch_gps"] for m in self._reused if m["switch_gps"] > after + 0.5 / rate]
+            return min(later) if later else None
+        return after + self.par.ARRefitInterval if self.par.ARRefitInterval > 0 else None
+
+    def _load_reused(self):
+        """`ARModelsFrom`: the other run's model history, checked against this
+        run's model order, whitening and rate."""
+        par = self.par
+        path = str(getattr(par, "ARModelsFrom", None) or "")
+        par.ARModelsFrom = path
+        if not path:
+            return None
+        models, attributes = load_ar_models(path)
+        if not models:
+            raise ValueError(f"ARModelsFrom {path} holds no model")
+        mine = dict(ARorder=int(par.ARorder), WhiteningMode=self.mode,
+                    resampling=float(par.resampling))
+        if self.mode == "zerophase":
+            mine["ZeroPhaseDuration"] = float(par.ZeroPhaseDuration)
+        for key, value in mine.items():
+            theirs = attributes.get(key)
+            if theirs is None or (theirs != value if isinstance(value, str)
+                                  else abs(float(theirs) - float(value)) > 1e-9):
+                raise ValueError(f"ARModelsFrom {path} was written with {key} {theirs}; this "
+                                 f"run has {value}")
+        par.ARModelsReused = len(models)
+        logging.info(f"online: {len(models)} noise models reused from {path}; no fit is made")
+        return models
 
     def _filter_of(self, ar, now):
         """The whitening filter of a model in this mode (no warm-up)."""
@@ -908,6 +1018,7 @@ class wdfUnitOnline:
         par.gps = getattr(par, "gps", None) or gps_start
         self.result = OnlineResult()
         self._model, self._first_tried = None, []
+        self._reused = self._load_reused()
         rate = float(par.resampling)
         ds = BandPassDownSampling(par)
         par.BandPassFilter, par.BandPassPassband = ds.family, list(ds.passband())
@@ -971,7 +1082,7 @@ class wdfUnitOnline:
                     if whitener is None:
                         continue
                     self._start_search(self.now, whitener.sigma)
-                    next_refit = self.now + par.ARRefitInterval if par.ARRefitInterval > 0 else None
+                    next_refit = self._next_switch(self.now)
                     continue
                 w = whitener.process(y)
                 self._consume(w, y_start)
@@ -981,7 +1092,7 @@ class wdfUnitOnline:
                         whitener = refit
                         for search in self._searches_on:
                             search.parameters.sigma = whitener.sigma
-                    next_refit += par.ARRefitInterval
+                    next_refit = self._next_switch(next_refit)
                 continue
             # ---- "zerophase": the conditioned stream ends at `clock`, the
             # whitened one at clock - WhiteningLookahead_s = now - Latency_s.
@@ -999,7 +1110,7 @@ class wdfUnitOnline:
                 filters.append(first)
                 released, in_search = clock, filters[0]
                 self._start_search(clock, filters[0].sigma)
-                next_refit = clock + par.ARRefitInterval if par.ARRefitInterval > 0 else None
+                next_refit = self._next_switch(clock)
                 continue
             ready = clock - par.WhiteningLookahead_s
             while ready - released > 0.5 / rate:
@@ -1022,7 +1133,7 @@ class wdfUnitOnline:
                 refit = self._fit(past, past_start, clock)
                 if refit is not None:
                     filters.append(refit)
-                next_refit += par.ARRefitInterval
+                next_refit = self._next_switch(next_refit)
         for writer in self._writers:
             writer.close()
         par.RefitCount = sum(1 for r in self.result.refits if r.get("accepted", True))
@@ -1049,6 +1160,12 @@ class wdfUnitOnline:
         pd.DataFrame(result.triggers).to_csv(f"{self.dir}TriggerLatency{suffix}.csv", index=False)
         pd.DataFrame(result.candidates).to_csv(f"{self.dir}RidgeCandidates{suffix}.csv", index=False)
         pd.DataFrame(result.refits).to_csv(f"{self.dir}ARRefits{suffix}.csv", index=False)
+        par.ARModelsFile = f"{self.dir}ARModels-{par.itf}{suffix}.h5"
+        attributes = dict(ARorder=int(par.ARorder), WhiteningMode=self.mode,
+                          resampling=float(par.resampling), itf=str(par.itf))
+        if self.mode == "zerophase":
+            attributes["ZeroPhaseDuration"] = float(par.ZeroPhaseDuration)
+        save_ar_models(par.ARModelsFile, result.models, attributes)
         if self._census is not None:
             pd.DataFrame(result.census).to_csv(f"{self.dir}GlitchCensusOnline{suffix}.csv",
                                                index=False)

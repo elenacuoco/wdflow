@@ -64,6 +64,34 @@ smallest census peak. Every refit records the candidate it took, its census
 peak and its octave levels. A test checks that a stretch holding a glitch or a
 louder noise level is skipped, and that the rule reads only the past.
 
+### One model history for several runs
+
+Every online run writes the noise models it applied to
+`ARModels-<itf>-Search<name>.h5`, next to its outputs, and records the path as
+`ARModelsFile`. The file holds one row per model, in switch order:
+
+- `switch_gps`: the GPS time from which the model whitens. In the causal mode
+  this is the read time; in the "zerophase" mode, the end of the conditioned
+  stream;
+- `fit_start`, `fit_end`: its fit stretch;
+- `sigma`: its whitening's scale;
+- `ar`: its scale and prediction coefficients, `(models, ARorder + 1)`.
+
+The attributes are `ARorder`, `WhiteningMode`, `resampling`,
+`ZeroPhaseDuration` (zero-phase mode) and `itf`.
+
+With `ARModelsFrom` set to such a file, a run fits nothing and takes no
+fit-quality census. It applies that run's first model when its switch time is
+reached, and each later model at its own switch time. A file written with
+another `ARorder`, `WhiteningMode`, rate or `ZeroPhaseDuration` is refused.
+This is how an injection run whitens exactly as its background run does: the
+dense injections would otherwise fail the fit-quality rule at every refit.
+Each model was fitted on data before its switch time, so the run stays
+causal, and its latency is unchanged. A test checks that the injection run's
+whitened stream minus the background's equals the injections whitened by the
+same models, sample for sample. The offline worker fits one model per segment
+and does not refit, so it has no such parameter.
+
 ### Glitches are labelled from a causal census
 
 With `GlitchLabel = "census"` (the default) the online worker keeps a census of
