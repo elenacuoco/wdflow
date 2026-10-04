@@ -18,9 +18,15 @@ Two paths, which do not mix (`wdf.config.Parameters.network_path`):
   pairs and a `TriggerGraphBuilder(ifos)`.
 - **"track"**: the detectors' track events (`TrackEvents` written by the
   workers with `Reconstruction` "track", or `reconstruct` on a map), then
-  `TrackCoincidenceFinder`.
+  `TrackCoincidenceFinder`, which admits a pair only when its tracks are
+  compatible, its coherence lag physical and its coherence at least
+  `TrackCoherenceMin`; left to "calibrate", that threshold is set on the
+  run's own time-slid pairs (`calibrate_coherence_min`, step
+  `NetworkSlideStep`) and recorded as `TrackCoherenceMinUsed`.
 
-Stage 4 is "classic", the column `NetworkRankColumn`, or "gnn", a
+Stage 4 is "classic", the column `NetworkRankColumn` (default
+"network_enwdf" on the wavegram path, "track_statistic" on the track path),
+or "gnn", a
 `GNNCoincidenceScorer` loaded from `GNNModel` (column ``gnn_logit``). With
 `NetworkSlides` above zero the time-slide background is drawn
 (`TimeSlideFAR`, step `NetworkSlideStep`) and every candidate gets its false
@@ -50,6 +56,8 @@ DEFAULT_COMPARISON_BIN = 2.0
 SINGLE_DETECTOR_TRAVEL_S = 0.01
 #: Default ranking column of the classic scorer.
 DEFAULT_RANK_COLUMN = "network_enwdf"
+#: Default ranking column of the track path.
+TRACK_RANK_COLUMN = "track_statistic"
 #: Default slide step, s, and number of slides (0: no background).
 DEFAULT_SLIDE_STEP_S, DEFAULT_SLIDES = 4.0, 0
 #: Default memory of `NetworkStream`, s.
@@ -64,7 +72,9 @@ class NetworkSettings:
     :param coincidence: `Coincidence`, equal to it.
     :param scorer: `Scorer`, "classic" or "gnn".
     :param gnn_model: `GNNModel`, the saved scorer for "gnn".
-    :param rank_column: `NetworkRankColumn`, the classic ranking column.
+    :param rank_column: `NetworkRankColumn`, the classic ranking column;
+        "network_enwdf" on the wavegram path, "track_statistic" on the track
+        path, when not given.
     :param comparison_bin: `NetworkComparisonBin`, the comparison map's bin
         over the longest light travel time; 0 for no comparison map.
     :param slides: `NetworkSlides`, time slides of the background (0: none).
@@ -93,7 +103,9 @@ class NetworkSettings:
 
         return cls(reconstruction=reconstruction, coincidence=coincidence, scorer=scorer,
                    gnn_model=getattr(par, "GNNModel", None),
-                   rank_column=str(get("NetworkRankColumn", DEFAULT_RANK_COLUMN)),
+                   rank_column=str(get("NetworkRankColumn",
+                                       TRACK_RANK_COLUMN if reconstruction == "track"
+                                       else DEFAULT_RANK_COLUMN)),
                    comparison_bin=float(get("NetworkComparisonBin", DEFAULT_COMPARISON_BIN)),
                    slides=int(get("NetworkSlides", DEFAULT_SLIDES)),
                    slide_step_s=float(get("NetworkSlideStep", DEFAULT_SLIDE_STEP_S)),
@@ -260,6 +272,19 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         if len(ifos) < 2:
             return result
         builder = maps = comparison = None
+        track_settings = TrackCoincidenceSettings.from_parameters(par)
+        if track_settings.coherence_min is None:
+            from wdf.analysis.track_coincidence import calibrate_coherence_min
+
+            bounds = segment_bounds if segment_bounds is not None else _bounds(events, None,
+                                                                                 _window_s)
+            value, record = calibrate_coherence_min(events, waveforms, fs, track_settings, bounds,
+                                                    settings.slide_step_s)
+            track_settings.coherence_min = value
+            par.TrackCoherenceMinUsed = value
+            par.TrackCoherenceCalibration = record
+        else:
+            par.TrackCoherenceMinUsed = track_settings.coherence_min
         if scorer is not None:
             basis = str(getattr(par, "TrackGraphBasis", None) or "LocalCos64")
             par.TrackGraphBasis = basis
@@ -273,7 +298,7 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
                               for i in ifos}
             builder = TriggerGraphBuilder(ifos=ifos)
         finder = TrackCoincidenceFinder(IndexedCoincidenceFinder(), events, waveforms, fs,
-                                        TrackCoincidenceSettings.from_parameters(par), scorer=scorer,
+                                        track_settings, scorer=scorer,
                                         builder=builder, coefficients=maps, comparison=comparison)
         candidates = finder.find(events)
         result.maps, result.comparison = maps or {}, comparison

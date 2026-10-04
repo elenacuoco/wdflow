@@ -1,54 +1,80 @@
-"""Stages 3 and 4 of the track path: the classical finder's admitted pairs of
-track events, described by their tracks and their waveforms.
+"""Stages 3 and 4 of the track path: pairs of track events admitted on their
+tracks and waveforms, and ranked on the energy along the tracks.
 
 `TrackCoincidenceFinder` is the track path's counterpart of
-`wdf.analysis.network_graph.WavegramCoincidenceFinder`. The pairs are the
-ones `IndexedCoincidenceFinder.candidate_edge_array` admits, the rule every
-coincidence of the package starts from; each is described by
-`TRACK_EDGE_FEATURES`:
+`wdf.analysis.network_graph.WavegramCoincidenceFinder`. The candidate pairs
+are those `IndexedCoincidenceFinder.candidate_edge_array` forms; each is
+described by `TRACK_EDGE_FEATURES`:
 
-- **track compatibility** (`track_compatibility`): the two tracks' spans
-  overlapping once one may shift by the light travel time plus
-  `TrackTimingJitter`, and their f(t) agreeing there within
-  `TrackFrequencyTolerance` octaves;
+- **track compatibility** (`track_compatibility`): the time over which the
+  two f(t) agree within `TrackFrequencyTolerance` octaves, once one may shift
+  by the light travel time plus `TrackTimingJitter` (`track_common_s`);
 - **waveform coherence** (`waveform_coherence`): the complex
   cross-correlation of the two reconstructed waveforms' analytic signals,
-  normalised by their energies, over the lags the light travel time plus the
-  jitter allows: the lag of its largest modulus, that modulus (the coherence,
-  0 to 1) and its phase.
+  normalised by their energies, searched over ``|tau| <= TrackLagSearch``:
+  the lag of its largest modulus, that modulus ``|Gamma|`` (0 to 1) and its
+  phase.
 
-The table carries the classical finder's columns (`dt_s`,
-`frequency_overlap`, `time_overlap`, `coincidence_cost`, `network_enwdf`,
-`network_min_enwdf`) beside them, so the classical rankings apply. A time
-slide (`TimeSlideFAR`) moves an event's times; the finder reads each event's
-displacement from its `gpsPeak` against the unslid events it was built with
-and moves the event's track and waveform by it.
+A pair is **admitted** only when all three hold:
+
+(a) the tracks are compatible: ``track_common_s >= TrackMinCommonDuration``;
+(b) the coherence lag is physical: ``|track_lag_s| <=`` light travel time
+    plus `TrackTimingJitter` (the search is wider, so a lag at its edge
+    fails);
+(c) ``track_coherence >= TrackCoherenceMin``.
+
+`TrackCoherenceMin` is set from noise alone (`calibrate_coherence_min`): the
+`TrackCoherencePercentile` of ``|Gamma|`` over time-slid pairs that pass (a)
+and (b).
+
+The pair's statistic is `track_statistic`, ``min(rho_1, rho_2) |Gamma|``,
+``rho = sqrt(track_energy)`` each detector's SNR integrated along its track
+(the energy of the reconstructed waveform in noise units). The minimum, not
+the product or the quadrature sum, asks both detectors to carry energy along
+their tracks: a loud glitch in one detector paired with a weak track in the
+other scores no more than the weak one. ``|Gamma|`` is the fraction of that
+energy the two waveforms share at a physical lag, so a pair of loud,
+unrelated tracks scores low. The track path ranks on it; `network_enwdf`, the
+seed triggers' statistic, is kept as a column. `dt_s` is the coherence lag
+`track_lag_s`; the classical finder's difference of instants is
+`dt_instant_s`.
+
+A time slide (`TimeSlideFAR`) moves an event's times; the finder reads each
+event's displacement from its `gpsPeak` against the unslid events it was built
+with and moves the event's track and waveform by it.
 
 With a scorer (`GNNCoincidenceScorer`), the pairs are those of a
 `TriggerGraphBuilder` graph of the track events, whose node maps are drawn
-from the waveforms (`track_event_coefficients`), and the track features are
-appended to the graph's edge features: the model must have been fitted with
-``cross_edge_dim = N_EDGE_FEATURES + len(TRACK_EDGE_FEATURES)``.
+from the waveforms (`track_event_coefficients`), the track features are
+appended to the graph's edge features (the model must have been fitted with
+``cross_edge_dim = N_EDGE_FEATURES + len(TRACK_EDGE_FEATURES)``), and the same
+admission applies.
 """
 __author__ = "Elena Cuoco"
 __license__ = "GPL"
 __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import combinations
 
 import numpy as np
 import pandas as pd
 
 #: The features a track pair adds to the classical ones.
-TRACK_EDGE_FEATURES = ["track_time_overlap", "track_f_distance", "track_f_overlap",
-                       "track_compatible", "track_lag_s", "track_coherence", "track_phase"]
+TRACK_EDGE_FEATURES = ["track_time_overlap", "track_common_s", "track_f_distance",
+                       "track_f_overlap", "track_compatible", "track_lag_s", "track_coherence",
+                       "track_phase"]
+#: The track path's ranking column (`NetworkRankColumn` default).
+TRACK_STATISTIC = "track_statistic"
+#: What a finder admits: "full" (a, b and c), "tracks" (a and b, for the
+#: calibration), "classic" (every pair the classical rule forms).
+GATES = ("full", "tracks", "classic")
 
 
 @dataclass
 class TrackCoincidenceSettings:
-    """What makes two tracks compatible.
+    """What admits a pair of tracks.
 
     :param jitter_s: timing jitter added to the light travel time, s
         (`TrackTimingJitter`).
@@ -56,33 +82,72 @@ class TrackCoincidenceSettings:
         f(t), octaves (`TrackFrequencyTolerance`).
     :param light_travel_time_s: overrides the pair's light travel time, s
         (`TrackLightTravelTime`); None reads it from the detectors.
+    :param min_common_s: least time the two f(t) agree within the
+        tolerance, s (`TrackMinCommonDuration`).
+    :param lag_search_s: half-width of the coherence's lag search, s
+        (`TrackLagSearch`); at least the light travel time plus the jitter.
+    :param coherence_min: least ``|Gamma|`` admitted (`TrackCoherenceMin`);
+        None ("calibrate") sets it with `calibrate_coherence_min`.
+    :param percentile: the noise percentile the calibration takes
+        (`TrackCoherencePercentile`).
+    :param calibration_slides: time slides of the calibration
+        (`TrackCalibrationSlides`).
+    :param calibration_minimum: slid pairs passing (a) and (b) needed; with
+        fewer, every slid pair the classical rule forms is used
+        (`TrackCalibrationMinimum`).
     """
 
     jitter_s: float = 0.0035
     frequency_tolerance: float = 0.5
     light_travel_time_s: float = None
+    min_common_s: float = 0.25
+    lag_search_s: float = 0.1
+    coherence_min: float = None
+    percentile: float = 99.0
+    calibration_slides: int = 100
+    calibration_minimum: int = 20
 
     KEYS = dict(jitter_s="TrackTimingJitter", frequency_tolerance="TrackFrequencyTolerance",
-                light_travel_time_s="TrackLightTravelTime")
+                light_travel_time_s="TrackLightTravelTime",
+                min_common_s="TrackMinCommonDuration", lag_search_s="TrackLagSearch",
+                coherence_min="TrackCoherenceMin", percentile="TrackCoherencePercentile",
+                calibration_slides="TrackCalibrationSlides",
+                calibration_minimum="TrackCalibrationMinimum")
 
     @classmethod
     def from_parameters(cls, par):
-        """The settings a run asks for, defaults filled in and written back."""
+        """The settings a run asks for, defaults filled in and written back
+        (`TrackCoherenceMin` as "calibrate" when it is to be calibrated)."""
         out = cls()
         for name, key in cls.KEYS.items():
             value = getattr(par, key, None)
+            if name == "coherence_min" and value in (None, "calibrate"):
+                value = None
+            elif value is not None:
+                value = int(value) if name.startswith("calibration") else float(value)
             if value is not None:
-                setattr(out, name, float(value))
-            setattr(par, key, getattr(out, name))
+                setattr(out, name, value)
+            current = getattr(out, name)
+            setattr(par, key, "calibrate" if name == "coherence_min" and current is None
+                    else current)
+        if not 0 < out.percentile < 100:
+            raise ValueError(f"TrackCoherencePercentile {out.percentile}: between 0 and 100")
         return out
 
     def window(self, a, b):
-        """Largest lag between detectors `a` and `b`, s."""
+        """Largest lag between detectors `a` and `b`, s.
+
+        :raises ValueError: if `lag_search_s` does not reach it.
+        """
         from wdf.analysis.detectors import light_travel_time
 
         travel = (self.light_travel_time_s if self.light_travel_time_s is not None
                   else light_travel_time(a, b))
-        return float(travel) + float(self.jitter_s)
+        window = float(travel) + float(self.jitter_s)
+        if self.lag_search_s < window:
+            raise ValueError(f"TrackLagSearch {self.lag_search_s} s is shorter than the "
+                             f"{a}-{b} light travel time plus jitter, {window:.4f} s")
+        return window
 
 
 def waveform_coherence(first, second, fs, max_lag_s):
@@ -137,7 +202,7 @@ def waveform_coherence(first, second, fs, max_lag_s):
 
 
 def track_compatibility(left, right, displacement_left, displacement_right, window_s,
-                        tolerance):
+                        tolerance, min_common_s=0.0):
     """How two tracks agree in time and in f(t).
 
     :param left: an event row with `track_t_start`, `track_t_end`,
@@ -149,11 +214,14 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     :param window_s: light travel time plus jitter, s.
     :type tolerance: float
     :param tolerance: largest ``|d log2 f|``, octaves.
+    :type min_common_s: float
+    :param min_common_s: least time the two f(t) agree within the tolerance.
     :return: dict -- `track_time_overlap` (the shared span over the shorter
         track), `track_f_distance` (median ``|d log2 f|`` over it, octaves; the
         smallest over the shifts -window, 0, +window), `track_f_overlap` (the
-        fraction of the shared slots within the tolerance) and
-        `track_compatible`.
+        fraction of the shared slots within the tolerance), `track_common_s`
+        (the time they are within it: those slots times the slot) and
+        `track_compatible` (1 when ``track_common_s >= min_common_s``).
     """
     s1 = float(left["track_t_start"]) + displacement_left
     e1 = float(left["track_t_end"]) + displacement_left
@@ -162,7 +230,8 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     shared = min(e1, e2 + window_s) - max(s1, s2 - window_s)
     shortest = max(min(e1 - s1, e2 - s2), 1e-12)
     out = dict(track_time_overlap=float(np.clip(shared / shortest, 0.0, 1.0)),
-               track_f_distance=float("nan"), track_f_overlap=0.0, track_compatible=0.0)
+               track_f_distance=float("nan"), track_f_overlap=0.0, track_common_s=0.0,
+               track_compatible=0.0)
     if shared <= 0:
         return out
     t1 = np.asarray(left["track_times"], dtype=float) + displacement_left
@@ -179,9 +248,12 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
             best = d
     if best is None:
         return out
+    slot = float(np.median(np.diff(t1))) if t1.size > 1 else float(e1 - s1)
     out["track_f_distance"] = float(np.median(best))
     out["track_f_overlap"] = float(np.mean(best <= tolerance))
-    out["track_compatible"] = float(out["track_f_distance"] <= tolerance)
+    out["track_common_s"] = float(np.sum(best <= tolerance) * slot)
+    out["track_compatible"] = float(out["track_common_s"] >= min_common_s
+                                    and out["track_common_s"] > 0)
     return out
 
 
@@ -258,10 +330,19 @@ class TrackCoincidenceFinder:
         events (`track_event_coefficients`), scorer only.
     :param comparison: the comparison maps, scorer only (None: the assembly
         maps).
+    :type gate: str
+    :param gate: what is admitted, one of `GATES`; "full" needs
+        `settings.coherence_min`.
     """
 
     def __init__(self, finder, events, waveforms, fs, settings=None, scorer=None, builder=None,
-                 coefficients=None, comparison=None):
+                 coefficients=None, comparison=None, gate="full"):
+        if gate not in GATES:
+            raise ValueError(f"gate {gate!r}: use one of {GATES}")
+        if gate == "full" and (settings is None or settings.coherence_min is None):
+            raise ValueError("the track finder admits on TrackCoherenceMin: give it, or "
+                             "calibrate it on noise with calibrate_coherence_min")
+        self.gate = gate
         self.finder = finder
         self.config = finder.config
         self.settings = TrackCoincidenceSettings() if settings is None else settings
@@ -281,16 +362,40 @@ class TrackCoincidenceFinder:
         da = float(row_a["gpsPeak"]) - self.reference[ifo_a][ca]
         db = float(row_b["gpsPeak"]) - self.reference[ifo_b][cb]
         da, db = (0.0 if not np.isfinite(da) else da), (0.0 if not np.isfinite(db) else db)
-        window = self.settings.window(ifo_a, ifo_b)
-        out = track_compatibility(row_a, row_b, da, db, window, self.settings.frequency_tolerance)
+        st = self.settings
+        window = st.window(ifo_a, ifo_b)
+        out = track_compatibility(row_a, row_b, da, db, window, st.frequency_tolerance,
+                                  st.min_common_s)
         wa = self.waveforms.get(ifo_a, {}).get(ca)
         wb = self.waveforms.get(ifo_b, {}).get(cb)
         if wa is None or wb is None:
             lag = coherence = phase = float("nan")
         else:
             lag, coherence, phase = waveform_coherence((wa[0] + da, wa[1]), (wb[0] + db, wb[1]),
-                                                       self.fs, window)
+                                                       self.fs, st.lag_search_s)
         out.update(track_lag_s=lag, track_coherence=coherence, track_phase=phase)
+        rho_a = float(np.sqrt(max(float(row_a.get("track_energy", np.nan)), 0.0)))
+        rho_b = float(np.sqrt(max(float(row_b.get("track_energy", np.nan)), 0.0)))
+        out.update(track_snr_i=rho_a, track_snr_j=rho_b,
+                   track_statistic=min(rho_a, rho_b) * coherence,
+                   track_lag_physical=float(np.isfinite(lag) and abs(lag) <= window))
+        return out
+
+    def _admit(self, table):
+        """The rows the gate admits; `dt_s` becomes the coherence lag."""
+        if table.empty:
+            return table
+        keep = np.ones(len(table), bool)
+        if self.gate in ("full", "tracks"):
+            keep &= (table["track_compatible"].to_numpy(float) == 1.0)
+            keep &= (table["track_lag_physical"].to_numpy(float) == 1.0)
+        if self.gate == "full":
+            keep &= table["track_coherence"].to_numpy(float) >= self.settings.coherence_min
+        out = table[keep].reset_index(drop=True)
+        out["dt_instant_s"] = out["dt_s"]
+        out["dt_s"] = out["track_lag_s"]
+        if "candidate_id" in out:
+            out["candidate_id"] = np.arange(len(out))
         return out
 
     def _classic(self, events_by_ifo):
@@ -318,8 +423,7 @@ class TrackCoincidenceFinder:
                 dt_s=rows[:, 3], frequency_overlap=rows[:, 4], time_overlap=rows[:, 5],
                 coincidence_cost=rows[:, 2]))
             feats = [self._features(a, left.iloc[p], b, right.iloc[q]) for p, q in zip(i, j)]
-            blocks.append(pd.concat([table, pd.DataFrame(feats, columns=TRACK_EDGE_FEATURES)],
-                                    axis=1))
+            blocks.append(pd.concat([table, pd.DataFrame(feats)], axis=1))
         if not blocks:
             return pd.DataFrame()
         out = pd.concat(blocks, ignore_index=True)
@@ -342,7 +446,8 @@ class TrackCoincidenceFinder:
         for p, q in graph.cross_edges:
             ra, rb = nodes.iloc[int(p)], nodes.iloc[int(q)]
             feats.append(self._features(ra["ifo"], ra, rb["ifo"], rb))
-        extra = pd.DataFrame(feats, columns=TRACK_EDGE_FEATURES)
+        everything = pd.DataFrame(feats)
+        extra = everything[TRACK_EDGE_FEATURES]
         width = N_EDGE_FEATURES + len(TRACK_EDGE_FEATURES)
         model = int(self.scorer.edge_head[0].in_features - 2 * self.scorer.encoder[0].out_features
                     - self.scorer.profile_dim)
@@ -362,7 +467,7 @@ class TrackCoincidenceFinder:
         for side in ("i", "j"):
             table[f"ifo_{side}"] = nodes["ifo"].to_numpy()[table[f"node_{side}"].astype(int)]
             table[f"cluster_{side}"] = nodes["cluster_id"].to_numpy()[table[f"node_{side}"].astype(int)]
-        return pd.concat([table.reset_index(drop=True), extra], axis=1)
+        return pd.concat([table.reset_index(drop=True), everything], axis=1)
 
     def find(self, events_by_ifo):
         """The admitted pairs with their track features.
@@ -374,4 +479,55 @@ class TrackCoincidenceFinder:
         """
         if any(ev.empty for ev in events_by_ifo.values()):
             return pd.DataFrame()
-        return self._classic(events_by_ifo) if self.scorer is None else self._scored(events_by_ifo)
+        found = (self._classic(events_by_ifo) if self.scorer is None
+                 else self._scored(events_by_ifo))
+        return self._admit(found)
+
+
+def calibrate_coherence_min(events, waveforms, fs, settings, segment_bounds, step_s,
+                            finder=None):
+    """`TrackCoherenceMin` from noise alone: the `settings.percentile` of
+    ``|Gamma|`` over time-slid track pairs.
+
+    The events of every detector but the first are slid by
+    `settings.calibration_slides` multiples of `step_s` (`TimeSlideFAR`), so
+    no pair is a real coincidence; the population is the slid pairs that pass
+    admission (a) and (b), the ones the threshold acts on. With fewer than
+    `settings.calibration_minimum` of them, every slid pair the classical rule
+    forms is used, and the record says so.
+
+    :param events: ``{ifo: track event table}``.
+    :param waveforms: ``{ifo: {cluster_id: (t0, waveform)}}``.
+    :param fs: sampling rate of the waveforms, Hz.
+    :type settings: TrackCoincidenceSettings
+    :param segment_bounds: ``{ifo: (start, end)}`` the slides wrap in.
+    :param step_s: step between two slides, s (`NetworkSlideStep`).
+    :param finder: the classical finder; `IndexedCoincidenceFinder()` when None.
+    :return: tuple -- (the threshold, a record: ``pairs``, ``population``
+        ("tracks" or "classic"), ``percentile``, ``slides``).
+    :raises ValueError: if no slid pair is formed at all.
+    """
+    from wdf.analysis.robust_events import FARConfig, IndexedCoincidenceFinder, TimeSlideFAR
+
+    finder = IndexedCoincidenceFinder() if finder is None else finder
+    open_settings = replace(settings, coherence_min=None)
+    values, population, slides = np.zeros(0), None, 0
+    for gate in ("tracks", "classic"):
+        track_finder = TrackCoincidenceFinder(finder, events, waveforms, fs, open_settings,
+                                              gate=gate)
+        far = TimeSlideFAR(track_finder, FARConfig(n_slides=settings.calibration_slides,
+                                                   min_shift_s=step_s))
+        background = far.background_distribution(events, segment_bounds)
+        slides = int(background.attrs.get("n_slides", settings.calibration_slides))
+        values = (background["track_coherence"].to_numpy(float) if len(background)
+                  else np.zeros(0))
+        values = values[np.isfinite(values)]
+        population = gate
+        if values.size >= settings.calibration_minimum:
+            break
+    if not values.size:
+        raise ValueError("no time-slid pair is formed: TrackCoherenceMin cannot be calibrated "
+                         "on these events; give it a value")
+    value = float(np.percentile(values, settings.percentile))
+    return value, dict(pairs=int(values.size), population=population,
+                       percentile=settings.percentile, slides=slides)

@@ -165,7 +165,7 @@ def test_the_track_configuration_is_the_zerophase_one_on_the_track_path():
     a, b = vars(zp), vars(tr)
     assert {k for k in set(a) | set(b) if a.get(k) != b.get(k)} == {
         "ConfigFile", "SearchName", "run", "Reconstruction", "Coincidence", "RidgeBasis",
-        "TrackBasis"}
+        "TrackBasis", "NetworkRankColumn"}
     assert (tr.Reconstruction, tr.Coincidence, tr.RidgeBasis, tr.TrackBasis) == \
         ("track", "track", "LocalCos64", "LocalCos64")
     for key, line in assignments(TRACK):
