@@ -49,7 +49,7 @@ def test_m4_runs_and_records_its_settings(tmp_outdir):
     with open(os.path.join(folder, "parametersUsed-Win64-Searchoffline.json")) as fh:
         used = json.load(fh)
     assert used["GlitchSubtraction"] is True and used["GlitchProtectCoincident"] is True
-    assert used["GlitchProtection"] == "no other detector's census given"
+    assert used["GlitchProtection"].startswith("OFF") and used["GlitchProtectionDetectors"] == []
     assert used["GlitchQs"] == [1.0, 2.0, 4.0, 8.0, 16.0] and used["GlitchCensusLow"] == 12.0
     assert len(triggers) > 0
 

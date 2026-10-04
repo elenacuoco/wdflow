@@ -46,6 +46,11 @@ from wdf.processes.zero_phase_whitening import (DEFAULT_RESPONSE_FLOOR, DEFAULT_
                                                 MagnitudeWhitening, TruncatedWhitening)
 
 
+#: `GlitchProtection` of a run with `GlitchProtectCoincident` on but no other
+#: detector's census: nothing can be protected.
+SINGLE_DETECTOR_PROTECTION = "OFF (single detector: no other detector's census)"
+
+
 def _array(view):
     """A view's samples in its own units (values times its scale)."""
     return np.array([view.GetY(0, i) for i in range(view.GetSize())]) * view.GetScale()
@@ -212,13 +217,21 @@ class wdfUnitOffline(wdfUnitDSWorker):
         others = self._other_seeds()
         if self._settings.protect_coincident and others:
             gs.protect_coincident({self.par.itf: seeds, **others}, self._settings.jitter_s)
-            self.par.GlitchProtection = sorted(others)
+            self.par.GlitchProtection = "on"
+            self.par.GlitchProtectionDetectors = sorted(others)
+            logging.info(f"M4 coincidence protection ON with {sorted(others)}: "
+                         f"{sum(bool(s.get('protected')) for s in seeds)} of {len(seeds)} seeds "
+                         "protected")
         elif self._settings.protect_coincident:
-            self.par.GlitchProtection = "no other detector's census given"
-            logging.warning("GlitchProtectCoincident is on but no other detector's census is "
-                            "given (GlitchCoincidenceSeeds): no seed can be protected")
+            self.par.GlitchProtection = SINGLE_DETECTOR_PROTECTION
+            self.par.GlitchProtectionDetectors = []
+            logging.warning("M4 coincidence protection is OFF: single-detector run, no other "
+                            "detector's census (GlitchCoincidenceSeeds). Every seed is fitted and "
+                            "subtracted, a gravitational wave included; run the detectors "
+                            "together with offline_network to protect coincident seeds.")
         else:
             self.par.GlitchProtection = "off"
+            self.par.GlitchProtectionDetectors = []
         self._glitches = gs.fit_seeds(x, first, rate, bank, seeds, self._settings)
         suffix = search_suffix(self.par)
         pd.DataFrame(self._glitches.table(),
