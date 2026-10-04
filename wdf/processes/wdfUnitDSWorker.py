@@ -431,6 +431,47 @@ class wdfUnitDSWorker(object):
         :return: None
         """
 
+    #: Keys of a search's own parameters, which the end of the segment does not
+    #: overwrite in its parametersUsed file.
+    SEARCH_KEYS = ("window", "overlap", "Ncoeff", "SearchName", "waveletThreshold", "filename")
+
+    def _record_end(self, searched, gpsEnd, ds, search_pars):
+        """What the segment's run used and searched, written again into every
+        search's parametersUsed file once the segment is done.
+
+        `gpsEndSearched` is the end of the last whitened block the searches
+        read and `UnsearchedTail_s` what is left of the segment after it
+        (`gpsEndSegment`; `gpsEnd` is the last conditioned block start the
+        loop accepts). The tail is what the chain reads ahead, summed in
+        `ReadAheadParts_s`: ``blocks``, two blocks of `len`, since reading
+        stops before a block would pass the frames' end, which the reader
+        would zero-pad; ``bandpass``, the band-pass's settling `padlen`;
+        ``whitening``, the whitening's look-ahead `WhiteningExtraSize`, kept
+        in the margin of the conditioned blocks; and ``whitening_lag``, one
+        block plus `WhiteningExtraSize`, by which the whitened output trails
+        the conditioned input, since the whitening emits a block once that
+        much of its future is buffered. About ``3 len + 2 WhiteningExtraSize
+        + padlen``: `len` (I/O batching, which changes no trigger) is the term
+        to shorten. Values set during
+        the run (the ridge's drift and X-drop, the low-pass order, the track
+        and glitch counts) are added.
+        """
+        par = self.par
+        par.gpsEndSearched = float(searched) if searched is not None else float("nan")
+        par.UnsearchedTail_s = float(gpsEnd - par.gpsEndSearched)
+        if getattr(ds, "lowpass_order", None) is not None:
+            par.LowPassOrder = int(ds.lowpass_order)
+            par.AliasAttenuationReached = ds.alias_attenuation_db()
+        if hasattr(ds, "passband"):
+            par.BandPassPassband = list(ds.passband())
+        logging.info(f"searched up to {par.gpsEndSearched:.1f}, {par.UnsearchedTail_s:.1f} s "
+                     f"before the segment's end {gpsEnd:.1f}")
+        for sp in search_pars:
+            for key, value in vars(par).items():
+                if key not in self.SEARCH_KEYS:
+                    setattr(sp, key, value)
+            sp.dump(sp.dir + parameters_file_name(sp))
+
     def segmentProcess(self, segment, wavThresh=None):
         """Runs the full offline WDF pipeline over one contiguous GPS segment:
         estimate (or load cached) AR-whitening parameters from a `learn`-second
@@ -566,6 +607,12 @@ class wdfUnitDSWorker(object):
                             + ds.padlen / self.par.sampling
                             + extra_size / self.par.resampling)
             self.par.gpsEnd = gpsEnd - read_ahead_s
+            self.par.gpsEndSegment = gpsEnd
+            self.par.ReadAheadParts_s = dict(blocks=2 * self.par.len,
+                                             bandpass=ds.padlen / self.par.sampling,
+                                             whitening=extra_size / self.par.resampling,
+                                             whitening_lag=self.par.len
+                                             + extra_size / self.par.resampling)
 
             #Set new size for the function in the loop
             streaming.SetDataLength(self.par.len)
@@ -603,7 +650,7 @@ class wdfUnitDSWorker(object):
             # whitened stream: the conditioning is the expensive part and is
             # done once, while each window length has its own stride, its own
             # coefficient grid and its own trigger file.
-            searches, writers = [], []
+            searches, writers, search_pars = [], [], []
             for window, overlap, name in search_names(self.schedule,
                                                       getattr(self.par, "SearchName", None)):
                 par = Parameters()
@@ -621,6 +668,7 @@ class wdfUnitDSWorker(object):
                 par.dump(par.dir + parameters_file_name(par))
                 searches.append(search)
                 writers.append(savetrigger)
+                search_pars.append(par)
             # Start detection loop
             logging.info("Starting detection loop")
             data = SV()
@@ -630,12 +678,14 @@ class wdfUnitDSWorker(object):
             # reader: the two are not at the same time, and testing the reader
             # would end the loop while conditioned data was still queued.
             data_ds = self._read_block(streaming, data, ds)
+            searched = None
             while data_ds.GetStart() <= self.par.gpsEnd:
                 whitening.Process(data_ds, dataw)
                 for search in searches:
                     search.SetData(dataw)
                     search.Process()
                 self._on_whitened(dataw)
+                searched = dataw.GetStart() + dataw.GetSize() * dataw.GetSampling()
                 if data.GetStart() + 2 * self.par.len > gpsEnd:
                     logging.warning(
                         "Stopping at %.1f: the next read would pass the end of "
@@ -657,10 +707,12 @@ class wdfUnitDSWorker(object):
                     search.SetData(dataw)
                     search.Process()
                 self._on_whitened(dataw)
+                searched = dataw.GetStart() + dataw.GetSize() * dataw.GetSampling()
 
             self._finish_segment(dir_chunk)
             for savetrigger in writers:
                 savetrigger.close()
+            self._record_end(searched, gpsEnd, ds, search_pars)
 
             elapsed_time = time.time() - start_time
             timeslice = gpsEnd - gpsStart
