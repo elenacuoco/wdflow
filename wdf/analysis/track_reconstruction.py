@@ -109,10 +109,14 @@ class TrackRidgeSettings(RidgeSettings):
         (`TrackMcRange`).
     :param allowance_max: largest allowance, octaves per slot
         (`TrackAllowanceMax`), which bounds it near coalescence.
+    :param kept_quantile: the percentile of the slots kept into noise that
+        the drift calibration holds at `calibration_kept`
+        (`TrackCalibrationQuantile`; 50 is the median).
     """
 
     mc_range: tuple = (1.0, 30.0)
     allowance_max: float = 0.27
+    kept_quantile: float = 50.0
 
     def allowances(self):
         """``[from, to]`` allowance, octaves."""
@@ -165,7 +169,7 @@ class TrackSettings:
     #: The track penalty's parameters and defaults: the stiff penalty of
     #: ridge v1, which followed inspirals, beyond a chirp allowance.
     PENALTY = dict(TrackLambda=3.7, TrackMcRange=(1.0, 30.0), TrackAllowanceMax=0.27,
-                   TrackDrift="calibrate", TrackXDrop="calibrate")
+                   TrackDrift="calibrate", TrackXDrop="calibrate", TrackCalibrationQuantile=90.0)
 
     @classmethod
     def from_parameters(cls, par, rate, ridge=None):
@@ -220,8 +224,12 @@ class TrackSettings:
         for key, value in values.items():
             setattr(par, key, list(value) if isinstance(value, tuple) else value)
         par.TrackMcRange = list(mc)
+        quantile = float(values["TrackCalibrationQuantile"])
+        if not 0 < quantile < 100:
+            raise ValueError(f"TrackCalibrationQuantile {quantile}: between 0 and 100")
         return TrackRidgeSettings(**base, mc_range=mc,
-                                  allowance_max=float(values["TrackAllowanceMax"]))
+                                  allowance_max=float(values["TrackAllowanceMax"]),
+                                  kept_quantile=quantile)
 
     def check(self, rate):
         """Refuse settings the reconstruction cannot run."""
@@ -493,8 +501,11 @@ def calibrate_track_drift(Z, settings, seed=1):
     in the background, at the start's loudest state, the best score after k
     slots is followed for `calibration_steps` slots. X is the
     `xdrop_percentile` of its largest drop within `xdrop_slots` slots, and b
-    the smallest drift of `calibration_grid` for which the median number of
-    slots kept before a drop of X is at most `calibration_kept`.
+    the smallest drift of `calibration_grid` for which the `kept_quantile`
+    percentile of the slots kept before a drop of X is at most
+    `calibration_kept`. A track's ends are where its alignment stops gaining,
+    so the higher that percentile, the less a track runs on into the noise
+    around a signal.
 
     :return: tuple -- (b, X).
     """
@@ -525,7 +536,7 @@ def calibrate_track_drift(Z, settings, seed=1):
         masked = np.where(np.arange(best.shape[1])[None, :] < stop[:, None], best, -np.inf)
         kept = np.argmax(masked, axis=1)
         result = (float(b), X)
-        if np.median(kept) <= settings.calibration_kept:
+        if np.percentile(kept, getattr(settings, "kept_quantile", 50.0)) <= settings.calibration_kept:
             break
     return result
 
