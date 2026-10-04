@@ -88,7 +88,7 @@ Reconstruction = "wavegram"     # stage 2: "wavegram" or "track"; "track" also m
 Coincidence = "wavegram"        # stage 3: "wavegram" or "track", the same as Reconstruction
 Scorer = "classic"              # stage 4: "classic" (NetworkRankColumn) or "gnn" (GNNModel, column gnn_logit)
 GNNModel = ""                   # path of a saved GNNCoincidenceScorer; required by Scorer = "gnn"
-NetworkRankColumn = "network_enwdf"  # candidate-table column the classic scorer ranks on; "track_statistic" on the track path
+NetworkRankColumn = "network_morphology"  # candidate-table column the classic scorer ranks on: coherent tile energy |tile_coherence|; "network_enwdf" = hypot of the two EnWDF; "track_statistic" on the track path
 NetworkComparisonBin = 2.0      # comparison map bin, in units of the network's longest light travel time; 0 = none
 NetworkSlides = 0               # time slides of the background (0 = no background, no FAR)
 NetworkSlideStep = 4.0          # step between two slides, s

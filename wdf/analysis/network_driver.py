@@ -26,7 +26,8 @@ Two paths, which do not mix (`wdf.config.Parameters.network_path`):
   is recorded as `TrackCoherenceMinUsed`.
 
 Stage 4 is "classic", the column `NetworkRankColumn` (default
-"network_enwdf" on the wavegram path, "track_statistic" on the track path),
+"network_morphology" on the wavegram path, "track_statistic" on the track
+path; "network_enwdf" and any other column of the table may be chosen),
 or "gnn", a
 `GNNCoincidenceScorer` loaded from `GNNModel` (column ``gnn_logit``). With
 `NetworkSlides` above zero the time-slide background is drawn
@@ -55,8 +56,13 @@ from wdf.config.Parameters import network_path
 DEFAULT_COMPARISON_BIN = 2.0
 #: Light travel time used for the comparison map of a single detector, s.
 SINGLE_DETECTOR_TRAVEL_S = 0.01
-#: Default ranking column of the classic scorer.
-DEFAULT_RANK_COLUMN = "network_enwdf"
+#: Default ranking column of the classic scorer on the wavegram path: the
+#: coherent energy of the two events' tiles (`network_morphology`, the
+#: absolute `tile_coherence`), the paper's deterministic ranking. It asks the
+#: two detectors to be loud in the same places of the plane, where
+#: `network_enwdf` (the quadrature sum of the two `EnWDF`) is large whenever
+#: one detector is loud, a single loud glitch included.
+DEFAULT_RANK_COLUMN = "network_morphology"
 #: Default ranking column of the track path.
 TRACK_RANK_COLUMN = "track_statistic"
 #: Default slide step, s, and number of slides (0: no background).
@@ -74,8 +80,8 @@ class NetworkSettings:
     :param scorer: `Scorer`, "classic" or "gnn".
     :param gnn_model: `GNNModel`, the saved scorer for "gnn".
     :param rank_column: `NetworkRankColumn`, the classic ranking column;
-        "network_enwdf" on the wavegram path, "track_statistic" on the track
-        path, when not given.
+        "network_morphology" on the wavegram path, "track_statistic" on the
+        track path, when not given.
     :param comparison_bin: `NetworkComparisonBin`, the comparison map's bin
         over the longest light travel time; 0 for no comparison map.
     :param slides: `NetworkSlides`, time slides of the background (0: none).

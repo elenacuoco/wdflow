@@ -5,6 +5,15 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The paper path ranks on `network_morphology` by default
+
+**Default change.** `NetworkRankColumn` defaults to `network_morphology`
+(the coherent energy of the two events' tiles, `|tile_coherence|`) on the
+wavegram path, and the three shipped configurations set it. `network_enwdf`
+(the quadrature sum of the two `EnWDF`), the previous default, remains
+selectable. The candidates and their columns are unchanged; only `rank`
+follows the new column.
+
 ### Two paths for stages 2 to 4: the paper path and the track path
 
 WDF runs in four stages: triggers, single-detector reconstruction

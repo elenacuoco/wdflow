@@ -72,7 +72,9 @@ def test_the_driver_reproduces_the_catalogue_paper_path():
     assert len(expected) >= 1
     pd.testing.assert_frame_equal(result.candidates.drop(columns=["rank"]), expected,
                                   check_exact=True)
-    assert (result.candidates["rank"] >= 1).all()
+    expected_rank = result.candidates.groupby("ifos_involved")["network_morphology"].rank(
+        ascending=False, method="min").astype(int)
+    assert (result.candidates["rank"] == expected_rank).all()
     for ifo in snap.DELAY:
         pd.testing.assert_frame_equal(result.events[ifo],
                                       frozen(f"paper_path_events_{ifo}.parquet"), check_exact=True)
@@ -138,3 +140,17 @@ def test_the_network_stream_holds_and_forgets():
     for ifo, t in triggers.items():
         short.add(ifo, t)
     assert all(len(t) < len(triggers[i]) for i, t in short.tables.items())
+
+
+def test_the_paper_path_ranks_on_the_morphology_by_default():
+    """`network_morphology` is the default rank column of the wavegram path;
+    `network_enwdf` stays selectable."""
+    from wdf.analysis.network_driver import NetworkSettings, _rank
+
+    assert NetworkSettings.from_parameters(Parameters()).rank_column == "network_morphology"
+    chosen = NetworkSettings.from_parameters(Parameters(NetworkRankColumn="network_enwdf"))
+    assert chosen.rank_column == "network_enwdf"
+    table = pd.DataFrame(dict(ifos_involved=["H1,L1"] * 3, network_morphology=[1.0, 3.0, 2.0],
+                              network_enwdf=[30.0, 10.0, 20.0]))
+    assert _rank(table, "network_morphology")["rank"].tolist() == [3, 1, 2]
+    assert _rank(table, "network_enwdf")["rank"].tolist() == [1, 3, 2]

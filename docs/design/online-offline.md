@@ -239,7 +239,7 @@ Two paths are available, and they do not mix: `Reconstruction` and
 | what stage 2 reads | the triggers with their coefficients | the worker's `TrackEvents` and `TrackWaveforms` |
 | stage 3 | `WavegramCoincidenceFinder` over `IndexedCoincidenceFinder`'s admitted pairs | `TrackCoincidenceFinder`: of the pairs `IndexedCoincidenceFinder` forms, those whose tracks are compatible and coherent at a physical lag |
 | edge features | `EDGE_FEATURES` | the classical columns and `TRACK_EDGE_FEATURES`: track compatibility, and the lag, coherence and phase of the complex cross-correlation of the waveforms |
-| ranking (classic) | `network_enwdf` | `track_statistic` |
+| ranking (classic) | `network_morphology` (`network_enwdf` selectable) | `track_statistic` |
 | `dt_s` | the difference of the events' instants | the coherence lag `track_lag_s` |
 | GNN | `cross_edge_dim = N_EDGE_FEATURES` | `cross_edge_dim = N_EDGE_FEATURES + len(TRACK_EDGE_FEATURES)`; a model must be fitted with it |
 | latency online | the stream's | the stream's plus `TrackHorizon` and the map's completion: `TrackLatency_s` |
@@ -391,7 +391,7 @@ waveform, so `TimeSlideFAR` runs on it.
 | `Coincidence` | "wavegram" | stage 3: the same as `Reconstruction` |
 | `Scorer` | "classic" | stage 4: "classic" or "gnn" |
 | `GNNModel` | none | saved `GNNCoincidenceScorer`, required by "gnn" |
-| `NetworkRankColumn` | "network_enwdf"; "track_statistic" on the track path | the column the classic scorer ranks on |
+| `NetworkRankColumn` | "network_morphology"; "track_statistic" on the track path | the column the classic scorer ranks on; "network_enwdf" selectable |
 | `NetworkComparisonBin` | 2.0 | comparison map bin over the longest light travel time; 0 for none |
 | `NetworkSlides` | 0 | time slides of the background |
 | `NetworkSlideStep` | 4.0 s | step between two slides |
