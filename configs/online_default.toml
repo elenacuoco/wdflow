@@ -35,8 +35,9 @@ BlockLength = 0                 # block rule's L, coefficients; 0 = round(ln win
 BlockLambda = 4.505             # block rule's lambda (calibrated for L about 7)
 BlockRemainder = "merge"        # a run's short remainder joins the block before it
 MinFrequency = 16.0             # coefficients whose tile lies at or below 16 Hz leave sigma, the block rule and EnWDF
-# Bases: Elena's 10 bases plus LocalCos128. To search with the previous 10 only, drop "LocalCos128" from the list.
-Bases = ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5", "LocalCos128"]  # LocalCos128 = 11th basis, Elena 4 Oct 2026; valid with the block rule only for window ≥ 128·L (1024 at L 7)
+# Bases: the 10 wavelet bases. LocalCos removed from the competition 4 Oct 2026; used as ridge/reconstruction map.
+# LocalCos64 (or LocalCos128, valid with the block rule only for window >= 128 L) can be added to the list as an 11th basis.
+Bases = ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]  # wavelet competition of each window
 GlitchLabelBases = ["Haar", "DaubC4"]  # a trigger won by one of these bases is labelled "glitch" (kept)
 
 # ---- causal ridge on the running wavegram of the window coefficients
