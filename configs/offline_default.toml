@@ -91,6 +91,27 @@ RidgeCalibrationGridMax = 3.0   # largest drift tried
 RidgeXDropSlots = 8             # span of the drop, slots
 RidgeXDropPercentile = 99.0     # noise percentile that sets X
 
+# ---- stages 2-4: reconstruction, coincidence, ranking (wdf.analysis.network_driver.run_network)
+# Two paths that do not mix: "wavegram" (detector graph and event wavegrams, WavegramCoincidenceFinder; the default)
+# and "track" (tracks seeded by the triggers through the ridge map, TrackCoincidenceFinder; needs Ridge = true).
+Reconstruction = "wavegram"     # stage 2: "wavegram" or "track"; "track" also makes the worker write TrackEvents/TrackWaveforms
+Coincidence = "wavegram"        # stage 3: "wavegram" or "track", the same as Reconstruction
+Scorer = "classic"              # stage 4: "classic" (NetworkRankColumn) or "gnn" (GNNModel, column gnn_logit)
+GNNModel = ""                   # path of a saved GNNCoincidenceScorer; required by Scorer = "gnn"
+NetworkRankColumn = "network_enwdf"  # candidate-table column the classic scorer ranks on
+NetworkComparisonBin = 2.0      # comparison map bin, in units of the network's longest light travel time; 0 = none
+NetworkSlides = 0               # time slides of the background (0 = no background, no FAR)
+NetworkSlideStep = 4.0          # step between two slides, s
+NetworkMemory = 64.0            # s of detector outputs NetworkStream holds online
+TrackLookback = 4.0             # track path: s of map searched before a seed's window
+TrackHorizon = 1.0              # track path: s of map after it; adds to the declared latency online (TrackLatency_s)
+TrackBasis = "LocalCos128"      # track path: waveform basis, LocalCos64 | LocalCos128 | CosinePackets<m> (best basis, segments from m samples)
+TrackSeedStates = 1             # track path: states either side of the seed's loudest tile the track must pass
+TrackPacketCost = "entropy"     # track path: cosine-packet best-basis cost, l1 | entropy | wdfUniversal | wdfBlock
+TrackTimingJitter = 0.0035      # track path: s added to the light travel time for the lag search and the f(t) comparison
+TrackFrequencyTolerance = 0.5   # track path: largest |d log2 f| between two compatible tracks, octaves
+TrackGraphBasis = "LocalCos64"  # track path with Scorer = "gnn": basis of the node maps drawn from the waveforms
+
 # ---- per detector
 [detectors.H1]
 ARorder = 3000                  # AR order, samples

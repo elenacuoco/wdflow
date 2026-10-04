@@ -155,3 +155,37 @@ def test_the_check_agrees_with_the_core(window, basis):
     except ValueError:
         ours = False
     assert ours == core
+
+
+TRACK = os.path.join(ROOT, "configs", "online_zerophase_track.toml")
+
+
+def test_the_track_configuration_is_the_zerophase_one_on_the_track_path():
+    zp, tr = load_config(CONFIGS["online_zerophase"], "H1"), load_config(TRACK, "H1")
+    a, b = vars(zp), vars(tr)
+    assert {k for k in set(a) | set(b) if a.get(k) != b.get(k)} == {
+        "ConfigFile", "SearchName", "run", "Reconstruction", "Coincidence", "RidgeBasis",
+        "TrackBasis"}
+    assert (tr.Reconstruction, tr.Coincidence, tr.RidgeBasis, tr.TrackBasis) == \
+        ("track", "track", "LocalCos64", "LocalCos64")
+    for key, line in assignments(TRACK):
+        assert "#" in line, f"{key} has no comment"
+        if key not in LAYOUT:
+            assert re.search(rf"[\"']{key}[\"']|\.{key}\b", SOURCE), f"nothing reads {key}"
+
+
+@pytest.mark.parametrize("name", sorted(CONFIGS))
+def test_the_shipped_configurations_select_the_paper_path(name):
+    from wdf.config.Parameters import network_path
+
+    assert network_path(load_config(CONFIGS[name], "H1")) == ("wavegram", "wavegram", "classic")
+
+
+def test_the_track_latency_at_2048_hz():
+    pytest.importorskip("py4tsa")
+    from wdf.processes.wdfUnitOnline import wdfUnitOnline
+
+    for ifo, expected in (("H1", 11.46875), ("V1", 19.46875)):
+        used = wdfUnitOnline(load_config(TRACK, ifo, sampling=4096, channel=f"{ifo}:X",
+                                         file="x.gwf")).par
+        assert used.TrackLatency_s == pytest.approx(expected)

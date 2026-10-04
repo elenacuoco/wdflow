@@ -1,0 +1,121 @@
+# Online zero-phase WDF search on the track path: configs/online_zerophase_default.toml with Reconstruction and
+# Coincidence = "track" and the ridge map and the track waveform in LocalCos64.
+# Stage 1 (the triggers) is that of online_zerophase_default.toml. Each trigger seeds a track through the ridge map,
+# from TrackLookback s before its window to TrackHorizon s after it; the worker writes the tracks (TrackEvents CSV) and
+# their waveforms (TrackWaveforms npz). wdf.analysis.network_driver.run_network then compares the detectors' tracks
+# (TrackCoincidenceFinder).
+# Declared latency of a track, recorded in parametersUsed and logged at start:
+#   TrackLatency_s = Latency_s + TrackHorizon + RidgeSlot + (RidgeWindow - RidgeOverlap / 2) / 2048
+#                  = 10 + 1 + 0.03125 + 0.4375 = 11.46875 s at 2048 Hz (V1: 19.46875 s).
+# LocalCos128 is the alternative for RidgeBasis and TrackBasis (62.5 ms x 8 Hz tiles instead of 31.25 ms x 16 Hz);
+# TrackBasis = "CosinePackets32" takes the cosine-packet best basis over each track's span.
+# Load with wdf.config.Parameters.load_config("configs/online_zerophase_track.toml", ifo="H1", file=..., ...).
+# Units: window, overlap, ARorder, ARWarmup and RidgeWindow/RidgeOverlap are in SAMPLES of the
+# decimated stream; durations are in seconds; frequencies in Hz.
+
+SearchName = "online_zerophase_track" # name in every output file, so that two searches never overwrite each other
+run = "online_zerophase_track"  # output subfolder under outdir
+outdir = "./wdf_output/"        # output root; override per run
+ResamplingFactor = 2            # decimation factor: 4096 Hz GWOSC strain -> 2048 Hz (use 8 for 16384 Hz)
+len = 1.0                       # read block, s: the latency granularity; the zero-phase band-pass costs ceil(padlen / block) blocks
+
+# ---- band-pass: Butterworth, zero phase, as offline
+BandPassFilter = "butterworth"  # high-pass and low-pass Butterworth cascade, no zeros inside the band
+BandPassPhase = "zero"          # forward-backward with real past and future (sosfiltfilt), its settling counted in Latency_s; "causal" = no band-pass read-ahead
+LowFrequencyCut = 8.0           # high-pass corner, Hz
+HighPassOrder = 4               # high-pass order
+LowPassCornerFraction = 0.87890625  # low-pass corner as a fraction of the decimated Nyquist (900 Hz at 2048 Hz)
+AliasAttenuationDB = 50.0       # required |H|^2 attenuation at resampling - corner; sets the low-pass order (8 from 4096 Hz)
+
+# ---- zero-phase whitening, as offline, from an AR model fitted on the past only
+WhiteningMode = "zerophase"     # TruncatedWhitening with a fixed read-ahead; "causal" = the online prediction-error filter
+ZeroPhaseFilter = "truncated"   # TruncatedWhitening: the model's inverse ASD truncated to ZeroPhaseDuration (fixed support, fixed latency)
+ZeroPhaseDuration = 16.0        # truncation of the whitening filter, s; reads ahead half of it, 8 s; V1 overrides below
+HoldOutsideBand = false         # whiten the full band (the whitening also inverts the band-pass), as offline
+ARorder = 3000                  # autoregressive order, samples; V1 overrides below
+learn = 300                     # fit stretch, s, ending ARFitGap before the first sample the model whitens; V1 overrides below
+ARFitGap = 0.0                  # s between the fit stretch's end and the first sample the model whitens
+ARFitContext = 5.0              # band-pass settling read before the first fit stretch, s
+ARRefitInterval = 1800.0        # refit from the past every this many s (0 = never); not yet studied
+ARWarmup = 3000                 # unused by the zero-phase whitening (its past is the conditioned stream); kept at least ARorder
+
+# ---- the WDF search (no glitch subtraction, no gating: glitches are labelled, not removed)
+window = 1024                   # analysis window, samples (0.5 s at 2048 Hz)
+overlap = 256                   # overlap of consecutive windows, samples
+threshold = 5.0                 # EnWDF threshold of a window
+ThresholdRule = "block"         # rule for a window's coefficients: block (Cai), dohonojohnston or cuoco
+BlockLength = 0                 # block rule's L, coefficients; 0 = round(ln window) = 7 at 1024
+BlockLambda = 4.505             # block rule's lambda (calibrated for L about 7)
+BlockRemainder = "merge"        # a run's short remainder joins the block before it
+MinFrequency = 16.0             # coefficients whose tile lies at or below 16 Hz leave sigma, the block rule and EnWDF
+# Bases: the 10 wavelet bases. LocalCos removed from the competition 4 Oct 2026; used as ridge/reconstruction map.
+# LocalCos64 (or LocalCos128, valid with the block rule only for window >= 128 L) can be added to the list as an 11th basis.
+Bases = ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]  # wavelet competition of each window
+GlitchLabelBases = ["Haar", "DaubC4"]  # a trigger won by one of these bases is labelled "glitch" (kept)
+
+# ---- causal ridge on the running wavegram of the window coefficients, run on the zero-phase whitened stream
+Ridge = true                    # streaming ridge, past only
+RidgeBasis = "LocalCos64"       # dense window coefficients of the map: 31.25 ms x 16 Hz tiles at 2048 Hz; LocalCos128 = 62.5 ms x 8 Hz
+RidgeWindow = 1024              # map window, samples
+RidgeOverlap = 256              # map overlap, samples; each window's central 768 samples are used
+RidgeDechirpAlphas = []         # dechirped local cosine sweeps, Hz/s; empty = none (not in the default)
+RidgeSlot = 0.03125             # slot, s (1/32 s)
+RidgeOctaveStep = 0.25          # state width, octaves
+RidgeLowFrequency = 16.0        # lowest state edge, Hz
+RidgeBackground = 256.0         # rolling background strictly behind the current slot, s
+RidgeBackgroundUpdate = 8.0     # background update period, s
+RidgeBackgroundMinimum = 64.0   # past background needed before a slot is scored, s
+RidgeBackgroundClip = 5.0       # background sigma clipping, standard deviations
+RidgeBackgroundIterations = 3   # clipping iterations
+RidgeLambda = 0.502             # penalty per octave beyond the allowance: 1 / (2.262 - 0.27), ridge v2
+RidgeAllowance = 0.27           # free move per slot, octaves (fastest inspiral sweep, IMRPhenomD Mc 1-30)
+RidgeDrift = "calibrate"        # per-cell drift b: calibrated once on the past background
+RidgeXDrop = "calibrate"        # episode X-drop: calibrated with b
+RidgeThreshold = 0.0            # smallest candidate score emitted; no false-alarm calibration exists yet
+RidgeMaxSlots = 512             # longest path, slots (16 s): bounds the ring buffers
+RidgeWaveformStates = 1         # states added on each side of the path for its waveform
+RidgeCalibrationSeeds = 2000    # random starts of the drift calibration
+RidgeCalibrationSteps = 64      # slots each start is followed
+RidgeCalibrationKept = 2.0      # largest median extension into noise, slots
+RidgeCalibrationGridStep = 0.05  # step of the drifts tried, from 0
+RidgeCalibrationGridMax = 3.0   # largest drift tried
+RidgeXDropSlots = 8             # span of the drop, slots
+RidgeXDropPercentile = 99.0     # noise percentile that sets X
+
+# ---- stages 2-4: reconstruction, coincidence, ranking (wdf.analysis.network_driver.run_network)
+# Two paths that do not mix: "wavegram" (detector graph and event wavegrams, WavegramCoincidenceFinder; the default)
+# and "track" (tracks seeded by the triggers through the ridge map, TrackCoincidenceFinder; needs Ridge = true).
+Reconstruction = "track"        # stage 2: "wavegram" or "track"; "track" also makes the worker write TrackEvents/TrackWaveforms
+Coincidence = "track"           # stage 3: "wavegram" or "track", the same as Reconstruction
+Scorer = "classic"              # stage 4: "classic" (NetworkRankColumn) or "gnn" (GNNModel, column gnn_logit)
+GNNModel = ""                   # path of a saved GNNCoincidenceScorer; required by Scorer = "gnn"
+NetworkRankColumn = "network_enwdf"  # candidate-table column the classic scorer ranks on
+NetworkComparisonBin = 2.0      # comparison map bin, in units of the network's longest light travel time; 0 = none
+NetworkSlides = 0               # time slides of the background (0 = no background, no FAR)
+NetworkSlideStep = 4.0          # step between two slides, s
+NetworkMemory = 64.0            # s of detector outputs NetworkStream holds online
+TrackLookback = 4.0             # track path: s of map searched before a seed's window
+TrackHorizon = 1.0              # track path: s of map after it; adds to the declared latency online (TrackLatency_s)
+TrackBasis = "LocalCos64"       # track path: waveform basis, LocalCos64 | LocalCos128 | CosinePackets<m> (best basis, segments from m samples)
+TrackSeedStates = 1             # track path: states either side of the seed's loudest tile the track must pass
+TrackPacketCost = "entropy"     # track path: cosine-packet best-basis cost, l1 | entropy | wdfUniversal | wdfBlock
+TrackTimingJitter = 0.0035      # track path: s added to the light travel time for the lag search and the f(t) comparison
+TrackFrequencyTolerance = 0.5   # track path: largest |d log2 f| between two compatible tracks, octaves
+TrackGraphBasis = "LocalCos64"  # track path with Scorer = "gnn": basis of the node maps drawn from the waveforms
+
+# ---- per detector
+[detectors.H1]
+ARorder = 3000                  # AR order, samples
+ARWarmup = 3000                 # at least ARorder
+learn = 300                     # fit stretch, s
+
+[detectors.L1]
+ARorder = 3000                  # AR order, samples
+ARWarmup = 3000                 # at least ARorder
+learn = 300                     # fit stretch, s
+
+[detectors.V1]
+ARorder = 16000                 # V1 needs 16000 to resolve its lines
+ARWarmup = 16000                # at least ARorder
+learn = 600                     # fit stretch, s
+ZeroPhaseDuration = 32.0        # with 16 s V1's lines are not resolved; Latency_s 16 + 2 = 18 s
