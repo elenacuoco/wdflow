@@ -1,6 +1,8 @@
-"""The online search: causal from the frames to the triggers and the ridge.
+"""The online search: from the frames to the triggers and the ridge, causal or
+at a fixed latency.
 
-`wdfUnitOnline` never uses information from the future. Every output carries
+In its default `WhiteningMode`, "causal", `wdfUnitOnline` never uses
+information from the future. Every output carries
 the stream time at which it was emitted (`emitted_at`, the end of the data read
 so far) and its latency, the time between the end of the data it describes and
 that emission; altering the input after a time t changes no output emitted at
@@ -37,6 +39,31 @@ Outputs go to ``<outdir>/<run>/<itf>/<channel>_<gpsStart>/``, every file
 named with `SearchName` (default "online"): the triggers (Parquet), their
 labels and latencies, the ridge candidates, the running best, the model refits,
 and the parameters used.
+
+**`WhiteningMode` "zerophase": the online search with the offline whitening
+and a fixed, declared latency.** `WhiteningMode` "causal" (the default) is the
+chain above. "zerophase" replaces step 2 by the offline whitening,
+`TruncatedWhitening` of `ZeroPhaseDuration` seconds (`ZeroPhaseFilter`
+"truncated", `HoldOutsideBand` as offline), built on the same autoregressive
+model fitted on the past only, and allows `BandPassPhase` "zero" (its default
+in this mode: the offline band-pass, `BandPassDownSampling.Process`) or
+"causal". The search is then no longer causal but reads ahead by a fixed
+latency ``Latency_s = BandPassLookahead_s + WhiteningLookahead_s``:
+
+- `WhiteningLookahead_s`, the filter's half-support ``K / resampling`` with
+  ``K = round(ZeroPhaseDuration * resampling / 2)`` (8 s at 16 s);
+- `BandPassLookahead_s`, zero for the causal band-pass, and for the zero-phase
+  one the read blocks it holds a block for until its settling `padlen` has
+  been read, ``ceil(padlen / (len * sampling)) * len``.
+
+The whitened stream at every read is complete up to ``now - Latency_s``: the
+stream time `emitted_at` of every output is its `data_time` plus `Latency_s`,
+and both are written. Altering the input after a time t changes no output whose
+`data_time` is at or before ``t - Latency_s`` (tested). A model fitted when
+the conditioned stream reaches S (on `learn` s ending ``S - ARFitGap``, as in
+the causal mode) whitens the samples from S on, and the search's sigma follows
+it from S. Glitches are labelled and kept, and the causal ridge runs on the
+whitened stream, as in the causal mode.
 """
 __author__ = "Elena Cuoco"
 __license__ = "GPL"
@@ -52,6 +79,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.signal import lfilter
 
+import math
+
 from wdf.analysis.io import parameters_file_name, search_suffix
 from wdf.config.Parameters import Parameters, low_frequency_cut, window_schedule
 from wdf.observers.observer import Observer
@@ -64,6 +93,15 @@ DEFAULT_GLITCH_LABEL_BASES = ("Haar", "DaubC4")
 DEFAULT_SEARCH_NAME = "online"
 #: Default seconds of band-pass settling read before the fit stretch.
 DEFAULT_FIT_CONTEXT_S = 20.0
+#: The whitenings the online worker runs (`WhiteningMode`): "causal", the
+#: prediction-error filter, no read-ahead; "zerophase", the offline zero-phase
+#: whitening, with a fixed read-ahead `Latency_s`.
+WHITENING_MODES = ("causal", "zerophase")
+#: Default `SearchName` in the "zerophase" mode.
+DEFAULT_ZEROPHASE_SEARCH_NAME = "online_zerophase"
+#: Zero-phase filters the "zerophase" mode runs: those of fixed support, so
+#: that the latency is fixed.
+ONLINE_ZERO_PHASE_FILTERS = ("truncated",)
 
 
 # ================================================================ data sources
@@ -183,6 +221,46 @@ class CausalPredictionError:
         return out
 
 
+class LookaheadWhitening:
+    """The offline zero-phase whitening of one model, applied from a time on.
+
+    The taps are those `TruncatedWhitening` builds (`truncated_taps`), ``2 K +
+    1`` symmetric with lag zero at ``K``; a whitened sample is their
+    convolution with the conditioned stream ``K`` samples on each side of it,
+    as the offline worker computes it, so it needs ``K`` samples of future.
+
+    :type ar: numpy.ndarray
+    :param ar: the model, scale in ``[0]``, coefficients in ``[1:]``.
+    :type duration: float
+    :param duration: `ZeroPhaseDuration`, s.
+    :type rate: float
+    :param rate: sampling rate of the conditioned stream, Hz.
+    :type start: float
+    :param start: GPS time of the first sample it whitens.
+    :type held: dict
+    :param held: ``band`` and ``blend`` with `HoldOutsideBand`, else empty.
+    """
+
+    def __init__(self, ar, duration, rate, start, held):
+        from wdf.processes.zero_phase_whitening import TruncatedWhitening
+
+        filt = TruncatedWhitening(np.asarray(ar, dtype=float), 1, 0, duration=float(duration),
+                                  sampling=float(rate), **held)
+        self.taps, self.support, self.sigma = filt.taps, int(filt.support), float(filt.sigma)
+        self.start = float(start)
+
+    def apply(self, stream, a, b):
+        """The whitened samples ``[a, b)`` of `stream` (indices), which must
+        hold ``K`` samples on each side."""
+        from scipy.signal import fftconvolve
+
+        k = self.support
+        if a - k < 0 or b + k > stream.size:
+            raise ValueError(f"whitening samples {a}-{b} needs {k} on each side of a stream "
+                             f"of {stream.size}")
+        return fftconvolve(stream[a - k:b + k], self.taps, mode="valid")
+
+
 # ================================================================ outputs
 @dataclass
 class OnlineResult:
@@ -198,6 +276,9 @@ class OnlineResult:
     :param refits: one dict per model fit: ``emitted_at``, ``fit_start``,
         ``fit_end``, ``sigma``.
     :param parameters: the parameters used.
+
+    In the "zerophase" mode every row also holds ``data_time``,
+    ``emitted_at - Latency_s``: the end of the whitened stream at emission.
     """
 
     triggers: list = field(default_factory=list)
@@ -241,12 +322,15 @@ class _TriggerLog(Observer):
                    latency=now - (row["gps"] + self.duration),
                    label="glitch" if row["wave"] in self.label_bases else "candidate",
                    search=self.par.SearchName)
+        if self.worker.latency is not None:
+            row["data_time"] = now - self.worker.latency
         self.worker.result.triggers.append(row)
 
 
 # ================================================================ the worker
 class wdfUnitOnline:
-    """The causal search of one detector's stream.
+    """The streaming search of one detector: causal, or with `WhiteningMode`
+    "zerophase" the offline whitening at the fixed latency `Latency_s`.
 
     :type parameters: wdf.config.Parameters.Parameters
     :param parameters: the run configuration (`configs/online_default.toml`
@@ -258,12 +342,18 @@ class wdfUnitOnline:
         self.par.copy(parameters)
         par = self.par
         par.resampling = par.sampling / par.ResamplingFactor
-        phase = str(getattr(par, "BandPassPhase", None) or "causal").lower()
-        if phase != "causal":
+        mode = str(getattr(par, "WhiteningMode", None) or "causal").lower()
+        if mode not in WHITENING_MODES:
+            raise ValueError(f"WhiteningMode {mode!r}: use one of {WHITENING_MODES}")
+        self.mode = mode
+        phase = str(getattr(par, "BandPassPhase", None)
+                    or ("causal" if mode == "causal" else "zero")).lower()
+        if mode == "causal" and phase != "causal":
             raise ValueError(f"the online worker runs the causal band-pass; BandPassPhase is {phase!r}")
         par.BandPassPhase = phase
         par.LowFrequencyCut = low_frequency_cut(par)
-        par.SearchName = getattr(par, "SearchName", None) or DEFAULT_SEARCH_NAME
+        default_name = DEFAULT_SEARCH_NAME if mode == "causal" else DEFAULT_ZEROPHASE_SEARCH_NAME
+        par.SearchName = getattr(par, "SearchName", None) or default_name
         search_suffix(par)
         self.schedule = window_schedule(par)
         par.Ncoeff = max(w for w, _ in self.schedule)
@@ -279,6 +369,53 @@ class wdfUnitOnline:
                              f"{par.ARorder}: the filter's state would not be set by real data")
         self.now = None
         self.result = None
+        #: The fixed read-ahead, s; None in the causal mode, which has none.
+        self.latency = None
+        if mode == "zerophase":
+            self._declare_latency()
+
+    def _declare_latency(self):
+        """Set the "zerophase" mode's parameters and its latency, and log it.
+
+        :raises ValueError: for a zero-phase filter whose support is not fixed,
+            or a fit stretch shorter than the filter's past.
+        """
+        from wdf.processes.BandPassDownSampling import BAND_PASS_PHASES, BandPassDownSampling
+        from wdf.processes.zero_phase_whitening import DEFAULT_TRUNCATION_S
+
+        par = self.par
+        par.WhiteningMode = self.mode
+        if par.BandPassPhase not in BAND_PASS_PHASES:
+            raise ValueError(f"BandPassPhase {par.BandPassPhase!r}: use one of {BAND_PASS_PHASES}")
+        name = str(getattr(par, "ZeroPhaseFilter", None) or "truncated").lower()
+        if name not in ONLINE_ZERO_PHASE_FILTERS:
+            raise ValueError(f"WhiteningMode 'zerophase' runs a filter of fixed support, so of "
+                             f"fixed latency: ZeroPhaseFilter {name!r}, use one of "
+                             f"{ONLINE_ZERO_PHASE_FILTERS}")
+        par.ZeroPhaseFilter = name
+        par.ZeroPhaseDuration = float(getattr(par, "ZeroPhaseDuration", None) or DEFAULT_TRUNCATION_S)
+        par.HoldOutsideBand = bool(getattr(par, "HoldOutsideBand", False))
+        rate = float(par.resampling)
+        support = int(round(0.5 * par.ZeroPhaseDuration * rate))
+        par.ZeroPhaseLatency = support
+        par.WhiteningLookahead_s = support / rate
+        if par.learn + par.ARFitGap < par.WhiteningLookahead_s:
+            raise ValueError(f"learn + ARFitGap, {par.learn + par.ARFitGap} s, is shorter than the "
+                             f"whitening's past, {par.WhiteningLookahead_s} s: the first whitened "
+                             f"sample would reach before the band-pass settled")
+        if par.BandPassPhase == "zero":
+            ds = BandPassDownSampling(par)
+            block = int(round(float(par.len) * ds.sampling))
+            par.BandPassSettling = int(ds.padlen)
+            par.BandPassLookahead_s = math.ceil(ds.padlen / block) * float(par.len)
+        else:
+            par.BandPassLookahead_s = 0.0
+        par.Latency_s = par.BandPassLookahead_s + par.WhiteningLookahead_s
+        self.latency = par.Latency_s
+        logging.info(f"online zerophase: declared latency {par.Latency_s:g} s = band-pass "
+                     f"{par.BandPassLookahead_s:g} s ({par.BandPassPhase} phase) + whitening "
+                     f"{par.WhiteningLookahead_s:g} s (TruncatedWhitening "
+                     f"{par.ZeroPhaseDuration:g} s, half-support {support} samples)")
 
     # ------------------------------------------------------------ helpers
     def _view(self, samples, start):
@@ -313,7 +450,12 @@ class wdfUnitOnline:
         return searches, writers
 
     def _fit(self, past, past_start, now):
-        """A model fitted on the past only and its filter, warmed up to `now`."""
+        """A model fitted on the past only and its filter, from `now` on.
+
+        In the causal mode `now` is the read time and the filter is warmed up
+        to it; in the "zerophase" mode it is the end of the conditioned stream,
+        and the filter whitens the samples from it on.
+        """
         par, rate = self.par, float(self.par.resampling)
         fit_end = now - par.ARFitGap
         fit_start = fit_end - par.learn
@@ -323,12 +465,37 @@ class wdfUnitOnline:
             raise ValueError(f"the past held from {past_start} does not cover the fit stretch "
                              f"{fit_start}-{fit_end}")
         ar = fit_autoregressive(past[a:b], fit_start, rate, par.ARorder)
-        warm = past[past.size - par.ARWarmup:]
-        self.result.refits.append(dict(emitted_at=now, fit_start=fit_start, fit_end=fit_end,
-                                       sigma=float(ar[0])))
-        logging.info(f"online: AR {par.ARorder} fitted on {fit_start:.1f}-{fit_end:.1f}, "
-                     f"sigma {ar[0]:.4g}")
-        return CausalPredictionError(ar, warm)
+        if self.mode == "causal":
+            warm = past[past.size - par.ARWarmup:]
+            self.result.refits.append(dict(emitted_at=self.now, fit_start=fit_start,
+                                           fit_end=fit_end, sigma=float(ar[0])))
+            logging.info(f"online: AR {par.ARorder} fitted on {fit_start:.1f}-{fit_end:.1f}, "
+                         f"sigma {ar[0]:.4g}")
+            return CausalPredictionError(ar, warm)
+        filt = LookaheadWhitening(ar, par.ZeroPhaseDuration, rate, now, self._held)
+        self.result.refits.append(dict(emitted_at=self.now, fit_start=fit_start, fit_end=fit_end,
+                                       sigma=filt.sigma, ar_sigma=float(ar[0]), whitens_from=now,
+                                       data_time=self.now - self.latency))
+        logging.info(f"online zerophase: AR {par.ARorder} fitted on {fit_start:.1f}-{fit_end:.1f}, "
+                     f"TruncatedWhitening {par.ZeroPhaseDuration:g} s from {now:.1f}, "
+                     f"sigma {filt.sigma:.4g}")
+        return filt
+
+    def _condition(self, ds, raw, t):
+        """The conditioned samples a read releases and the time of the first:
+        at once in the causal band-pass, one block late in the zero-phase one
+        (None while its future is arriving)."""
+        if ds.phase == "causal":
+            return ds.process_array(raw, t)
+        from wdf.processes.BandPassDownSampling import SV_to_array
+        from wdf.structures.array2SeqView import array2SeqView
+
+        view = array2SeqView(t, ds.sampling, len(raw))
+        view.Fill(t, np.asarray(raw, dtype=float))
+        out = ds.Process(view.SV)
+        if out is None:
+            return None, None
+        return SV_to_array(out) * out.GetScale(), float(out.GetStart())
 
     # ------------------------------------------------------------ the run
     def segmentProcess(self, segment, source=None):
@@ -354,14 +521,85 @@ class wdfUnitOnline:
         self._write(result)
         return result
 
+    def _start_search(self, origin, sigma):
+        """The searches and the ridge's state, from `origin` on."""
+        from wdf.analysis.ridge_tracking import CausalBackground, StreamingCells, StreamingRidge
+
+        par = self.par
+        par.AnalysisStart = origin
+        par.sigma = sigma
+        self._searches_on, self._writers = self._searches(sigma)
+        st = self._ridge_state
+        if par.Ridge:
+            rs = st["rs"]
+            st["cells"] = StreamingCells(rs, origin, float(par.resampling))
+            st["background"] = CausalBackground(rs)
+            st["zpast"] = deque(maxlen=rs.slots(rs.background_s))
+            if rs.drift is not None and rs.xdrop is not None:
+                st["ridge"] = StreamingRidge(rs, st["cells"].origin)
+
+    def _consume(self, w, w_start):
+        """Search a whitened chunk and run the ridge over it."""
+        from dataclasses import replace
+
+        from wdf.analysis.ridge_tracking import StreamingRidge, calibrate_drift, ridge_waveform
+
+        par, rate = self.par, float(self.par.resampling)
+        view = self._view(w, w_start)
+        for search in self._searches_on:
+            search.SetData(view)
+            search.Process()
+        if not par.Ridge:
+            return
+        st, running = self._ridge_state, self._running
+        rs, cells = st["rs"], st["cells"]
+        for row in cells.push(w):
+            k = len(running["slot_end"])
+            z = st["background"].update(row)
+            ridge = st["ridge"]
+            if ridge is None and np.all(np.isfinite(z)):
+                st["zpast"].append(z)
+                if len(st["zpast"]) >= rs.slots(rs.background_min_s):
+                    b, x = calibrate_drift(np.array(st["zpast"]), rs)
+                    rs = replace(rs, drift=rs.drift if rs.drift is not None else b,
+                                 xdrop=rs.xdrop if rs.xdrop is not None else x)
+                    st["rs"] = rs
+                    par.RidgeDriftUsed, par.RidgeXDropUsed = rs.drift, rs.xdrop
+                    par.RidgeCalibratedAt = self.now
+                    st["ridge"] = StreamingRidge(rs, cells.origin + (k + 1) * rs.slot_s)
+                score, state = np.nan, -1
+            elif ridge is not None:
+                for c in ridge.update(z, row):
+                    row_out = c.row()
+                    starts, coeffs, sigmas = cells.held()
+                    if starts.size and starts[0] <= c.t_start:
+                        _, _, energy = ridge_waveform(c, coeffs, sigmas, starts, rate,
+                                                      ridge.t0, rs)
+                    else:
+                        energy = float("nan")
+                    row_out.update(emitted_at=self.now, latency=self.now - c.t_end,
+                                   waveform_energy=energy, search=par.SearchName)
+                    if self.latency is not None:
+                        row_out["data_time"] = self.now - self.latency
+                    self.result.candidates.append(row_out)
+                best = int(np.argmax(ridge.H))
+                score, state = float(ridge.H[best]), best
+            else:
+                score, state = np.nan, -1
+            running["slot_end"].append(cells.origin + (k + 1) * rs.slot_s)
+            running["score"].append(score)
+            running["state"].append(state)
+            running["emitted_at"].append(self.now)
+            if self.latency is not None:
+                running["data_time"].append(self.now - self.latency)
+
     def process(self, source, gps_start, gps_end):
         """Run over ``[gps_start, gps_end)`` without writing, unless
         `segmentProcess` set an output folder.
 
         :return: OnlineResult
         """
-        from wdf.analysis.ridge_tracking import (CausalBackground, RidgeSettings, StreamingCells,
-                                                 StreamingRidge, calibrate_drift, ridge_waveform)
+        from wdf.analysis.ridge_tracking import RidgeSettings
         from wdf.processes.BandPassDownSampling import BandPassDownSampling
 
         par = self.par
@@ -378,18 +616,31 @@ class wdfUnitOnline:
         if par.ARFitContext * ds.sampling < ds.padlen:
             raise ValueError(f"ARFitContext {par.ARFitContext} s is shorter than the band-pass's "
                              f"settling, {ds.padlen / ds.sampling:.3f} s")
+        self._held = {}
+        if self.mode == "zerophase" and par.HoldOutsideBand:
+            from wdf.processes.wdfUnitDSWorker import DEFAULT_PASSBAND_LEVEL_DB
+            from wdf.processes.zero_phase_whitening import DEFAULT_BAND_BLEND_HZ
+
+            par.PassbandLevel = float(getattr(par, "PassbandLevel", DEFAULT_PASSBAND_LEVEL_DB))
+            par.BandEdgeBlend = float(getattr(par, "BandEdgeBlend", DEFAULT_BAND_BLEND_HZ))
+            band = ds.passband(par.PassbandLevel)
+            par.Passband = list(band)
+            self._held = dict(band=band, blend=par.BandEdgeBlend)
         block = float(par.len)
         t_read = gps_start - par.ARFitContext - par.learn - par.ARFitGap
         keep_s = par.learn + par.ARFitGap + par.ARWarmup / rate + block
-        ridge_on = par.Ridge
-        if ridge_on:
-            rs = RidgeSettings.from_parameters(par, rate)
+        if self.mode == "zerophase":
+            keep_s = max(keep_s, 2.0 * par.WhiteningLookahead_s + block) + block
+        self._ridge_state = dict(rs=RidgeSettings.from_parameters(par, rate) if par.Ridge else None,
+                                 cells=None, background=None, zpast=None, ridge=None)
+        self._searches_on, self._writers = [], []
+        self._running = dict(slot_end=[], score=[], state=[], emitted_at=[])
+        if self.mode == "zerophase":
+            self._running["data_time"] = []
         past, past_start = np.zeros(0), None
-        whitener, searches, writers = None, [], []
-        cells = background = ridge = None
+        whitener = None
+        filters, released, in_search = [], None, None
         next_refit = None
-        running = dict(slot_end=[], score=[], state=[], emitted_at=[])
-        zpast = None
         started = time.time()
         t = t_read
         while t < gps_end:
@@ -398,82 +649,75 @@ class wdfUnitOnline:
             except EOFError as error:
                 logging.warning(f"online: stopping at {t}: {error}")
                 break
-            y, y_start = ds.process_array(raw, t)
+            y, y_start = self._condition(ds, raw, t)
             t += block
             self.now = t
+            if y is None:
+                continue
             past_start = y_start if past_start is None else past_start
             past = np.concatenate([past, y])
             excess = past.size - int(round(keep_s * rate))
             if excess > 0:
                 past, past_start = past[excess:], past_start + excess / rate
-            if whitener is None:
-                if self.now < gps_start:
+            if self.mode == "causal":
+                if whitener is None:
+                    if self.now < gps_start:
+                        continue
+                    whitener = self._fit(past, past_start, self.now)
+                    self._start_search(self.now, whitener.sigma)
+                    next_refit = self.now + par.ARRefitInterval if par.ARRefitInterval > 0 else None
                     continue
-                whitener = self._fit(past, past_start, self.now)
-                par.AnalysisStart = self.now
-                par.sigma = whitener.sigma
-                searches, writers = self._searches(whitener.sigma)
-                next_refit = self.now + par.ARRefitInterval if par.ARRefitInterval > 0 else None
-                if ridge_on:
-                    cells = StreamingCells(rs, self.now, rate)
-                    background = CausalBackground(rs)
-                    zpast = deque(maxlen=rs.slots(rs.background_s))
-                    if rs.drift is not None and rs.xdrop is not None:
-                        ridge = StreamingRidge(rs, cells.origin)
+                w = whitener.process(y)
+                self._consume(w, y_start)
+                if next_refit is not None and self.now >= next_refit:
+                    whitener = self._fit(past, past_start, self.now)
+                    for search in self._searches_on:
+                        search.parameters.sigma = whitener.sigma
+                    next_refit += par.ARRefitInterval
                 continue
-            w = whitener.process(y)
-            view = self._view(w, y_start)
-            for search in searches:
-                search.SetData(view)
-                search.Process()
-            if ridge_on:
-                for row in cells.push(w):
-                    k = len(running["slot_end"])
-                    z = background.update(row)
-                    if ridge is None and np.all(np.isfinite(z)):
-                        zpast.append(z)
-                        if len(zpast) >= rs.slots(rs.background_min_s):
-                            b, x = calibrate_drift(np.array(zpast), rs)
-                            from dataclasses import replace
-                            rs = replace(rs, drift=rs.drift if rs.drift is not None else b,
-                                         xdrop=rs.xdrop if rs.xdrop is not None else x)
-                            par.RidgeDriftUsed, par.RidgeXDropUsed = rs.drift, rs.xdrop
-                            par.RidgeCalibratedAt = self.now
-                            ridge = StreamingRidge(rs, cells.origin + (k + 1) * rs.slot_s)
-                        score, state = np.nan, -1
-                    elif ridge is not None:
-                        for c in ridge.update(z, row):
-                            row_out = c.row()
-                            starts, coeffs, sigmas = cells.held()
-                            if starts.size and starts[0] <= c.t_start:
-                                _, _, energy = ridge_waveform(c, coeffs, sigmas, starts, rate,
-                                                              ridge.t0, rs)
-                            else:
-                                energy = float("nan")
-                            row_out.update(emitted_at=self.now, latency=self.now - c.t_end,
-                                           waveform_energy=energy, search=par.SearchName)
-                            self.result.candidates.append(row_out)
-                        best = int(np.argmax(ridge.H))
-                        score, state = float(ridge.H[best]), best
-                    else:
-                        score, state = np.nan, -1
-                    running["slot_end"].append(cells.origin + (k + 1) * rs.slot_s)
-                    running["score"].append(score)
-                    running["state"].append(state)
-                    running["emitted_at"].append(self.now)
-            if next_refit is not None and self.now >= next_refit:
-                whitener = self._fit(past, past_start, self.now)
-                for search in searches:
-                    search.parameters.sigma = whitener.sigma
+            # ---- "zerophase": the conditioned stream ends at `clock`, the
+            # whitened one at clock - WhiteningLookahead_s = now - Latency_s.
+            clock = y_start + y.size / rate
+            if abs((self.now - clock) - par.BandPassLookahead_s) > 0.5 / rate:
+                raise RuntimeError(f"the conditioned stream ends at {clock}, {self.now - clock} s "
+                                   f"behind the read, not BandPassLookahead_s "
+                                   f"{par.BandPassLookahead_s}")
+            if not filters:
+                if clock < gps_start:
+                    continue
+                filters.append(self._fit(past, past_start, clock))
+                released, in_search = clock, filters[0]
+                self._start_search(clock, filters[0].sigma)
+                next_refit = clock + par.ARRefitInterval if par.ARRefitInterval > 0 else None
+                continue
+            ready = clock - par.WhiteningLookahead_s
+            while ready - released > 0.5 / rate:
+                active = [f for f in filters if f.start <= released + 0.5 / rate]
+                current = active[-1]
+                later = [f.start for f in filters if f.start > released + 0.5 / rate]
+                end = min([ready] + later)
+                a = int(round((released - past_start) * rate))
+                b = int(round((end - past_start) * rate))
+                if current is not in_search:
+                    for search in self._searches_on:
+                        search.parameters.sigma = current.sigma
+                    in_search = current
+                self._consume(current.apply(past, a, b), released)
+                released = past_start + b / rate
+            # keep only the filters still needed
+            while len(filters) > 1 and filters[1].start <= released + 0.5 / rate:
+                filters.pop(0)
+            if next_refit is not None and clock >= next_refit:
+                filters.append(self._fit(past, past_start, clock))
                 next_refit += par.ARRefitInterval
-        for writer in writers:
+        for writer in self._writers:
             writer.close()
         par.RefitCount = len(self.result.refits)
         par.ElapsedSeconds = time.time() - started
-        if ridge_on:
+        if par.Ridge:
             par.RidgeSettingsUsed = {k: (list(v) if isinstance(v, tuple) else v)
-                                     for k, v in rs.record().items()}
-        self.result.running = {k: np.asarray(v) for k, v in running.items()}
+                                     for k, v in self._ridge_state["rs"].record().items()}
+        self.result.running = {k: np.asarray(v) for k, v in self._running.items()}
         self.result.parameters = par
         return self.result
 

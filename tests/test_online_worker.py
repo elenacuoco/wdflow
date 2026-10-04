@@ -138,3 +138,116 @@ def test_the_online_worker_reads_frames_and_writes_named_files(tmp_outdir):
     used = Parameters()
     used.load(os.path.join(folder, "parametersUsed-Online-Searchonline.json"))
     assert used.BandPassPhase == "causal" and used.LowPassOrder > 8
+
+
+# ================================================================ WhiteningMode "zerophase"
+def zerophase(**kw):
+    return parameters(WhiteningMode="zerophase", ZeroPhaseDuration=16.0, **kw)
+
+
+@pytest.fixture(scope="module")
+def zrun():
+    worker = wdfUnitOnline(zerophase())
+    return worker.process(ArraySource(strain(), T0, FS), T0 + 26.0, T0 + SECONDS)
+
+
+def test_the_zerophase_latency_is_declared(zrun):
+    """K = the zero-phase band-pass's blocks + the whitening's half-support,
+    recorded with the parameters."""
+    par = zrun.parameters
+    assert par.WhiteningMode == "zerophase" and par.BandPassPhase == "zero"
+    assert par.WhiteningLookahead_s == 8.0 and par.ZeroPhaseLatency == 16384
+    assert par.BandPassLookahead_s == np.ceil(par.BandPassSettling / 4096.0) * 1.0
+    assert par.Latency_s == par.BandPassLookahead_s + par.WhiteningLookahead_s
+    causal_bp = wdfUnitOnline(zerophase(BandPassPhase="causal")).par
+    assert causal_bp.BandPassLookahead_s == 0.0 and causal_bp.Latency_s == 8.0
+
+
+def test_altering_the_input_after_t_changes_nothing_before_t_minus_the_latency(zrun):
+    """Bounded lookahead: altering the input after t leaves every output whose
+    data time is at or before t - K as it was; the triggers also by the end of
+    their window."""
+    K = zrun.parameters.Latency_s
+    t = T0 + 120.0
+    x = strain()
+    i = int(round((t - T0) * FS))
+    x[i:] = np.random.default_rng(9).standard_normal(x.size - i) * 3.0
+    altered = wdfUnitOnline(zerophase()).process(ArraySource(x, T0, FS), T0 + 26.0, T0 + SECONDS)
+    before, after = zrun.before(t), altered.before(t)
+    assert before == after
+    assert all(r["data_time"] <= t - K for r in before["triggers"] + before["candidates"])
+    assert before["triggers"] and before["refits"] and len(before["running"]["score"]) > 100
+    ended = [r for r in zrun.triggers if r["window_end"] <= t - K]
+    assert ended and ended == [r for r in altered.triggers if r["window_end"] <= t - K]
+    assert zrun.before(T0 + SECONDS) != altered.before(T0 + SECONDS)
+
+
+def test_every_zerophase_output_is_its_data_time_plus_the_latency(zrun):
+    K = zrun.parameters.Latency_s
+    assert zrun.triggers
+    for row in zrun.triggers:
+        assert row["emitted_at"] == pytest.approx(row["data_time"] + K)
+        assert K <= row["latency"] <= K + 1.0
+        assert row["window_end"] <= row["data_time"]
+    for row in zrun.candidates:
+        assert row["emitted_at"] == pytest.approx(row["data_time"] + K)
+        assert row["t_end"] <= row["data_time"]
+    np.testing.assert_allclose(zrun.running["emitted_at"] - zrun.running["data_time"], K)
+    assert np.all(zrun.running["slot_end"] <= zrun.running["data_time"])
+    for refit in zrun.refits:
+        assert refit["fit_end"] <= refit["whitens_from"] <= refit["emitted_at"]
+
+
+def test_the_zerophase_model_is_refitted_from_the_past(zrun):
+    starts = [r["whitens_from"] for r in zrun.refits]
+    assert len(starts) >= 4
+    np.testing.assert_allclose(np.diff(starts), 30.0)
+
+
+def test_the_zerophase_ridge_follows_the_chirp(zrun):
+    on = [c for c in zrun.candidates
+          if c["t_start"] < T0 + CHIRP_AT + CHIRP_S and c["t_end"] > T0 + CHIRP_AT]
+    best = max(zrun.candidates, key=lambda c: c["score"])
+    assert on and best in on and best["waveform_energy"] > 0.0
+
+
+def test_the_zerophase_whitening_is_the_offline_filter():
+    """`LookaheadWhitening` gives what the offline worker's streamed
+    `TruncatedWhitening` gives, sample for sample."""
+    from wdf.processes.BandPassDownSampling import SV_to_array
+    from wdf.processes.wdfUnitOnline import LookaheadWhitening
+    from wdf.processes.zero_phase_whitening import TruncatedWhitening
+    from wdf.structures.array2SeqView import array2SeqView
+
+    rate, order, duration = 2048.0, 40, 4.0
+    rng = np.random.default_rng(4)
+    x = np.convolve(rng.standard_normal(int(40 * rate)), [1.0, 0.8, 0.3], "same")
+    ar = fit_autoregressive(x[:int(10 * rate)], 0.0, rate, order)
+    ours = LookaheadWhitening(ar, duration, rate, 0.0, {})
+    k = ours.support
+    n = int(rate)
+    offline = TruncatedWhitening(ar, n, k, duration=duration, sampling=rate)
+    assert offline.support == k
+    got = []
+    from py4tsa.tsa import SeqView_double_t as SV
+    for b in range(30):
+        chunk = array2SeqView(b, rate, n)
+        chunk.Fill(float(b), x[b * n:(b + 1) * n])
+        offline.Input(chunk.SV)
+        while offline.DataNeeded() >= 0:
+            view = SV()
+            offline.Output(view)
+            got.append(SV_to_array(view))
+    theirs = np.concatenate(got)[k:]  # the first K samples are the offline warm-up
+    mine = ours.apply(x, k, k + theirs.size)
+    np.testing.assert_allclose(mine, theirs, rtol=0, atol=1e-9 * np.std(theirs))
+    assert ours.sigma == pytest.approx(offline.sigma)
+
+
+def test_the_zerophase_mode_refuses_what_has_no_fixed_latency():
+    with pytest.raises(ValueError, match="fixed"):
+        wdfUnitOnline(zerophase(ZeroPhaseFilter="magnitude"))
+    with pytest.raises(ValueError, match="WhiteningMode"):
+        wdfUnitOnline(parameters(WhiteningMode="acausal"))
+    with pytest.raises(ValueError, match="learn"):
+        wdfUnitOnline(zerophase(learn=5))
