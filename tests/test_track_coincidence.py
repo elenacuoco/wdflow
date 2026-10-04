@@ -14,6 +14,8 @@ from wdf.analysis.track_reconstruction import TrackSettings, reconstruct
 
 FS, T0, SECONDS = 2048.0, 1.0e9, 128
 CHIRP_AT, CHIRP_S, SNR = 80.0, 3.0, 40.0
+#: Start of the short sweep of the merger tests, s.
+MERGER_AT = 60.0
 #: H1 - L1 arrival difference of the planted chirp, s.
 LAG = -0.0073
 
@@ -184,11 +186,6 @@ STEP = 8.0
 SLIDES = 30
 
 
-#: A minimum common duration of one slot, so that slid noise tracks (about
-#: 0.1 s long) can pass admission (a).
-ONE_SLOT = 0.03125
-
-
 @pytest.mark.parametrize("percentile", [90.0, 99.0])
 def test_the_calibration_is_the_stated_percentile_of_slid_noise(noise, percentile):
     """The threshold is the percentile of |Gamma| over the slid pairs passing
@@ -198,14 +195,13 @@ def test_the_calibration_is_the_stated_percentile_of_slid_noise(noise, percentil
 
     events, waveforms = noise
     settings = TrackCoincidenceSettings(percentile=percentile, calibration_slides=SLIDES,
-                                        calibration_minimum=20, min_common_s=ONE_SLOT)
+                                        calibration_minimum=20)
     bounds = {i: (T0, T0 + NOISE_SECONDS) for i in events}
     value, record = calibrate_coherence_min(events, waveforms, FS, settings, bounds, STEP)
     assert record["population"] == "tracks" and record["pairs"] >= 20
     assert record["slides"] == SLIDES and record["percentile"] == percentile
     open_finder = TrackCoincidenceFinder(IndexedCoincidenceFinder(), events, waveforms, FS,
-                                         TrackCoincidenceSettings(min_common_s=ONE_SLOT),
-                                         gate="tracks")
+                                         TrackCoincidenceSettings(), gate="tracks")
     again = TimeSlideFAR(open_finder, FARConfig(n_slides=SLIDES, min_shift_s=STEP, seed=1))
     same = again.background_distribution(events, bounds)["track_coherence"].to_numpy(float)
     assert value == pytest.approx(np.percentile(same[np.isfinite(same)], percentile))
@@ -216,12 +212,13 @@ def test_the_calibration_is_the_stated_percentile_of_slid_noise(noise, percentil
 
 
 def test_with_too_few_compatible_noise_pairs_the_calibration_says_so(noise):
-    """At the default TrackMinCommonDuration no slid noise pair is compatible:
-    the calibration falls back to every slid pair and records it."""
+    """With an admission no slid noise pair passes (an absolute floor of 1 s,
+    longer than the noise tracks), the calibration falls back to every slid
+    pair and records it."""
     from wdf.analysis.track_coincidence import calibrate_coherence_min
 
     events, waveforms = noise
-    settings = TrackCoincidenceSettings(calibration_slides=SLIDES)
+    settings = TrackCoincidenceSettings(calibration_slides=SLIDES, min_common_s=1.0)
     bounds = {i: (T0, T0 + NOISE_SECONDS) for i in events}
     value, record = calibrate_coherence_min(events, waveforms, FS, settings, bounds, STEP)
     assert record["population"] == "classic" and record["pairs"] > 100
@@ -251,3 +248,62 @@ def test_a_gnn_reads_the_track_features_through_its_edge_width(detectors):
     assert {"gnn_logit", "track_coherence", "ifo_i", "cluster_j"} <= set(table.columns)
     with pytest.raises(ValueError, match="cross_edge_dim"):
         scored(N_EDGE_FEATURES)
+
+
+def merger(n, delay, at=MERGER_AT, seconds=0.2, f0=100.0, f1=300.0, snr=20.0):
+    """A short sweep, as a compact binary's merger: `seconds` long."""
+    t = np.arange(n) / FS - at - delay
+    inside = (t >= 0) & (t < seconds)
+    f = f0 + (f1 - f0) * np.clip(t, 0, seconds) / seconds
+    c = np.where(inside, np.sin(2 * np.pi * np.cumsum(f) / FS)
+                 * np.sin(np.pi * np.clip(t, 0, seconds) / seconds), 0.0)
+    return c * snr / np.sqrt(np.sum(c ** 2))
+
+
+def merger_pair(delay_l1, l1_signal=True):
+    n = int(SECONDS * FS)
+    ts = track_settings()
+    events, waveforms = {}, {}
+    for k, ifo in enumerate(("H1", "L1")):
+        x = np.random.default_rng(60 + k).standard_normal(n)
+        if ifo == "H1" or l1_signal:
+            x = x + merger(n, 0.0 if ifo == "H1" else delay_l1)
+        seeds = [trigger(MERGER_AT - 0.3, MERGER_AT + 0.1, 200.0)]
+        events[ifo], waveforms[ifo] = detector(ifo, x, seeds, ts)
+    return events, waveforms
+
+
+def test_a_short_merger_pair_is_admitted():
+    """Two tracks of a 0.2 s sweep share less than 0.25 s; the relative rule
+    admits them: more than half the shorter track and many cycles."""
+    events, waveforms = merger_pair(0.005)
+    for ev in events.values():
+        assert (ev["track_t_end"] - ev["track_t_start"]).max() < 0.5
+    table = finder((events, waveforms)).find(events)
+    assert len(table) == 1
+    row = table.iloc[0]
+    assert row["track_common_s"] < 0.25 and row["track_common_fraction"] >= 0.5
+    assert row["track_common_cycles"] >= 2.0
+    assert row["dt_s"] == pytest.approx(-0.005, abs=1e-3)
+
+
+def test_a_merger_against_noise_is_rejected():
+    events, waveforms = merger_pair(0.005, l1_signal=False)
+    assert finder((events, waveforms)).find(events).empty
+
+
+@pytest.mark.parametrize("h1_minus_l1", [0.0069, -0.0069])
+def test_the_lag_sign_is_first_minus_second_detector(h1_minus_l1):
+    """`dt_s` on the track path is t_H1 - t_L1 for ifos_involved "H1,L1", as
+    the classical difference of instants: positive when L1 leads, as at
+    GW150914."""
+    events, waveforms = build({"H1": lambda n: chirp(n, h1_minus_l1),
+                               "L1": lambda n: chirp(n, 0.0)})
+    row = on_chirp(finder((events, waveforms)).find(events)).iloc[0]
+    assert row["ifos_involved"] == "H1,L1"
+    assert row["dt_s"] == pytest.approx(h1_minus_l1, abs=1e-3)
+    one = pd.DataFrame(dict(ifo=["H1"], gpsPeak=[T0 + h1_minus_l1], gpsStart=[T0],
+                            duration=[0.1], freqMin=[50.0], freqMax=[100.0], EnWDF=[10.0]))
+    two = one.assign(ifo="L1", gpsPeak=T0)
+    edge = IndexedCoincidenceFinder().candidate_edge_array(one, two)
+    assert edge[0, 3] == pytest.approx(h1_minus_l1, abs=1e-6)

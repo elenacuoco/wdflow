@@ -17,7 +17,10 @@ described by `TRACK_EDGE_FEATURES`:
 
 A pair is **admitted** only when all three hold:
 
-(a) the tracks are compatible: ``track_common_s >= TrackMinCommonDuration``;
+(a) the tracks are compatible: the time their f(t) agree, `track_common_s`,
+    is at least `TrackMinCommonFraction` of the shorter track, holds at least
+    `TrackMinCommonCycles` cycles at the tracks' frequency there, and is at
+    least `TrackMinCommonDuration` (an absolute floor, 0 by default);
 (b) the coherence lag is physical: ``|track_lag_s| <=`` light travel time
     plus `TrackTimingJitter` (the search is wider, so a lag at its edge
     fails);
@@ -37,7 +40,10 @@ energy the two waveforms share at a physical lag, so a pair of loud,
 unrelated tracks scores low. The track path ranks on it; `network_enwdf`, the
 seed triggers' statistic, is kept as a column. `dt_s` is the coherence lag
 `track_lag_s`; the classical finder's difference of instants is
-`dt_instant_s`.
+`dt_instant_s`. Every lag has one sign: the first detector of `ifos_involved`
+minus the second, ``t_H1 - t_L1`` for "H1,L1", as the classical `dt_s`,
+`network_wavegram_match_dt` and `wdf.analysis.timing.arrival_time_difference`;
+it is positive when L1 leads, as at GW150914.
 
 A time slide (`TimeSlideFAR`) moves an event's times; the finder reads each
 event's displacement from its `gpsPeak` against the unslid events it was built
@@ -62,7 +68,8 @@ import numpy as np
 import pandas as pd
 
 #: The features a track pair adds to the classical ones.
-TRACK_EDGE_FEATURES = ["track_time_overlap", "track_common_s", "track_f_distance",
+TRACK_EDGE_FEATURES = ["track_time_overlap", "track_common_s", "track_common_fraction",
+                       "track_common_cycles", "track_f_distance",
                        "track_f_overlap", "track_compatible", "track_lag_s", "track_coherence",
                        "track_phase"]
 #: The track path's ranking column (`NetworkRankColumn` default).
@@ -82,8 +89,21 @@ class TrackCoincidenceSettings:
         f(t), octaves (`TrackFrequencyTolerance`).
     :param light_travel_time_s: overrides the pair's light travel time, s
         (`TrackLightTravelTime`); None reads it from the detectors.
-    :param min_common_s: least time the two f(t) agree within the
-        tolerance, s (`TrackMinCommonDuration`).
+    :param min_common_fraction: least fraction of the shorter track over
+        which the two f(t) agree within the tolerance
+        (`TrackMinCommonFraction`, default 0.5). The rule is relative because
+        a track is as long as its signal: a compact binary's merger lasts a
+        few tenths of a second, an inspiral seconds. Half the shorter track
+        asks the two detectors to see the same part of the signal, not
+        merely to touch.
+    :param min_common_cycles: least number of cycles at the tracks'
+        frequency over that time (`TrackMinCommonCycles`, default 2). The
+        coherence of two waveforms is measured on their cycles: over less
+        than about two, any two oscillations of similar frequency correlate,
+        so a shared span shorter than that says nothing about the phase.
+        2 cycles are 50 ms at 40 Hz and 10 ms at 200 Hz.
+    :param min_common_s: absolute floor on that time, s
+        (`TrackMinCommonDuration`, default 0: none).
     :param lag_search_s: half-width of the coherence's lag search, s
         (`TrackLagSearch`); at least the light travel time plus the jitter.
     :param coherence_min: least ``|Gamma|`` admitted (`TrackCoherenceMin`);
@@ -100,7 +120,9 @@ class TrackCoincidenceSettings:
     jitter_s: float = 0.0035
     frequency_tolerance: float = 0.5
     light_travel_time_s: float = None
-    min_common_s: float = 0.25
+    min_common_fraction: float = 0.5
+    min_common_cycles: float = 2.0
+    min_common_s: float = 0.0
     lag_search_s: float = 0.1
     coherence_min: float = None
     percentile: float = 99.0
@@ -109,6 +131,8 @@ class TrackCoincidenceSettings:
 
     KEYS = dict(jitter_s="TrackTimingJitter", frequency_tolerance="TrackFrequencyTolerance",
                 light_travel_time_s="TrackLightTravelTime",
+                min_common_fraction="TrackMinCommonFraction",
+                min_common_cycles="TrackMinCommonCycles",
                 min_common_s="TrackMinCommonDuration", lag_search_s="TrackLagSearch",
                 coherence_min="TrackCoherenceMin", percentile="TrackCoherencePercentile",
                 calibration_slides="TrackCalibrationSlides",
@@ -202,7 +226,8 @@ def waveform_coherence(first, second, fs, max_lag_s):
 
 
 def track_compatibility(left, right, displacement_left, displacement_right, window_s,
-                        tolerance, min_common_s=0.0):
+                        tolerance, min_common_s=0.0, min_common_fraction=0.0,
+                        min_common_cycles=0.0):
     """How two tracks agree in time and in f(t).
 
     :param left: an event row with `track_t_start`, `track_t_end`,
@@ -214,14 +239,18 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     :param window_s: light travel time plus jitter, s.
     :type tolerance: float
     :param tolerance: largest ``|d log2 f|``, octaves.
-    :type min_common_s: float
     :param min_common_s: least time the two f(t) agree within the tolerance.
+    :param min_common_fraction: least fraction of the shorter track it is.
+    :param min_common_cycles: least number of cycles it holds.
     :return: dict -- `track_time_overlap` (the shared span over the shorter
         track), `track_f_distance` (median ``|d log2 f|`` over it, octaves; the
         smallest over the shifts -window, 0, +window), `track_f_overlap` (the
         fraction of the shared slots within the tolerance), `track_common_s`
-        (the time they are within it: those slots times the slot) and
-        `track_compatible` (1 when ``track_common_s >= min_common_s``).
+        (the time they are within it: those slots times the slot),
+        `track_common_fraction` (that time over the shorter track's duration),
+        `track_common_cycles` (the cycles over it: the sum, over those slots,
+        of the slot times the left track's frequency) and `track_compatible`
+        (1 when the three minima are met).
     """
     s1 = float(left["track_t_start"]) + displacement_left
     e1 = float(left["track_t_end"]) + displacement_left
@@ -231,7 +260,7 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     shortest = max(min(e1 - s1, e2 - s2), 1e-12)
     out = dict(track_time_overlap=float(np.clip(shared / shortest, 0.0, 1.0)),
                track_f_distance=float("nan"), track_f_overlap=0.0, track_common_s=0.0,
-               track_compatible=0.0)
+               track_common_fraction=0.0, track_common_cycles=0.0, track_compatible=0.0)
     if shared <= 0:
         return out
     t1 = np.asarray(left["track_times"], dtype=float) + displacement_left
@@ -245,15 +274,20 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
             continue
         d = np.abs(f1[here] - np.interp(t1[here] - shift, t2, f2))
         if best is None or np.median(d) < np.median(best):
-            best = d
+            best, best_f = d, f1[here]
     if best is None:
         return out
     slot = float(np.median(np.diff(t1))) if t1.size > 1 else float(e1 - s1)
     out["track_f_distance"] = float(np.median(best))
     out["track_f_overlap"] = float(np.mean(best <= tolerance))
-    out["track_common_s"] = float(np.sum(best <= tolerance) * slot)
-    out["track_compatible"] = float(out["track_common_s"] >= min_common_s
-                                    and out["track_common_s"] > 0)
+    agree = best <= tolerance
+    common = float(np.sum(agree) * slot)
+    out["track_common_s"] = common
+    out["track_common_fraction"] = float(min(common / shortest, 1.0))
+    out["track_common_cycles"] = float(np.sum(2.0 ** best_f[agree]) * slot)
+    out["track_compatible"] = float(common > 0 and common >= min_common_s
+                                    and out["track_common_fraction"] >= min_common_fraction
+                                    and out["track_common_cycles"] >= min_common_cycles)
     return out
 
 
@@ -365,7 +399,8 @@ class TrackCoincidenceFinder:
         st = self.settings
         window = st.window(ifo_a, ifo_b)
         out = track_compatibility(row_a, row_b, da, db, window, st.frequency_tolerance,
-                                  st.min_common_s)
+                                  st.min_common_s, st.min_common_fraction,
+                                  st.min_common_cycles)
         wa = self.waveforms.get(ifo_a, {}).get(ca)
         wb = self.waveforms.get(ifo_b, {}).get(cb)
         if wa is None or wb is None:
