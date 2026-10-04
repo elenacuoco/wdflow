@@ -20,7 +20,14 @@ The chain, block by block of `len` seconds:
    the time it starts whitening, after `ARFitContext` seconds of band-pass
    settling; it is fitted again every `ARRefitInterval` seconds from the past
    only, and a new filter takes over after a warm-up on the last `ARWarmup`
-   samples (default `ARorder`), which sets its state exactly.
+   samples (default `ARorder`), which sets its state exactly. The stretch
+   is chosen from the past by a quality rule (`ARFitQuality`, on by
+   default): of `ARFitCandidates` stretches `ARFitStep` seconds apart, the
+   most recent whose whitened samples hold no census transient reaching
+   `GlitchTrigger` and, for a refit, whose power in each octave from
+   `GlitchCensusLow` through the current model stays within
+   `ARFitLevelRatio` of white; a refit with none keeps the current model,
+   the first fit takes the candidate of smallest census peak.
 3. **The search:** `wdf` at each window of the schedule, with `Bases`,
    `MinFrequency`, `ThresholdRule`, `BlockLength`, `BlockLambda` and
    `BlockRemainder` from the parameters. **No glitch subtraction and no
@@ -101,6 +108,13 @@ DEFAULT_FIT_CONTEXT_S = 20.0
 #: prediction-error filter, no read-ahead; "zerophase", the offline zero-phase
 #: whitening, with a fixed read-ahead `Latency_s`.
 WHITENING_MODES = ("causal", "zerophase")
+#: Default stretches of the past a fit may be taken on (`ARFitCandidates`).
+DEFAULT_FIT_CANDIDATES = 3
+#: Default spacing of those stretches, as a fraction of `learn` (`ARFitStep`).
+DEFAULT_FIT_STEP_FRACTION = 0.5
+#: Default largest octave power, through the current model, over white
+#: (and smallest, its inverse) of a refit's stretch (`ARFitLevelRatio`).
+DEFAULT_FIT_LEVEL_RATIO = 4.0
 #: Default `SearchName` in the "zerophase" mode.
 DEFAULT_ZEROPHASE_SEARCH_NAME = "online_zerophase"
 #: Zero-phase filters the "zerophase" mode runs: those of fixed support, so
@@ -400,6 +414,18 @@ class wdfUnitOnline:
         par.ARRefitInterval = float(getattr(par, "ARRefitInterval", None) or 0.0)
         warm = getattr(par, "ARWarmup", None)
         par.ARWarmup = int(par.ARorder if warm is None else warm)
+        par.ARFitQuality = bool(getattr(par, "ARFitQuality", True))
+        par.ARFitCandidates = int(getattr(par, "ARFitCandidates", None) or DEFAULT_FIT_CANDIDATES)
+        step = getattr(par, "ARFitStep", None)
+        par.ARFitStep = float(DEFAULT_FIT_STEP_FRACTION * par.learn if step is None else step)
+        par.ARFitLevelRatio = float(getattr(par, "ARFitLevelRatio", None) or DEFAULT_FIT_LEVEL_RATIO)
+        if par.ARFitCandidates < 1 or par.ARFitStep < 0 or par.ARFitLevelRatio <= 1:
+            raise ValueError("ARFitCandidates must be at least 1, ARFitStep not negative and "
+                             "ARFitLevelRatio above 1")
+        from wdf.processes.causal_census import CensusSettings as _Census
+
+        self._fit_census = _Census.from_parameters(par)
+        self._model = None
         if par.ARWarmup < par.ARorder:
             raise ValueError(f"ARWarmup {par.ARWarmup} samples is shorter than the model's order "
                              f"{par.ARorder}: the filter's state would not be set by real data")
@@ -528,13 +554,90 @@ class wdfUnitOnline:
         return searches, writers
 
     def _fit(self, past, past_start, now):
-        """A model fitted on the past only and its filter, from `now` on.
+        """A model fitted on the past only and its filter, from `now` on; None
+        when a refit finds no stretch of the past fit to fit on.
 
         In the causal mode `now` is the read time and the filter is warmed up
         to it; in the "zerophase" mode it is the end of the conditioned stream,
         and the filter whitens the samples from it on.
+
+        The stretch is chosen by `_choose_stretch`: the most recent of
+        `ARFitCandidates` stretches of `learn` seconds, `ARFitStep` apart,
+        ending `ARFitGap` before `now`, that passes the quality rule.
         """
         par, rate = self.par, float(self.par.resampling)
+        chosen = self._choose_stretch(past, past_start, now)
+        if chosen is None:
+            return None
+        fit_start, fit_end, ar, filt, quality = chosen
+        if self.mode == "causal":
+            warm = past[past.size - par.ARWarmup:]
+            self.result.refits.append(dict(emitted_at=self.now, fit_start=fit_start,
+                                           fit_end=fit_end, sigma=float(ar[0]), **quality))
+            logging.info(f"online: AR {par.ARorder} fitted on {fit_start:.1f}-{fit_end:.1f}, "
+                         f"sigma {ar[0]:.4g}")
+            filt = CausalPredictionError(ar, warm)
+        else:
+            self.result.refits.append(dict(emitted_at=self.now, fit_start=fit_start,
+                                           fit_end=fit_end, sigma=filt.sigma,
+                                           ar_sigma=float(ar[0]), whitens_from=now,
+                                           data_time=self.now - self.latency, **quality))
+            logging.info(f"online zerophase: AR {par.ARorder} fitted on {fit_start:.1f}-"
+                         f"{fit_end:.1f}, TruncatedWhitening {par.ZeroPhaseDuration:g} s from "
+                         f"{now:.1f}, sigma {filt.sigma:.4g}")
+        self._model = filt
+        return filt
+
+    def _filter_of(self, ar, now):
+        """The whitening filter of a model in this mode (no warm-up)."""
+        if self.mode == "causal":
+            return CausalPredictionError(ar, np.zeros(0))
+        return LookaheadWhitening(ar, self.par.ZeroPhaseDuration, float(self.par.resampling), now,
+                                  self._held)
+
+    @staticmethod
+    def _whitened_stretch(filt, x):
+        """A stretch of the conditioned stream through a filter, in units of
+        its scale, where the filter reached real data on every side."""
+        from scipy.signal import fftconvolve
+
+        if isinstance(filt, CausalPredictionError):
+            return lfilter(filt.taps, [1.0], x)[filt.taps.size - 1:] / filt.sigma
+        return fftconvolve(x, filt.taps, mode="valid") / filt.sigma
+
+    def _stretch_quality(self, w, start, current):
+        """The quality rule on a whitened stretch: its census (no transient
+        reaching `GlitchTrigger`) and, against the current model, its power
+        in each octave from `GlitchCensusLow` over that of white noise,
+        within ``[1 / ARFitLevelRatio, ARFitLevelRatio]``."""
+        from wdf.processes.census import band_stream, octave_bands
+        from wdf.processes.glitch_subtraction import glitch_seeds
+
+        par, rate, cs = self.par, float(self.par.resampling), self._fit_census
+        seeds = glitch_seeds(w, start, rate, **cs.seeds()) if w.size else []
+        peak = max((sd["peak"] for sd in seeds), default=0.0)
+        ratios = []
+        if current is not None and w.size:
+            nyquist = 0.5 * rate
+            for band in octave_bands(rate, cs.low):
+                y = band_stream(w, rate, band, cs.order)
+                ratios.append(float(np.mean(y ** 2)) / ((band[1] - band[0]) / nyquist))
+        lo = min(ratios) if ratios else float("nan")
+        hi = max(ratios) if ratios else float("nan")
+        level_ok = not ratios or (lo >= 1.0 / par.ARFitLevelRatio and hi <= par.ARFitLevelRatio)
+        return dict(census_peak=float(peak), census_transients=len(seeds), level_min=lo,
+                    level_max=hi, passed=bool(not seeds and level_ok))
+
+    def _first_stretch(self, past, past_start, now):
+        """The first model's stretch: the `learn` seconds ending `ARFitGap`
+        before `now`, judged by its own model's whitening. When it fails the
+        rule the search waits `ARFitStep` seconds and judges the stretch then
+        ending, up to `ARFitCandidates` stretches; then it takes the one of
+        smallest census peak. None while waiting."""
+        par, rate = self.par, float(self.par.resampling)
+        tried = self._first_tried
+        if tried and now < tried[-1][1] + par.ARFitGap + par.ARFitStep - 0.5 / rate:
+            return None
         fit_end = now - par.ARFitGap
         fit_start = fit_end - par.learn
         a = int(round((fit_start - past_start) * rate))
@@ -542,22 +645,87 @@ class wdfUnitOnline:
         if a < 0 or b > past.size:
             raise ValueError(f"the past held from {past_start} does not cover the fit stretch "
                              f"{fit_start}-{fit_end}")
-        ar = fit_autoregressive(past[a:b], fit_start, rate, par.ARorder)
-        if self.mode == "causal":
-            warm = past[past.size - par.ARWarmup:]
-            self.result.refits.append(dict(emitted_at=self.now, fit_start=fit_start,
-                                           fit_end=fit_end, sigma=float(ar[0])))
-            logging.info(f"online: AR {par.ARorder} fitted on {fit_start:.1f}-{fit_end:.1f}, "
-                         f"sigma {ar[0]:.4g}")
-            return CausalPredictionError(ar, warm)
-        filt = LookaheadWhitening(ar, par.ZeroPhaseDuration, rate, now, self._held)
-        self.result.refits.append(dict(emitted_at=self.now, fit_start=fit_start, fit_end=fit_end,
-                                       sigma=filt.sigma, ar_sigma=float(ar[0]), whitens_from=now,
-                                       data_time=self.now - self.latency))
-        logging.info(f"online zerophase: AR {par.ARorder} fitted on {fit_start:.1f}-{fit_end:.1f}, "
-                     f"TruncatedWhitening {par.ZeroPhaseDuration:g} s from {now:.1f}, "
-                     f"sigma {filt.sigma:.4g}")
-        return filt
+        x = past[a:b]
+        ar = fit_autoregressive(x, fit_start, rate, par.ARorder)
+        filt = self._filter_of(ar, now) if self.mode == "zerophase" else None
+        if not par.ARFitQuality:
+            return fit_start, fit_end, ar, filt, dict(candidate=0, accepted=True)
+        judge = filt or self._filter_of(ar, now)
+        w = self._whitened_stretch(judge, x)
+        offset = (x.size - w.size) / rate if self.mode == "causal" else 0.5 * (x.size - w.size) / rate
+        q = self._stretch_quality(w, fit_start + offset, None)
+        q.update(candidate=len(tried))
+        tried.append((fit_start, fit_end, ar, filt, q))
+        if q["passed"]:
+            q["accepted"] = True
+            return tried[-1]
+        if len(tried) < par.ARFitCandidates:
+            logging.warning(f"online: the fit stretch {fit_start:.1f}-{fit_end:.1f} holds a "
+                            f"transient (census peak {q['census_peak']:.1f}); the search waits "
+                            f"{par.ARFitStep:g} s for the next one")
+            return None
+        best = min(tried, key=lambda c: c[4]["census_peak"])
+        best[4]["accepted"] = True
+        logging.warning(f"online: no fit stretch passed the quality rule; the first model is "
+                        f"fitted on {best[0]:.1f}-{best[1]:.1f}, census peak "
+                        f"{best[4]['census_peak']:.1f}")
+        if best is not tried[-1] and self.mode == "zerophase":
+            best = best[:3] + (self._filter_of(best[2], now), best[4])
+        return best
+
+    def _choose_stretch(self, past, past_start, now):
+        """The stretch of the past a model is fitted on, the model and its
+        filter; None for a refit with no stretch passing the rule, which
+        keeps the current model.
+
+        With `ARFitQuality` (default True) each candidate is whitened, by the
+        current model for a refit and by its own for the first fit, and must
+        hold no census transient reaching `GlitchTrigger`; a refit's candidate
+        must also keep each octave's power, through the current model, within
+        `ARFitLevelRatio` of white. The first fit takes, when none passes, the
+        candidate of smallest census peak.
+
+        :return: tuple -- (fit_start, fit_end, model, filter or None, quality
+            record) or None.
+        """
+        par, rate = self.par, float(self.par.resampling)
+        current = self._model
+        if current is None:
+            return self._first_stretch(past, past_start, now)
+        tried = []
+        for j in range(par.ARFitCandidates):
+            fit_end = now - par.ARFitGap - j * par.ARFitStep
+            fit_start = fit_end - par.learn
+            a = int(round((fit_start - past_start) * rate))
+            b = int(round((fit_end - past_start) * rate))
+            if a < 0 or b > past.size:
+                if j == 0:
+                    raise ValueError(f"the past held from {past_start} does not cover the fit "
+                                     f"stretch {fit_start}-{fit_end}")
+                break
+            x = past[a:b]
+            ar = fit_autoregressive(x, fit_start, rate, par.ARorder)
+            filt = self._filter_of(ar, now) if self.mode == "zerophase" else None
+            if not par.ARFitQuality:
+                return fit_start, fit_end, ar, filt, dict(candidate=j, accepted=True)
+            judge = current if current is not None else (filt or self._filter_of(ar, now))
+            w = self._whitened_stretch(judge, x)
+            offset = (x.size - w.size) / rate if self.mode == "causal" else 0.5 * (x.size - w.size) / rate
+            q = self._stretch_quality(w, fit_start + offset, current)
+            q.update(candidate=j)
+            tried.append((fit_start, fit_end, ar, filt, q))
+            if q["passed"]:
+                q["accepted"] = True
+                return fit_start, fit_end, ar, filt, q
+        self.result.refits.append(dict(emitted_at=self.now, fit_start=float("nan"),
+                                       fit_end=float("nan"), sigma=float("nan"), accepted=False,
+                                       candidates=len(tried),
+                                       census_peak=min(t[4]["census_peak"] for t in tried),
+                                       **({"data_time": self.now - self.latency}
+                                          if self.latency is not None else {})))
+        logging.warning(f"online: no stretch of the past passed the quality rule at {now:.1f}; "
+                        "the current model is kept")
+        return None
 
     def _condition(self, ds, raw, t):
         """The conditioned samples a read releases and the time of the first:
@@ -724,6 +892,7 @@ class wdfUnitOnline:
             self.dir = None
         par.gps = getattr(par, "gps", None) or gps_start
         self.result = OnlineResult()
+        self._model, self._first_tried = None, []
         rate = float(par.resampling)
         ds = BandPassDownSampling(par)
         par.BandPassFilter, par.BandPassPassband = ds.family, list(ds.passband())
@@ -744,8 +913,9 @@ class wdfUnitOnline:
             par.Passband = list(band)
             self._held = dict(band=band, blend=par.BandEdgeBlend)
         block = float(par.len)
+        back = (par.ARFitCandidates - 1) * par.ARFitStep
         t_read = gps_start - par.ARFitContext - par.learn - par.ARFitGap
-        keep_s = par.learn + par.ARFitGap + par.ARWarmup / rate + block
+        keep_s = par.learn + par.ARFitGap + par.ARWarmup / rate + block + back
         if self.mode == "zerophase":
             keep_s = max(keep_s, 2.0 * par.WhiteningLookahead_s + block) + block
         self._ridge_state = dict(rs=RidgeSettings.from_parameters(par, rate) if par.Ridge else None,
@@ -782,15 +952,19 @@ class wdfUnitOnline:
                     if self.now < gps_start:
                         continue
                     whitener = self._fit(past, past_start, self.now)
+                    if whitener is None:
+                        continue
                     self._start_search(self.now, whitener.sigma)
                     next_refit = self.now + par.ARRefitInterval if par.ARRefitInterval > 0 else None
                     continue
                 w = whitener.process(y)
                 self._consume(w, y_start)
                 if next_refit is not None and self.now >= next_refit:
-                    whitener = self._fit(past, past_start, self.now)
-                    for search in self._searches_on:
-                        search.parameters.sigma = whitener.sigma
+                    refit = self._fit(past, past_start, self.now)
+                    if refit is not None:
+                        whitener = refit
+                        for search in self._searches_on:
+                            search.parameters.sigma = whitener.sigma
                     next_refit += par.ARRefitInterval
                 continue
             # ---- "zerophase": the conditioned stream ends at `clock`, the
@@ -803,7 +977,10 @@ class wdfUnitOnline:
             if not filters:
                 if clock < gps_start:
                     continue
-                filters.append(self._fit(past, past_start, clock))
+                first = self._fit(past, past_start, clock)
+                if first is None:
+                    continue
+                filters.append(first)
                 released, in_search = clock, filters[0]
                 self._start_search(clock, filters[0].sigma)
                 next_refit = clock + par.ARRefitInterval if par.ARRefitInterval > 0 else None
@@ -826,11 +1003,14 @@ class wdfUnitOnline:
             while len(filters) > 1 and filters[1].start <= released + 0.5 / rate:
                 filters.pop(0)
             if next_refit is not None and clock >= next_refit:
-                filters.append(self._fit(past, past_start, clock))
+                refit = self._fit(past, past_start, clock)
+                if refit is not None:
+                    filters.append(refit)
                 next_refit += par.ARRefitInterval
         for writer in self._writers:
             writer.close()
-        par.RefitCount = len(self.result.refits)
+        par.RefitCount = sum(1 for r in self.result.refits if r.get("accepted", True))
+        par.RefitRejected = len(self.result.refits) - par.RefitCount
         par.ElapsedSeconds = time.time() - started
         if par.Ridge:
             par.RidgeSettingsUsed = {k: (list(v) if isinstance(v, tuple) else v)
