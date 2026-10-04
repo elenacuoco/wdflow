@@ -26,12 +26,28 @@ network table are unchanged (tested against a snapshot).
   waveform along the track is reconstructed in `TrackBasis` (`LocalCos<M>` or
   `CosinePackets<m>`, the cosine-packet best basis with `TrackPacketCost`).
   The event table extends `DETECTOR_EVENT_COLUMNS` with the track's columns.
-- `wdf.analysis.track_coincidence.TrackCoincidenceFinder`: the classical
-  finder's admitted pairs, with track compatibility (`TrackTimingJitter`,
-  `TrackFrequencyTolerance`) and the lag, coherence and phase of the complex
-  cross-correlation of the waveforms. A time slide's displacement is applied
-  to the tracks and waveforms. A GNN reads the track features through
-  `cross_edge_dim`; the shipped models were fitted without them.
+- The track's penalty (`TrackRidgeSettings`): `TrackLambda` per octave beyond
+  an allowance. The allowance is the largest one-slot sweep of an inspiral
+  over `TrackMcRange` from the lower of the two states' frequencies, at most
+  `TrackAllowanceMax`, and is the same up and down. The track's drift and
+  X-drop (`TrackDrift`, `TrackXDrop`) are calibrated with the track's own
+  alignment, holding the `TrackCalibrationQuantile` percentile of its run into
+  noise at `RidgeCalibrationKept`.
+- `wdf.analysis.track_coincidence.TrackCoincidenceFinder`: of the pairs the
+  classical finder forms, it admits those whose f(t) agree for at least
+  `TrackMinCommonDuration`, whose coherence lag (searched over
+  `TrackLagSearch`) is within the light travel time plus `TrackTimingJitter`,
+  and whose coherence is at least `TrackCoherenceMin`. The threshold is
+  calibrated by default on the run's time-slid pairs
+  (`calibrate_coherence_min`, `TrackCoherencePercentile`,
+  `TrackCalibrationSlides`, `TrackCalibrationMinimum`) and recorded as
+  `TrackCoherenceMinUsed`. Pairs are ranked on `track_statistic =
+  min(rho_1, rho_2) |Gamma|`, rho the SNR along each track, which is the track
+  path's default `NetworkRankColumn`. On the track path `dt_s` is the coherence
+  lag, and the difference of instants is `dt_instant_s`. A time slide's
+  displacement is applied to the tracks and waveforms. A GNN reads the track
+  features through `cross_edge_dim`; the shipped models were fitted without
+  them.
 - With `Reconstruction = "track"` (and `Ridge`), `wdfUnitOnline` builds the
   tracks as the map completes (`TrackObserver`), declares
   `TrackLatency_s = Latency_s + TrackHorizon + RidgeSlot + (RidgeWindow -

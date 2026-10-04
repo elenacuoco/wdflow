@@ -209,8 +209,10 @@ Two paths are available, and they do not mix: `Reconstruction` and
 |---|---|---|
 | stage 2 | `build_detector_graph`, `detector_events`, `event_coefficients`; the comparison map at `NetworkComparisonBin` times the longest light travel time | each trigger seeds a track through the full ridge map (`wdf.analysis.track_reconstruction`), and the waveform along it |
 | what stage 2 reads | the triggers with their coefficients | the worker's `TrackEvents` and `TrackWaveforms` |
-| stage 3 | `WavegramCoincidenceFinder` over `IndexedCoincidenceFinder`'s admitted pairs | `TrackCoincidenceFinder` over the same admitted pairs |
+| stage 3 | `WavegramCoincidenceFinder` over `IndexedCoincidenceFinder`'s admitted pairs | `TrackCoincidenceFinder`: of the pairs `IndexedCoincidenceFinder` forms, those whose tracks are compatible and coherent at a physical lag |
 | edge features | `EDGE_FEATURES` | the classical columns and `TRACK_EDGE_FEATURES`: track compatibility, and the lag, coherence and phase of the complex cross-correlation of the waveforms |
+| ranking (classic) | `network_enwdf` | `track_statistic` |
+| `dt_s` | the difference of the events' instants | the coherence lag `track_lag_s` |
 | GNN | `cross_edge_dim = N_EDGE_FEATURES` | `cross_edge_dim = N_EDGE_FEATURES + len(TRACK_EDGE_FEATURES)`; a model must be fitted with it |
 | latency online | the stream's | the stream's plus `TrackHorizon` and the map's completion: `TrackLatency_s` |
 
@@ -234,9 +236,23 @@ coefficients as a seed:
   the track is the anchored alignment through the cell, with the same scores
   and X-drop, followed backward and forward from it;
 - seeds that overlap in time and band form one group, and tracks that share a
-  cell are merged;
-- the penalty between states is symmetric, so a falling track scores as a
-  rising one.
+  cell are merged.
+
+The track has its own penalty (`TrackRidgeSettings`). A move between two
+states costs `TrackLambda * max(0, |d log2 f| - c)` per slot. The allowance
+`c` is the largest sweep an inspiral makes in one slot from the lower of the
+two states' frequencies, `df/dt = (96/5) pi^(8/3) (G Mc / c^3)^(5/3) f^(11/3)`
+at the largest chirp mass of `TrackMcRange`, and at most `TrackAllowanceMax`.
+The allowance depends on the pair of states and not on the direction of the
+move, so a falling track costs what a rising one costs. Low frequencies, where
+an inspiral sweeps slowly, get a small allowance, and a move beyond it costs
+`TrackLambda` per octave. The track's drift and X-drop (`TrackDrift`,
+`TrackXDrop`) are calibrated on the background with this penalty and with the
+track's own alignment (`calibrate_track_drift`). The drift is the smallest for
+which the `TrackCalibrationQuantile` percentile of the slots the alignment
+keeps into noise is at most `RidgeCalibrationKept`, so a track ends where the
+signal ends. The values used are recorded as `TrackDriftUsed` and
+`TrackXDropUsed`.
 
 The waveform is the inverse transform of the coefficients under the track's
 cells, widened by `RidgeWaveformStates`, in `TrackBasis`:
@@ -264,16 +280,49 @@ are built after the segment's ridge, on its map and its whitened stream. Both
 write `TrackEvents` (CSV) and `TrackWaveforms` (npz), read back with
 `load_tracks`.
 
-`TrackCoincidenceFinder` describes each admitted pair with:
+`TrackCoincidenceFinder` describes each pair the classical rule forms with:
 
-- `track_time_overlap`, `track_f_distance`, `track_f_overlap` and
-  `track_compatible`: the two tracks' spans and f(t) compared within the light
-  travel time plus `TrackTimingJitter`, with tolerance
-  `TrackFrequencyTolerance` octaves;
+- `track_time_overlap`, `track_f_distance`, `track_f_overlap`,
+  `track_common_s` and `track_compatible`: the two tracks' spans and f(t)
+  compared within the light travel time plus `TrackTimingJitter`, with
+  tolerance `TrackFrequencyTolerance` octaves. `track_common_s` is the time
+  over which they agree within it;
 - `track_lag_s`, `track_coherence` and `track_phase`: the lag of the largest
-  modulus of the complex cross-correlation of the two waveforms' analytic
-  signals, within the light travel time plus `TrackTimingJitter`, that modulus
-  (0 to 1) and its phase.
+  modulus `|Gamma|` of the complex cross-correlation of the two waveforms'
+  analytic signals, searched over `TrackLagSearch`, that modulus (0 to 1) and
+  its phase.
+
+It admits a pair only when all three hold:
+
+1. the tracks are compatible: `track_common_s >= TrackMinCommonDuration`;
+2. the lag is physical: `|track_lag_s|` is at most the light travel time plus
+   `TrackTimingJitter`;
+3. `track_coherence >= TrackCoherenceMin`.
+
+`TrackCoherenceMin = "calibrate"` (the default) sets the threshold from noise
+alone (`calibrate_coherence_min`). It is the `TrackCoherencePercentile`
+percentile of `|Gamma|` over the run's time-slid pairs that pass 1 and 2, with
+`TrackCalibrationSlides` slides of `NetworkSlideStep`. When fewer than
+`TrackCalibrationMinimum` slid pairs pass, every slid pair the classical rule
+forms is used. The value and its population are recorded as
+`TrackCoherenceMinUsed` and `TrackCoherenceCalibration`. Online, give
+`TrackCoherenceMin` a value calibrated offline, or `NetworkStream` calibrates
+it on what it holds at each call.
+
+The pair's statistic, and the track path's default `NetworkRankColumn`, is
+
+```
+track_statistic = min(rho_1, rho_2) * |Gamma|,    rho = sqrt(track_energy)
+```
+
+`rho` is the SNR integrated along each detector's track, the energy of its
+reconstructed waveform in noise units. The minimum asks both detectors to carry
+energy along their tracks, so a loud glitch in one detector paired with a weak
+track in the other scores as the weak one. `|Gamma|` is the fraction of that
+energy the two waveforms share at a physical lag. `network_enwdf`, the seed
+triggers' statistic, stays a column. On the track path `dt_s` is the coherence
+lag `track_lag_s`, and the difference of the events' instants is
+`dt_instant_s`.
 
 A time slide moves an event's times. The finder reads each event's
 displacement from its `gpsPeak` and applies it to the event's track and
@@ -300,7 +349,7 @@ waveform, so `TimeSlideFAR` runs on it.
 | `Coincidence` | "wavegram" | stage 3: the same as `Reconstruction` |
 | `Scorer` | "classic" | stage 4: "classic" or "gnn" |
 | `GNNModel` | none | saved `GNNCoincidenceScorer`, required by "gnn" |
-| `NetworkRankColumn` | "network_enwdf" | the column the classic scorer ranks on |
+| `NetworkRankColumn` | "network_enwdf"; "track_statistic" on the track path | the column the classic scorer ranks on |
 | `NetworkComparisonBin` | 2.0 | comparison map bin over the longest light travel time; 0 for none |
 | `NetworkSlides` | 0 | time slides of the background |
 | `NetworkSlideStep` | 4.0 s | step between two slides |
@@ -312,6 +361,17 @@ waveform, so `TimeSlideFAR` runs on it.
 | `TrackPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |
 | `TrackTimingJitter` | 0.0035 s | added to the light travel time |
 | `TrackFrequencyTolerance` | 0.5 octave | f(t) tolerance between two tracks |
+| `TrackMinCommonDuration` | 0.25 s | admission 1: least time the two f(t) agree |
+| `TrackLagSearch` | 0.1 s | half-width of the coherence's lag search |
+| `TrackCoherenceMin` | "calibrate" | admission 3: least `\|Gamma\|` |
+| `TrackCoherencePercentile` | 99 | noise percentile of the calibration |
+| `TrackCalibrationSlides` | 100 | slides of the calibration |
+| `TrackCalibrationMinimum` | 20 | slid pairs passing 1 and 2 needed |
+| `TrackLambda` | 3.7 per octave | penalty beyond the allowance |
+| `TrackMcRange` | [1, 30] solar masses | chirp masses whose largest sweep is the allowance |
+| `TrackAllowanceMax` | 0.27 octave | largest allowance per slot |
+| `TrackDrift`, `TrackXDrop` | "calibrate" | the track's drift and X-drop |
+| `TrackCalibrationQuantile` | 90 | percentile of the slots kept into noise held at `RidgeCalibrationKept` |
 | `TrackLightTravelTime` | from the detectors | overrides the light travel time |
 | `TrackGraphBasis` | "LocalCos64" | basis of the node maps the GNN reads on the track path |
 
