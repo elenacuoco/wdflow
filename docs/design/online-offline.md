@@ -7,15 +7,16 @@ the run's `parametersUsed` file.
 | | online, causal | online, zero phase | offline |
 |---|---|---|---|
 | worker | `wdfUnitOnline` | `wdfUnitOnline`, `WhiteningMode = "zerophase"` | `wdfUnitOffline` |
-| configuration | `configs/online_default.toml` | `configs/online_zerophase_default.toml` | `configs/offline_default.toml` |
+| configuration | `configs/online_default.toml` | `configs/online_zerophase_default.toml` (track path: `configs/online_zerophase_track.toml`) | `configs/offline_default.toml` |
 | band-pass | Butterworth, causal (`sosfilt`, state carried) | Butterworth, zero phase (`sosfiltfilt`), as offline; `BandPassPhase = "causal"` also allowed | Butterworth, zero phase (`sosfiltfilt`) |
 | low-pass order | the smallest that meets `AliasAttenuationDB` on `\|H\|` | the same rule on `\|H\|^2` | the same rule on `\|H\|^2` |
 | whitening | AR prediction-error filter, causal | `ZeroPhaseFilter`, "truncated" 16 s, as offline | `ZeroPhaseFilter`, "truncated" 16 s |
-| noise model | fitted on the past only, refitted every `ARRefitInterval` | fitted on the past only, refitted every `ARRefitInterval` | fitted once on a chosen stretch of the segment |
+| noise model | fitted on the past only, on a stretch that passes the quality rule; refitted every `ARRefitInterval` | the same | fitted once on a chosen stretch of the segment |
 | latency | none read ahead; an output is emitted up to `len` after its data | fixed, declared: `Latency_s`, 10 s at 2048 Hz (8 s whitening + 2 s band-pass) | the segment |
-| glitches | labelled (`GlitchLabelBases`), never removed | labelled, never removed | M4 subtraction; seeds coincident in two or more detectors are protected |
+| glitches | labelled from a causal census (`GlitchLabel`), never removed | labelled, never removed | M4 subtraction; seeds coincident in two or more detectors are protected (`offline_network`) |
 | ridge | streaming, past only; running best path | streaming, on the zero-phase whitened stream | whole segment; backward and forward extension |
-| outputs | each with `emitted_at` and `latency` | each with `emitted_at`, `latency` and `data_time` | triggers, M4 atoms and seeds, ridge cells and candidates |
+| track path | tracks at `TrackLatency_s` | tracks at `TrackLatency_s` | tracks over the segment |
+| outputs | each with `emitted_at` and `latency` | each with `emitted_at`, `latency` and `data_time` | triggers, M4 atoms and seeds, ridge cells and candidates, the searched span |
 
 ## The online worker never reads the future
 
@@ -36,10 +37,55 @@ before `t` changes. The test covers:
 
 The whitening is the AR model's prediction-error filter, `A(z) = 1 - sum a_k z^-k`.
 It is the lattice of `CausalWhitening` written in direct form, and a test
-checks that the two are the same filter. Each refit uses the `learn` seconds
-that end `ARFitGap` before the switch. The new filter's state is then set
+checks that the two are the same filter. Each refit uses `learn` seconds of the
+past chosen by the quality rule below. The new filter's state is then set
 exactly by running it over the last `ARWarmup` samples, which must be at least
 `ARorder`.
+
+### The fit stretch is chosen by a quality rule
+
+With `ARFitQuality` (on by default) a stretch of `learn` seconds is a valid fit
+stretch when:
+
+- its whitened samples hold no census transient whose peak reaches
+  `GlitchTrigger`;
+- for a refit, its power in each octave from `GlitchCensusLow`, whitened by the
+  current model, is within `ARFitLevelRatio` of white (between
+  `1 / ARFitLevelRatio` and `ARFitLevelRatio`).
+
+A refit tries `ARFitCandidates` stretches, the first ending `ARFitGap` before
+the switch and each next one `ARFitStep` seconds earlier, and takes the most
+recent that passes. When none passes, the current model is kept; the attempt
+is recorded in the refits with `accepted` False and counted in
+`RefitRejected`. The first fit judges the stretch with its own model. When the
+stretch fails, the search waits `ARFitStep` seconds and judges the stretch then
+ending, up to `ARFitCandidates` stretches, and then takes the one with the
+smallest census peak. Every refit records the candidate it took, its census
+peak and its octave levels. A test checks that a stretch holding a glitch or a
+louder noise level is skipped, and that the rule reads only the past.
+
+### Glitches are labelled from a causal census
+
+With `GlitchLabel = "census"` (the default) the online worker keeps a census of
+its whitened stream, block by block, from the past only
+(`wdf.processes.causal_census.CausalCensus`):
+
+- the broadband stream and its octaves from `GlitchCensusLow`, split by causal
+  Butterworth filters of order `GlitchOctaveOrder`;
+- each divided by its robust standard deviation over the `GlitchCensusMemory`
+  seconds before the block, from `GlitchCensusMinimum` seconds of past on;
+- samples above `GlitchFlag` closer than `GlitchMergeGap` form a transient,
+  kept when its peak reaches `GlitchTrigger`;
+- its extent comes from the broadband stream and the octaves from
+  `GlitchExtentLow` (four times `GlitchCensusLow` by default), widened by
+  `GlitchSeedPad`.
+
+A trigger whose window meets a transient known when it is emitted is labelled
+"glitch", any other "candidate". The census reads the whitened stream up to
+the block the trigger is emitted with, so the label adds no latency. The
+transients are written as `GlitchCensusOnline`. `GlitchLabel = "bases"` labels
+"glitch" a trigger whose winning basis is one of `GlitchLabelBases`. A label
+never removes a trigger.
 
 The ridge cells come from the dense coefficients of the analysis windows
 (`RidgeBasis`). The coefficients of recent windows are kept in a ring buffer.
@@ -112,6 +158,162 @@ is on:
 1. every detector's census;
 2. every detector's search;
 3. the network ridge, on the minimum of the detectors' z maps.
+
+Coincidence protection needs the other detectors' census, so it is effective
+only when the detectors run together through `offline_network`. A run records
+`GlitchProtection`: "on", with the detectors in `GlitchProtectionDetectors`,
+when another detector's census was given; "OFF (single detector: ...)" when
+`GlitchProtectCoincident` is set but no other census was given, which is also
+logged as a warning; "off" when `GlitchProtectCoincident` is false.
+
+### What a segment searched
+
+The worker reads ahead of what it searches. It records the end of the last
+whitened block searched as `gpsEndSearched`, the segment's end as
+`gpsEndSegment`, and the difference as `UnsearchedTail_s`. The parts of the
+tail are in `ReadAheadParts_s`:
+
+- `blocks`: two read blocks of `len`, because reading stops before a block
+  would pass the frames' end, which the reader would pad with zeros;
+- `bandpass`: the band-pass's settling `padlen`;
+- `whitening`: the whitening's look-ahead `WhiteningExtraSize`;
+- `whitening_lag`: one block plus `WhiteningExtraSize`, by which the whitened
+  output trails the conditioned input.
+
+That is about `3 len + 2 WhiteningExtraSize + padlen`. `len` only batches the
+reads and changes no trigger, so a shorter `len` shortens the tail.
+`parametersUsed` is written when each search starts and again when the segment
+ends. The second write adds the values set during the run: the ridge's
+calibrated drift and X-drop, the low-pass order, the searched span, and the
+glitch and track counts.
+
+## The four stages and the two paths
+
+WDF runs in four stages:
+
+1. **Triggers.** Each detector's single-window triggers (`EnWDF`, the
+   competition between the bases of `Bases`), from one of the three workers.
+2. **Single-detector reconstruction** (`Reconstruction`).
+3. **The graph between detectors** (`Coincidence`).
+4. **The ranking of its candidate pairs** (`Scorer`): "classic", the column
+   `NetworkRankColumn`, or "gnn", a `GNNCoincidenceScorer` loaded from
+   `GNNModel`.
+
+Stage 1 is the same on both paths. Stages 2 to 4 run through
+`wdf.analysis.network_driver.run_network`, online through `NetworkStream`.
+Two paths are available, and they do not mix: `Reconstruction` and
+`Coincidence` must both be "wavegram" or both be "track"
+(`wdf.config.Parameters.network_path`).
+
+| | "wavegram" (default) | "track" |
+|---|---|---|
+| stage 2 | `build_detector_graph`, `detector_events`, `event_coefficients`; the comparison map at `NetworkComparisonBin` times the longest light travel time | each trigger seeds a track through the full ridge map (`wdf.analysis.track_reconstruction`), and the waveform along it |
+| what stage 2 reads | the triggers with their coefficients | the worker's `TrackEvents` and `TrackWaveforms` |
+| stage 3 | `WavegramCoincidenceFinder` over `IndexedCoincidenceFinder`'s admitted pairs | `TrackCoincidenceFinder` over the same admitted pairs |
+| edge features | `EDGE_FEATURES` | the classical columns and `TRACK_EDGE_FEATURES`: track compatibility, and the lag, coherence and phase of the complex cross-correlation of the waveforms |
+| GNN | `cross_edge_dim = N_EDGE_FEATURES` | `cross_edge_dim = N_EDGE_FEATURES + len(TRACK_EDGE_FEATURES)`; a model must be fitted with it |
+| latency online | the stream's | the stream's plus `TrackHorizon` and the map's completion: `TrackLatency_s` |
+
+With the defaults the paper path is run, and its triggers, detector events and
+network table are the same as before the track path existed (tested against a
+snapshot). With `NetworkSlides` above zero, `run_network` also draws the
+time-slide background (`TimeSlideFAR`, step `NetworkSlideStep`) and gives every
+candidate its false-alarm rate.
+
+### The track path
+
+With `Reconstruction = "track"` the worker (it requires `Ridge = true`)
+registers a `TrackObserver` on each search, which keeps each trigger with its
+coefficients as a seed:
+
+- the seed's slice of the map runs from `TrackLookback` seconds before the
+  trigger's window to `TrackHorizon` seconds after its end;
+- its cell is that of the trigger's largest coefficient;
+- `offline_ridge` runs on the slice, and its best candidate that passes the
+  seed's cell within `TrackSeedStates` states is the track; where none does,
+  the track is the anchored alignment through the cell, with the same scores
+  and X-drop, followed backward and forward from it;
+- seeds that overlap in time and band form one group, and tracks that share a
+  cell are merged;
+- the penalty between states is symmetric, so a falling track scores as a
+  rising one.
+
+The waveform is the inverse transform of the coefficients under the track's
+cells, widened by `RidgeWaveformStates`, in `TrackBasis`:
+
+- `LocalCos64` or `LocalCos128`: the map's own coefficients when it is the
+  map's basis (`RidgeBasis`), recomputed on the whitened stream otherwise.
+  LocalCos64 tiles are 31.25 ms by 16 Hz at 2048 Hz, LocalCos128 tiles
+  62.5 ms by 8 Hz;
+- `CosinePackets<m>`: the cosine-packet best basis (`py4tsa.tsa.CosinePackets`,
+  segments from `m` samples, cost `TrackPacketCost`) of the whitened stream over
+  the track's span.
+
+Online, a track is built once the map is complete `TrackHorizon` past its
+seeds' last window. Its declared latency is
+
+```
+TrackLatency_s = Latency_s + TrackHorizon + RidgeSlot + (RidgeWindow - RidgeOverlap / 2) / rate
+```
+
+which is 11.47 s at 2048 Hz with `configs/online_zerophase_track.toml` (19.47 s
+for V1). A test changes the input after a time `t` and checks that no track
+whose seeds end at or before `t - TrackLatency_s` changes. The worker refuses a
+slice longer than the map's ring (`RidgeMaxSlots` slots). Offline, the tracks
+are built after the segment's ridge, on its map and its whitened stream. Both
+write `TrackEvents` (CSV) and `TrackWaveforms` (npz), read back with
+`load_tracks`.
+
+`TrackCoincidenceFinder` describes each admitted pair with:
+
+- `track_time_overlap`, `track_f_distance`, `track_f_overlap` and
+  `track_compatible`: the two tracks' spans and f(t) compared within the light
+  travel time plus `TrackTimingJitter`, with tolerance
+  `TrackFrequencyTolerance` octaves;
+- `track_lag_s`, `track_coherence` and `track_phase`: the lag of the largest
+  modulus of the complex cross-correlation of the two waveforms' analytic
+  signals, within the light travel time plus `TrackTimingJitter`, that modulus
+  (0 to 1) and its phase.
+
+A time slide moves an event's times. The finder reads each event's
+displacement from its `gpsPeak` and applies it to the event's track and
+waveform, so `TimeSlideFAR` runs on it.
+
+### How to choose
+
+- Run the paper path to reproduce the published method; it is the default.
+- Run the track path to describe each event by its track and its waveform
+  across windows, and to compare detectors by the coherence of their
+  waveforms. Online, it costs `TrackHorizon` plus the map's completion in
+  latency.
+- `TrackBasis`: `LocalCos64` follows a fast sweep in time, `LocalCos128`
+  resolves frequency more finely, and `CosinePackets<m>` adapts the segment
+  length to each track's span.
+- The GNN of the paper path cannot read the track path's edges. A model for
+  the track path must be fitted with its `cross_edge_dim`.
+
+### Parameters of stages 2 to 4
+
+| parameter | default | meaning |
+|---|---|---|
+| `Reconstruction` | "wavegram" | stage 2: "wavegram" or "track" |
+| `Coincidence` | "wavegram" | stage 3: the same as `Reconstruction` |
+| `Scorer` | "classic" | stage 4: "classic" or "gnn" |
+| `GNNModel` | none | saved `GNNCoincidenceScorer`, required by "gnn" |
+| `NetworkRankColumn` | "network_enwdf" | the column the classic scorer ranks on |
+| `NetworkComparisonBin` | 2.0 | comparison map bin over the longest light travel time; 0 for none |
+| `NetworkSlides` | 0 | time slides of the background |
+| `NetworkSlideStep` | 4.0 s | step between two slides |
+| `NetworkMemory` | 64 s | what `NetworkStream` holds |
+| `TrackLookback` | 4.0 s | map searched before a seed's window |
+| `TrackHorizon` | 1.0 s | map searched after it |
+| `TrackBasis` | `RidgeBasis` | `LocalCos<M>` or `CosinePackets<m>` |
+| `TrackSeedStates` | 1 | states either side of the seed's cell |
+| `TrackPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |
+| `TrackTimingJitter` | 0.0035 s | added to the light travel time |
+| `TrackFrequencyTolerance` | 0.5 octave | f(t) tolerance between two tracks |
+| `TrackLightTravelTime` | from the detectors | overrides the light travel time |
+| `TrackGraphBasis` | "LocalCos64" | basis of the node maps the GNN reads on the track path |
 
 ## Units
 

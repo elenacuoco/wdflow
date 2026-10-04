@@ -5,16 +5,89 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
-### LocalCos128 is the 11th basis of the shipped configurations
+### Two paths for stages 2 to 4: the paper path and the track path
 
-`configs/online_default.toml`, `online_zerophase_default.toml` and
-`offline_default.toml` append "LocalCos128" to `Bases`. The core's default list
-is unchanged, and setting `Bases` to the previous ten restores the 10-basis
-search. Both workers now check `Bases` against every scheduled window when they
-are built, before any data is read (`wdf.config.Parameters.check_bases`). Under
-the block rule, `LocalCos<M>` needs `window / M >= L`. An error names `Bases`,
-the window, L and the largest M allowed, so a window of 512 (L 6) refuses
-LocalCos128. The check refuses exactly what p4TSA's `SetBases` refuses (tested).
+WDF runs in four stages: triggers, single-detector reconstruction
+(`Reconstruction`), the graph between detectors (`Coincidence`), and the
+ranking of its candidate pairs (`Scorer`). `Reconstruction` and `Coincidence`
+are "wavegram" (the default, the paper path) or "track", both the same
+(`wdf.config.Parameters.network_path` refuses a mix). `Scorer` is "classic" or
+"gnn" (with `GNNModel`). With the defaults the triggers, detector events and
+network table are unchanged (tested against a snapshot).
+
+- `wdf.analysis.network_driver`: `run_network` runs stages 2 to 4 on the path
+  the configuration selects, with the paper path's sequence of calls
+  (`NetworkComparisonBin`, `NetworkRankColumn`) and, with `NetworkSlides`, the
+  time-slide background (`NetworkSlideStep`). `NetworkStream` holds the
+  detectors' outputs online (`NetworkMemory`).
+- `wdf.analysis.track_reconstruction`: each trigger seeds a track through the
+  ridge map, from `TrackLookback` before its window to `TrackHorizon` after
+  it, through the cell of its largest coefficient (`TrackSeedStates`), and the
+  waveform along the track is reconstructed in `TrackBasis` (`LocalCos<M>` or
+  `CosinePackets<m>`, the cosine-packet best basis with `TrackPacketCost`).
+  The event table extends `DETECTOR_EVENT_COLUMNS` with the track's columns.
+- `wdf.analysis.track_coincidence.TrackCoincidenceFinder`: the classical
+  finder's admitted pairs, with track compatibility (`TrackTimingJitter`,
+  `TrackFrequencyTolerance`) and the lag, coherence and phase of the complex
+  cross-correlation of the waveforms. A time slide's displacement is applied
+  to the tracks and waveforms. A GNN reads the track features through
+  `cross_edge_dim`; the shipped models were fitted without them.
+- With `Reconstruction = "track"` (and `Ridge`), `wdfUnitOnline` builds the
+  tracks as the map completes (`TrackObserver`), declares
+  `TrackLatency_s = Latency_s + TrackHorizon + RidgeSlot + (RidgeWindow -
+  RidgeOverlap / 2) / rate`, and writes `TrackEvents` and `TrackWaveforms`;
+  `wdfUnitOffline` builds them after the segment's ridge.
+  `wdfUnitDSWorker` gains the `_observers` hook.
+- `configs/online_zerophase_track.toml`: the online zero-phase configuration
+  on the track path, with the map and the waveform in LocalCos64. The three
+  other configurations carry the new parameters at their defaults.
+
+### The shipped configurations search the 10 wavelet bases
+
+`Bases` in `configs/online_default.toml`, `online_zerophase_default.toml` and
+`offline_default.toml` holds the 10 wavelet bases. LocalCos128 remains the
+ridge map's basis (`RidgeBasis`). `LocalCos64`, or `LocalCos128` for a window
+of at least 128 L, can still be added to `Bases`. Both workers check `Bases`
+against every scheduled window when they are built
+(`wdf.config.Parameters.check_bases`).
+
+### Online glitch label from a causal census
+
+`GlitchLabel = "census"`, the new default, labels a trigger "glitch" when its
+window meets a transient of the causal census of the whitened stream
+(`wdf.processes.causal_census`). The census uses a robust sigma per octave
+from `GlitchCensusLow` over the past `GlitchCensusMemory` seconds, the peak
+must reach `GlitchTrigger`, and the extent comes from the broadband stream and
+the octaves from `GlitchExtentLow`. The transients are written as
+`GlitchCensusOnline`. `GlitchLabel = "bases"` keeps the rule by winning basis
+(`GlitchLabelBases`). A label removes nothing.
+
+### Online fit stretch chosen by a quality rule
+
+With `ARFitQuality` (default on), the online model is fitted on a stretch of
+the past whose whitened samples hold no census transient reaching
+`GlitchTrigger`. For a refit, the stretch's octave power through the current
+model must also stay within `ARFitLevelRatio` of white. A refit tries
+`ARFitCandidates` stretches `ARFitStep` apart and keeps the current model when
+none passes (`accepted` False, `RefitRejected`). The first fit waits for a
+passing stretch, up to the same number of steps, then takes the stretch with
+the smallest census peak.
+
+### M4 coincidence protection stated in every offline run
+
+`GlitchProtection` is "on" (with `GlitchProtectionDetectors`) when the other
+detectors' census is given through `offline_network`. It is "OFF (single
+detector ...)" when it cannot be, which is logged as a warning, and "off" when
+`GlitchProtectCoincident` is false.
+
+### Offline: the searched span, and parametersUsed at the end
+
+The offline worker records `gpsEndSearched`, `gpsEndSegment`,
+`UnsearchedTail_s`, and the parts of the tail in `ReadAheadParts_s`: two read
+blocks, the band-pass settling, the whitening look-ahead, and the whitened
+output's lag. Each search's `parametersUsed` is written again when the segment
+ends, with the values set during the run (ridge drift and X-drop, low-pass
+order, glitch and track counts).
 
 ### A third flow: the online worker with the offline whitening, at a fixed latency
 

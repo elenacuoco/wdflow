@@ -10,6 +10,7 @@ tutorials/01_the_statistic_and_the_parameters
 tutorials/02_the_wavegram_and_long_signals
 tutorials/03_coincidence_and_significance
 tutorials/04_reconstruction_and_phase
+tutorials/05_the_paper_path_and_the_track_path
 ```
 
 ```{toctree}

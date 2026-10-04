@@ -52,7 +52,7 @@ class TrackCoincidenceSettings:
 
     :param jitter_s: timing jitter added to the light travel time, s
         (`TrackTimingJitter`).
-    :param frequency_tolerance: largest |d log2 f| between the two tracks'
+    :param frequency_tolerance: largest ``|d log2 f|`` between the two tracks'
         f(t), octaves (`TrackFrequencyTolerance`).
     :param light_travel_time_s: overrides the pair's light travel time, s
         (`TrackLightTravelTime`); None reads it from the detectors.
@@ -148,9 +148,9 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     :type window_s: float
     :param window_s: light travel time plus jitter, s.
     :type tolerance: float
-    :param tolerance: largest |d log2 f|, octaves.
+    :param tolerance: largest ``|d log2 f|``, octaves.
     :return: dict -- `track_time_overlap` (the shared span over the shorter
-        track), `track_f_distance` (median |d log2 f| over it, octaves; the
+        track), `track_f_distance` (median ``|d log2 f|`` over it, octaves; the
         smallest over the shifts -window, 0, +window), `track_f_overlap` (the
         fraction of the shared slots within the tolerance) and
         `track_compatible`.

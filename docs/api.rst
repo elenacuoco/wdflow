@@ -46,6 +46,12 @@ wdf.processes.census
 .. automodule:: wdf.processes.census
    :members:
 
+wdf.processes.causal_census
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.causal_census
+   :members:
+
 wdf.processes.wdf
 ~~~~~~~~~~~~~~~~~~
 
@@ -104,6 +110,12 @@ wdf.observers.SingleEventPrintFileObserver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.observers.SingleEventPrintFileObserver
+   :members:
+
+wdf.observers.TrackObserver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.observers.TrackObserver
    :members:
 
 wdf.structures.eventPE
@@ -293,6 +305,24 @@ wdf.analysis.ridge_tracking
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.ridge_tracking
+   :members:
+
+wdf.analysis.track_reconstruction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.track_reconstruction
+   :members:
+
+wdf.analysis.track_coincidence
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.track_coincidence
+   :members:
+
+wdf.analysis.network_driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.network_driver
    :members:
 
 wdf.analysis.local_cosine
