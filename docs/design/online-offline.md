@@ -250,6 +250,27 @@ snapshot). With `NetworkSlides` above zero, `run_network` also draws the
 time-slide background (`TimeSlideFAR`, step `NetworkSlideStep`) and gives every
 candidate its false-alarm rate.
 
+### Optional screens on the paper path
+
+`NetworkLagCut` (default "none") measures each pair's lag on the two events'
+stitched reconstructions (`event_waveform`, `arrival_time_difference`,
+searched over `NetworkLagSearch`, 0.25 s), not on the loudest tiles'
+instants. It reports `network_lag_s` (first detector minus the second) and
+`network_lag_width_s`. The pair's window is its light travel time plus
+`NetworkLagTolerance` (0.01 s, about the spread of that lag; set it from the
+spread measured on a run's injections).
+
+- "cut" keeps a pair only when `|network_lag_s|` is within the window. A pair
+  whose lag cannot be measured within the search is dropped.
+- "penalty" keeps every pair and multiplies the ranking column by
+  `network_lag_factor = 1 / (1 + (max(0, |lag| - window) / NetworkLagScale)^2)`
+  into `network_rank_statistic`, which the pairs are then ranked on. The
+  factor is 1 within the window and falls with the excess, the same for
+  either sign. It is 0 when the lag cannot be measured.
+
+The screens run inside the finder (`wdf.analysis.pair_screen.ScreenedFinder`),
+so the time slides measure each slid pair's lag as the zero-lag pairs'.
+
 ### The track path
 
 With `Reconstruction = "track"` the worker (it requires `Ridge = true`)
@@ -396,6 +417,10 @@ waveform, so `TimeSlideFAR` runs on it.
 | `NetworkSlides` | 0 | time slides of the background |
 | `NetworkSlideStep` | 4.0 s | step between two slides |
 | `NetworkMemory` | 64 s | what `NetworkStream` holds |
+| `NetworkLagCut` | "none" | wavegram path: "none", "cut" or "penalty" on the reconstructions' lag |
+| `NetworkLagTolerance` | 0.01 s | added to the light travel time |
+| `NetworkLagScale` | 0.01 s | scale of the lag penalty |
+| `NetworkLagSearch` | 0.25 s | half-width of the lag search |
 | `TrackLookback` | 4.0 s | map searched before a seed's window |
 | `TrackHorizon` | 1.0 s | map searched after it |
 | `TrackBasis` | `RidgeBasis` | `LocalCos<M>` or `CosinePackets<m>` |

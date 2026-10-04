@@ -325,6 +325,12 @@ wdf.analysis.network_driver
 .. automodule:: wdf.analysis.network_driver
    :members:
 
+wdf.analysis.pair_screen
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.pair_screen
+   :members:
+
 wdf.analysis.local_cosine
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

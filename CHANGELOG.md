@@ -5,6 +5,17 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### Optional lag criterion on the paper path
+
+`NetworkLagCut` (default "none", the paper path as before) measures each
+pair's lag on the two stitched reconstructions (`arrival_time_difference`,
+`network_lag_s`, `network_lag_width_s`), zero lag and time slides alike
+(`wdf.analysis.pair_screen.ScreenedFinder`). "cut" keeps a pair only within
+the light travel time plus `NetworkLagTolerance` (0.01 s). "penalty"
+multiplies the ranking column by `1 / (1 + (excess / NetworkLagScale)^2)`
+into `network_rank_statistic`, which the pairs are then ranked on.
+`NetworkLagSearch` (0.25 s) bounds the lag search.
+
 ### The paper path ranks on `network_morphology` by default
 
 **Default change.** `NetworkRankColumn` defaults to `network_morphology`

@@ -10,7 +10,9 @@ The workflow:
 
 Two paths, which do not mix (`wdf.config.Parameters.network_path`):
 
-- **"wavegram"**, the paper path and the default: `build_detector_graph`,
+- **"wavegram"**, the paper path and the default (optionally screened by
+  the reconstructions' lag, `NetworkLagCut`, `wdf.analysis.pair_screen`):
+  `build_detector_graph`,
   `detector_events` and `event_coefficients` per detector (the assembly map,
   and the comparison map at `NetworkComparisonBin` times the network's
   longest light travel time when that is positive), then
@@ -50,6 +52,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from wdf.analysis.pair_screen import RANK_STATISTIC, PairScreenSettings, ScreenedFinder
 from wdf.config.Parameters import network_path
 
 #: Comparison map bin, in units of the network's longest light travel time.
@@ -156,6 +159,23 @@ def longest_travel(ifos):
     return max(light_travel_time(a, b) for a, b in combinations(ifos, 2))
 
 
+def _reconstructions(graphs, labels):
+    """Per detector, a cached ``cluster_id -> (t0, samples)`` of the events'
+    stitched reconstructions (`event_waveform`)."""
+    from wdf.analysis.detector_graph import event_waveform
+
+    def one(graph, label):
+        cache = {}
+
+        def get(cid):
+            if cid not in cache:
+                cache[cid] = event_waveform(graph, labels=label, cluster_id=int(cid))[int(cid)][:2]
+            return cache[cid]
+        return get
+
+    return {ifo: one(graphs[ifo], labels[ifo]) for ifo in graphs}
+
+
 def wavegram_stage(triggers):
     """Stage 2 of the paper path, per detector.
 
@@ -259,6 +279,13 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         builder = TriggerGraphBuilder(ifos=ifos)
         finder = WavegramCoincidenceFinder(IndexedCoincidenceFinder(), builder, maps,
                                            comparison=comparison, events=events, scorer=scorer)
+        screen = PairScreenSettings.from_parameters(par)
+        if screen.active:
+            fs = float(pd.to_numeric(next(iter(triggers.values()))["fs"]).iloc[0])
+            finder = ScreenedFinder(finder, events, _reconstructions(graphs, labels), fs, screen,
+                                    rank_column)
+            if screen.penalised:
+                rank_column = RANK_STATISTIC
         candidates = finder.find(events)
         nodes = pd.concat([events[i].reset_index(drop=True).assign(ifo=i) for i in ifos],
                           ignore_index=True)

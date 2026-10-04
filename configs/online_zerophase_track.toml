@@ -103,6 +103,10 @@ Scorer = "classic"              # stage 4: "classic" (NetworkRankColumn) or "gnn
 GNNModel = ""                   # path of a saved GNNCoincidenceScorer; required by Scorer = "gnn"
 NetworkRankColumn = "track_statistic"  # candidate-table column the classic scorer ranks on: min(rho_H, rho_L) |Gamma|; "network_enwdf" = the seed triggers
 NetworkComparisonBin = 2.0      # comparison map bin, in units of the network's longest light travel time; 0 = none
+NetworkLagCut = "none"          # wavegram path: lag of the two stitched reconstructions (arrival_time_difference): "none", "cut" (|lag| <= light travel + NetworkLagTolerance) or "penalty" (rank x 1/(1+(excess/NetworkLagScale)^2))
+NetworkLagTolerance = 0.01      # wavegram path: s added to the light travel time; about the spread of the reconstruction lag, set from a run's injections
+NetworkLagScale = 0.01          # wavegram path: s, scale of the lag penalty
+NetworkLagSearch = 0.25         # wavegram path: half-width of the lag search, s
 NetworkSlides = 0               # time slides of the background (0 = no background, no FAR)
 NetworkSlideStep = 4.0          # step between two slides, s
 NetworkMemory = 64.0            # s of detector outputs NetworkStream holds online
