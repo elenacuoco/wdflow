@@ -9,7 +9,7 @@ import pytest
 from wdf.config.Parameters import load_config
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIGS = {name: os.path.join(ROOT, "configs", f"{name}_default.toml") for name in ("online", "offline")}
+CONFIGS = {name: os.path.join(ROOT, "configs", f"{name}_default.toml") for name in ("online", "online_zerophase", "offline")}
 SOURCE = "\n".join(open(p).read() for p in glob.glob(os.path.join(ROOT, "wdf", "**", "*.py"),
                                                      recursive=True))
 #: Keys the configurations set that only the run layout reads.
@@ -54,6 +54,32 @@ def test_the_modes_differ_where_they_must():
     assert load_config(CONFIGS["offline"], "V1").ZeroPhaseDuration == 32.0
 
 
+def test_online_zerophase_is_online_with_the_offline_whitening():
+    """The same file as online_default.toml except the whitening, the band-pass
+    phase and the names."""
+    on, zp = load_config(CONFIGS["online"], "H1"), load_config(CONFIGS["online_zerophase"], "H1")
+    off = load_config(CONFIGS["offline"], "H1")
+    differ = {"ConfigFile", "SearchName", "run", "BandPassPhase", "WhiteningMode", "ZeroPhaseFilter",
+              "ZeroPhaseDuration", "HoldOutsideBand"}
+    a, b = vars(on), vars(zp)
+    assert {k for k in set(a) | set(b) if a.get(k) != b.get(k)} == differ
+    assert zp.WhiteningMode == "zerophase" and zp.BandPassPhase == off.BandPassPhase == "zero"
+    for key in ("ZeroPhaseFilter", "ZeroPhaseDuration", "HoldOutsideBand"):
+        assert getattr(zp, key) == getattr(off, key)
+    assert load_config(CONFIGS["online_zerophase"], "V1").ZeroPhaseDuration == 32.0
+
+
+def test_the_online_zerophase_latency_at_2048_hz():
+    pytest.importorskip("py4tsa")
+    from wdf.processes.wdfUnitOnline import wdfUnitOnline
+
+    for sampling in (4096, 16384):
+        par = load_config(CONFIGS["online_zerophase"], "H1", sampling=sampling,
+                          ResamplingFactor=sampling // 2048, channel="H1:X", file="x.gwf")
+        used = wdfUnitOnline(par).par
+        assert (used.WhiteningLookahead_s, used.BandPassLookahead_s, used.Latency_s) == (8.0, 2.0, 10.0)
+
+
 @pytest.mark.parametrize("sampling, order", [(4096, 8), (16384, 12)])
 def test_the_band_pass_follows_the_rate(sampling, order):
     pytest.importorskip("py4tsa")
@@ -73,5 +99,5 @@ def test_the_workers_build(name):
     from wdf.processes.wdfUnitOnline import wdfUnitOnline
 
     par = load_config(CONFIGS[name], "L1", sampling=4096, channel="L1:X", file="x.gwf")
-    worker = (wdfUnitOnline if name == "online" else wdfUnitOffline)(par)
+    worker = (wdfUnitOnline if name.startswith("online") else wdfUnitOffline)(par)
     assert worker.par.SearchName == name
