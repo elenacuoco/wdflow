@@ -14,7 +14,9 @@ sys.path.insert(0, FIXTURES)
 import make_paper_path_snapshot as snap  # noqa: E402
 
 from wdf.analysis.network_driver import run_network  # noqa: E402
-from wdf.analysis.pair_screen import lag_factor  # noqa: E402
+from wdf.analysis.pair_screen import PairScreenSettings, lag_factor, lag_windows  # noqa: E402
+from wdf.analysis.detectors import light_travel_time  # noqa: E402
+from wdf.analysis.robust_events import CoincidenceConfig  # noqa: E402
 from wdf.config.Parameters import Parameters  # noqa: E402
 
 TIME_COLUMNS = ("gps", "gpsStart", "gpsPeak", "gpsCentroid")
@@ -56,8 +58,9 @@ def test_a_pair_half_a_second_apart_is_cut_or_penalised():
     pen = Parameters(NetworkLagCut="penalty")
     cand = on_chirp(run_network(pen, triggers=triggers(0.5)).candidates)
     row = cand.iloc[0]
-    expected = lag_factor(row["network_lag_s"], row["network_lag_window_s"], 0.01)
-    assert row["network_lag_factor"] == pytest.approx(float(expected)) and expected < 0.01
+    expected = lag_factor(row["network_lag_s"], row["network_lag_window_s"], row["network_lag_window_s"])
+    # the scale is the pair's own window (NetworkLagScale "window"), ~25 ms for H1-L1
+    assert row["network_lag_factor"] == pytest.approx(float(expected)) and expected < 0.05
     assert row["network_rank_statistic"] == pytest.approx(
         row["network_morphology"] * row["network_lag_factor"])
     near = on_chirp(run_network(pen, triggers=triggers()).candidates).iloc[0]
@@ -122,3 +125,53 @@ def test_the_glitch_decision_needs_the_census_and_runs_in_slides():
     result = run_network(par, triggers=triggers(), census=both)
     if len(result.background):
         assert "glitch_single_ifo" in result.background
+
+
+PAIRS = (("H1", "L1"), ("H1", "V1"), ("L1", "V1"))
+
+
+def test_the_coincidence_window_is_each_pairs_own_tolerance():
+    config = CoincidenceConfig()
+    a, b = zip(*PAIRS)
+    got = lag_windows(a, b, [0.0] * 3, [0.0] * 3, PairScreenSettings())
+    for (p, q), w in zip(PAIRS, got):
+        travel = light_travel_time(p, q)
+        floor = config.timing_sigma * np.hypot(config.timing_jitter_s, config.timing_jitter_s)
+        assert w == pytest.approx(min(travel + floor, config.maximum_tolerance_travel_times * travel))
+        assert w == pytest.approx(float(config.timing_tolerance(0.0, 0.0, (p, q))))
+    assert got[1] > 2.5 * got[0] / 1.5 and got[0] < got[2] < got[1]
+
+
+def test_the_coincidence_window_is_capped_and_reads_the_spreads():
+    config = CoincidenceConfig()
+    a, b = zip(*PAIRS)
+    wide = lag_windows(a, b, [0.5] * 3, [0.5] * 3, PairScreenSettings())
+    for (p, q), w in zip(PAIRS, wide):
+        assert w == pytest.approx(config.maximum_tolerance_travel_times * light_travel_time(p, q))
+    narrow = lag_windows(["H1"], ["L1"], [0.004], [np.nan], PairScreenSettings())
+    travel = light_travel_time("H1", "L1")
+    assert narrow[0] == pytest.approx(min(travel + 3 * np.hypot(0.004, 0.0035), 2.5 * travel))
+
+
+def test_travel_plus_tolerance_is_light_travel_plus_the_tolerance():
+    settings = PairScreenSettings(lag_window="travel_plus_tolerance", lag_tolerance=0.0)
+    a, b = zip(*PAIRS)
+    got = lag_windows(a, b, [0.0] * 3, [0.0] * 3, settings)
+    assert got == pytest.approx([light_travel_time(p, q) for p, q in PAIRS])
+
+
+def test_the_window_choice_is_read_and_checked():
+    par = Parameters(NetworkLagCut="cut")
+    assert PairScreenSettings.from_parameters(par).lag_window == "coincidence"
+    assert PairScreenSettings.from_parameters(Parameters(NetworkLagScale="window")).lag_scale == "window"
+    assert PairScreenSettings.from_parameters(Parameters(NetworkLagScale=0.02)).lag_scale == 0.02
+    with pytest.raises(ValueError):
+        PairScreenSettings.from_parameters(Parameters(NetworkLagWindow="sky"))
+
+
+def test_a_pair_reports_its_coincidence_window():
+    cand = run_network(Parameters(NetworkLagCut="cut"), triggers=triggers()).candidates
+    row = on_chirp(cand).iloc[0]
+    travel = light_travel_time("H1", "L1")
+    assert travel < row["network_lag_window_s"] <= 2.5 * travel + 1e-12
+    assert str(row["network_lag_window_rule"]).startswith("coincidence")

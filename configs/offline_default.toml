@@ -100,9 +100,10 @@ Scorer = "classic"              # stage 4: "classic" (NetworkRankColumn) or "gnn
 GNNModel = ""                   # path of a saved GNNCoincidenceScorer; required by Scorer = "gnn"
 NetworkRankColumn = "network_morphology"  # candidate-table column the classic scorer ranks on: coherent tile energy |tile_coherence|; "network_enwdf" = hypot of the two EnWDF; "track_statistic" on the track path
 NetworkComparisonBin = 2.0      # comparison map bin, in units of the network's longest light travel time; 0 = none
-NetworkLagCut = "none"          # wavegram path: lag of the two stitched reconstructions (arrival_time_difference): "none", "cut" (|lag| <= light travel + NetworkLagTolerance) or "penalty" (rank x 1/(1+(excess/NetworkLagScale)^2))
-NetworkLagTolerance = 0.01      # wavegram path: s added to the light travel time; about the spread of the reconstruction lag, set from a run's injections
-NetworkLagScale = 0.01          # wavegram path: s, scale of the lag penalty
+NetworkLagCut = "none"          # wavegram path: lag of the two stitched reconstructions (arrival_time_difference): "none", "cut" (|lag| <= the pair's window) or "penalty" (rank x 1/(1+(excess/scale)^2))
+NetworkLagWindow = "coincidence" # wavegram path: the pair's lag window: "coincidence" = the classical coincidence's tolerance (CoincidenceConfig.timing_tolerance, the events' tSpread); "travel_plus_tolerance" = light travel + NetworkLagTolerance
+NetworkLagTolerance = 0.01      # wavegram path: s added to the light travel time with NetworkLagWindow = "travel_plus_tolerance"
+NetworkLagScale = "window"      # wavegram path: scale of the lag penalty: "window" = the pair's own window, or s
 NetworkLagSearch = 0.25         # wavegram path: half-width of the lag search, s
 NetworkGlitchVeto = "none"      # wavegram path, with the detectors' census: a census transient with none in the other detector within light travel + NetworkGlitchTolerance is a single-detector glitch (glitch_single_ifo): "none" = report, "veto" = drop the pair, "penalty" = rank x NetworkGlitchFactor
 NetworkGlitchTolerance = 0.01   # wavegram path: s added to the light travel time for two transients to be coincident

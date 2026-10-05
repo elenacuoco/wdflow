@@ -78,7 +78,7 @@ def test_the_driver_reproduces_the_catalogue_paper_path():
     for ifo in snap.DELAY:
         pd.testing.assert_frame_equal(result.events[ifo],
                                       frozen(f"paper_path_events_{ifo}.parquet"), check_exact=True)
-    assert set(vars(par)) == {"NetworkLagCut", "NetworkLagTolerance", "NetworkLagScale",
+    assert set(vars(par)) == {"NetworkLagCut", "NetworkLagWindow", "NetworkLagTolerance", "NetworkLagScale",
                               "NetworkLagSearch", "NetworkGlitchVeto", "NetworkGlitchTolerance",
                               "NetworkGlitchFactor"}
     assert par.NetworkLagCut == "none" and par.NetworkGlitchVeto == "none"

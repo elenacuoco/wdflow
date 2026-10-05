@@ -102,6 +102,17 @@ of at least 128 L, can still be added to `Bases`. Both workers check `Bases`
 against every scheduled window when they are built
 (`wdf.config.Parameters.check_bases`).
 
+### The lag screen's window is the coincidence's tolerance
+
+`NetworkLagWindow` chooses the window of `NetworkLagCut`: "coincidence" (the
+default) is each pair's admission tolerance of the classical coincidence,
+`CoincidenceConfig.timing_tolerance` with the events' `tSpread` (light travel
+time of the pair plus three times the spreads in quadrature, floored at the
+timing jitter, capped at 2.5 light travel times); "travel_plus_tolerance" is
+the pair's light travel time plus `NetworkLagTolerance`. `NetworkLagScale`
+"window" (the default) makes the penalty's scale the pair's own window. Each
+pair reports `network_lag_window_s` and `network_lag_window_rule`.
+
 ### Online model history, written and reusable
 
 Every online run writes the noise models it applied, with their switch and

@@ -256,14 +256,22 @@ candidate its false-alarm rate.
 stitched reconstructions (`event_waveform`, `arrival_time_difference`,
 searched over `NetworkLagSearch`, 0.25 s), not on the loudest tiles'
 instants. It reports `network_lag_s` (first detector minus the second) and
-`network_lag_width_s`. The pair's window is its light travel time plus
-`NetworkLagTolerance` (0.01 s, about the spread of that lag; set it from the
-spread measured on a run's injections).
+`network_lag_width_s`. The pair's window (`NetworkLagWindow`, reported as
+`network_lag_window_s`) is by default ("coincidence") the classical
+coincidence's tolerance for that pair, `CoincidenceConfig.timing_tolerance`
+with the two events' timing spreads (`tSpread`): light travel time plus
+`timing_sigma` (3) times the quadrature sum of the spreads, each at least
+`timing_jitter_s` (3.5 ms), capped at `maximum_tolerance_travel_times` (2.5)
+light travel times. With no spread: 24.9 ms for H1-L1, 42.1 ms for H1-V1,
+41.3 ms for L1-V1; at most 25.0, 68.2 and 66.1 ms. "travel_plus_tolerance"
+is the pair's light travel time plus `NetworkLagTolerance`.
 
 - "cut" keeps a pair only when `|network_lag_s|` is within the window. A pair
   whose lag cannot be measured within the search is dropped.
 - "penalty" keeps every pair and multiplies the ranking column by
-  `network_lag_factor = 1 / (1 + (max(0, |lag| - window) / NetworkLagScale)^2)`
+  `network_lag_factor = 1 / (1 + (max(0, |lag| - window) / scale)^2)`, the
+  scale being the pair's own window (`NetworkLagScale` "window", the default)
+  or `NetworkLagScale` seconds,
   into `network_rank_statistic`, which the pairs are then ranked on. The
   factor is 1 within the window and falls with the excess, the same for
   either sign. It is 0 when the lag cannot be measured.
@@ -438,8 +446,9 @@ waveform, so `TimeSlideFAR` runs on it.
 | `NetworkSlideStep` | 4.0 s | step between two slides |
 | `NetworkMemory` | 64 s | what `NetworkStream` holds |
 | `NetworkLagCut` | "none" | wavegram path: "none", "cut" or "penalty" on the reconstructions' lag |
-| `NetworkLagTolerance` | 0.01 s | added to the light travel time |
-| `NetworkLagScale` | 0.01 s | scale of the lag penalty |
+| `NetworkLagWindow` | "coincidence" | the pair's lag window: the coincidence's `timing_tolerance`, or "travel_plus_tolerance" |
+| `NetworkLagTolerance` | 0.01 s | added to the light travel time with "travel_plus_tolerance" |
+| `NetworkLagScale` | "window" | scale of the lag penalty: the pair's window, or seconds |
 | `NetworkLagSearch` | 0.25 s | half-width of the lag search |
 | `NetworkGlitchVeto` | "none" | wavegram path: "none", "veto" or "penalty" on `glitch_single_ifo` |
 | `NetworkGlitchTolerance` | 0.01 s | added to the light travel time for coincident transients |

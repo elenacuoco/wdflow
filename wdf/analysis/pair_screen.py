@@ -29,14 +29,26 @@ slide alike, it measures:
   census at the same latency as its triggers: run it once both detectors'
   outputs reach the same data time.
 
-``window`` is the pair's light travel time plus `NetworkLagTolerance`
-(default 0.01 s, the order of the spread of that lag on a chirp near the
-search's threshold; set it from the spread measured on a run's injections).
+``window`` is set by `NetworkLagWindow`. "coincidence" (the default) is the
+pair's admission tolerance of the classical coincidence,
+`CoincidenceConfig.timing_tolerance` with the two events' timing spreads
+(`tSpread`): the pair's light travel time plus `timing_sigma` times the
+quadrature sum of the spreads, each at least `timing_jitter_s`, capped at
+`maximum_tolerance` (`maximum_tolerance_travel_times` light travel times).
+With the default configuration and no spread this is 10.0 + 14.8 = 24.9 ms
+for H1-L1 (cap 25.0 ms), 42.1 ms for H1-V1 and 41.3 ms for L1-V1; long
+spreads reach the cap, 25.0, 68.2 and 66.1 ms. Without a
+`tSpread` column every event takes the jitter floor (logged).
+"travel_plus_tolerance" is the pair's light travel time plus
+`NetworkLagTolerance`. The window used is reported per pair
+(``network_lag_window_s``, ``network_lag_window_rule``).
 With "cut" a pair is kept only when ``|network_lag_s| <= window``; a pair
 whose lag cannot be measured within the search is dropped. With "penalty"
 every pair is kept and ``network_lag_factor``,
 
-    ``1 / (1 + (max(0, |tau| - window) / NetworkLagScale)^2)``,
+    ``1 / (1 + (max(0, |tau| - window) / scale)^2)``, with ``scale`` the pair's
+own window when `NetworkLagScale` is "window" (the default) or that number of
+seconds,
 
 1 within the window, decreasing with the excess, the same for either sign,
 0 when the lag cannot be measured, multiplies the ranking column into
@@ -52,6 +64,7 @@ __license__ = "GPL"
 __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -59,6 +72,12 @@ import pandas as pd
 
 #: The lag criteria (`NetworkLagCut`).
 LAG_CUTS = ("none", "cut", "penalty")
+#: The lag windows (`NetworkLagWindow`).
+LAG_WINDOWS = ("coincidence", "travel_plus_tolerance")
+#: `NetworkLagScale` value that makes the penalty's scale each pair's own window.
+SCALE_IS_WINDOW = "window"
+#: The column of an event's timing spread the coincidence reads (robust_events).
+SPREAD_COLUMN = "tSpread"
 #: The uses of the glitch decision (`NetworkGlitchVeto`).
 GLITCH_VETOES = ("none", "veto", "penalty")
 #: The column the pairs are ranked on when a penalty applies.
@@ -70,10 +89,15 @@ class PairScreenSettings:
     """The screens' choices, read from the run parameters.
 
     :param lag_cut: `NetworkLagCut`, one of `LAG_CUTS` (default "none").
+    :param lag_window: `NetworkLagWindow`, one of `LAG_WINDOWS` (default
+        "coincidence"): "coincidence" is each pair's admission tolerance of
+        the classical coincidence, `CoincidenceConfig.timing_tolerance` with
+        the two events' timing spreads (`tSpread`); "travel_plus_tolerance" is
+        the pair's light travel time plus `NetworkLagTolerance`.
     :param lag_tolerance: `NetworkLagTolerance`, s added to the light travel
-        time (default 0.01).
-    :param lag_scale: `NetworkLagScale`, s, of the lag penalty (default
-        0.01).
+        time with "travel_plus_tolerance" (default 0.01).
+    :param lag_scale: `NetworkLagScale`, the scale of the lag penalty: "window"
+        (default) for each pair's own window, or a number of seconds.
     :param lag_search: `NetworkLagSearch`, half-width of the lag search, s
         (default `wdf.analysis.timing.MAX_LAG_S`, 0.25).
     :param glitch_veto: `NetworkGlitchVeto`, one of `GLITCH_VETOES`
@@ -85,18 +109,19 @@ class PairScreenSettings:
     """
 
     lag_cut: str = "none"
+    lag_window: str = "coincidence"
     lag_tolerance: float = 0.01
-    lag_scale: float = 0.01
+    lag_scale: object = SCALE_IS_WINDOW
     lag_search: float = 0.25
     glitch_veto: str = "none"
     glitch_tolerance: float = 0.01
     glitch_factor: float = 0.1
 
-    KEYS = dict(lag_cut="NetworkLagCut", lag_tolerance="NetworkLagTolerance",
+    KEYS = dict(lag_cut="NetworkLagCut", lag_window="NetworkLagWindow", lag_tolerance="NetworkLagTolerance",
                 lag_scale="NetworkLagScale", lag_search="NetworkLagSearch",
                 glitch_veto="NetworkGlitchVeto", glitch_tolerance="NetworkGlitchTolerance",
                 glitch_factor="NetworkGlitchFactor")
-    WORDS = ("lag_cut", "glitch_veto")
+    WORDS = ("lag_cut", "lag_window", "glitch_veto")
 
     @classmethod
     def from_parameters(cls, par):
@@ -108,8 +133,11 @@ class PairScreenSettings:
         for name, key in cls.KEYS.items():
             value = getattr(par, key, None)
             if value is not None:
-                setattr(out, name, str(value).strip().lower() if name in cls.WORDS
-                        else float(value))
+                if name in cls.WORDS or (name == "lag_scale" and str(value).strip().lower() == SCALE_IS_WINDOW):
+                    value = str(value).strip().lower()
+                else:
+                    value = float(value)
+                setattr(out, name, value)
             setattr(par, key, getattr(out, name))
         if out.lag_cut not in LAG_CUTS:
             raise ValueError(f"NetworkLagCut {out.lag_cut!r}: use one of {LAG_CUTS}")
@@ -117,8 +145,11 @@ class PairScreenSettings:
             raise ValueError(f"NetworkGlitchVeto {out.glitch_veto!r}: use one of {GLITCH_VETOES}")
         if not 0 <= out.glitch_factor <= 1:
             raise ValueError("NetworkGlitchFactor must lie in [0, 1]")
-        if out.lag_scale <= 0 or out.lag_search <= 0:
-            raise ValueError("NetworkLagScale and NetworkLagSearch must be positive")
+        if out.lag_window not in LAG_WINDOWS:
+            raise ValueError(f"NetworkLagWindow {out.lag_window!r}: use one of {LAG_WINDOWS}")
+        if (out.lag_scale != SCALE_IS_WINDOW and out.lag_scale <= 0) or out.lag_search <= 0:
+            raise ValueError(f"NetworkLagScale must be {SCALE_IS_WINDOW!r} or positive, and NetworkLagSearch "
+                             "positive")
         return out
 
     @property
@@ -162,12 +193,45 @@ def single_ifo_glitch(span, own, other, window):
     return False
 
 
+def lag_windows(ifo_a, ifo_b, spread_a, spread_b, settings, config=None):
+    """Each pair's lag window, s.
+
+    "coincidence": the classical coincidence's tolerance for the pair,
+    `CoincidenceConfig.timing_tolerance(spread_a, spread_b, (ifo_a, ifo_b))`
+    = min(travel + timing_sigma * hypot(max(spread, timing_jitter_s)),
+    maximum_tolerance), every constant taken from `config`. A missing spread
+    (NaN) counts as zero, so the jitter floor applies.
+    "travel_plus_tolerance": the pair's light travel time plus
+    `settings.lag_tolerance`.
+
+    :param ifo_a: first detectors (array of names).
+    :param ifo_b: second detectors.
+    :param spread_a: their events' timing spreads, s (array).
+    :param spread_b: the second events' spreads, s.
+    :type settings: PairScreenSettings
+    :param config: the `CoincidenceConfig` (default one when None).
+    :return: numpy.ndarray
+    """
+    from wdf.analysis.detectors import light_travel_time
+
+    if settings.lag_window == "travel_plus_tolerance":
+        return np.array([light_travel_time(a, b) for a, b in zip(ifo_a, ifo_b)]) + settings.lag_tolerance
+    if config is None:
+        from wdf.analysis.robust_events import CoincidenceConfig
+
+        config = CoincidenceConfig()
+    sa = np.nan_to_num(np.asarray(spread_a, dtype=float), nan=0.0)
+    sb = np.nan_to_num(np.asarray(spread_b, dtype=float), nan=0.0)
+    return np.array([float(config.timing_tolerance(x, y, (a, b)))
+                     for a, b, x, y in zip(ifo_a, ifo_b, sa, sb)])
+
+
 def lag_factor(lag, window, scale):
     """``1 / (1 + (max(0, |lag| - window) / scale)^2)``; 0 for a NaN lag.
 
     :param lag: lags, s (array).
     :param window: the allowed lag, s (array or scalar).
-    :param scale: s.
+    :param scale: s (array or scalar).
     :return: numpy.ndarray
     """
     lag = np.asarray(lag, dtype=float)
@@ -243,8 +307,18 @@ class ScreenedFinder:
         out = table.copy()
         out["ifo_i"], out["cluster_i"] = ifo[i], cid[i]
         out["ifo_j"], out["cluster_j"] = ifo[j], cid[j]
-        window = np.array([light_travel_time(a, b) for a, b in zip(ifo[i], ifo[j])]) \
-            + self.settings.lag_tolerance
+        if SPREAD_COLUMN in nodes:
+            spread = pd.to_numeric(nodes[SPREAD_COLUMN], errors="coerce").to_numpy(float)
+            rule = f"{self.settings.lag_window} ({SPREAD_COLUMN})"
+        else:
+            spread = np.zeros(len(nodes))
+            rule = f"{self.settings.lag_window} (no {SPREAD_COLUMN}: jitter floor)"
+            if self.settings.lag_window == "coincidence" and not getattr(self, "_warned", False):
+                logging.warning("NetworkLagWindow 'coincidence': the events carry no %s; each event's spread "
+                                "is the coincidence's jitter floor", SPREAD_COLUMN)
+                self._warned = True
+        config = self.config if hasattr(self.config, "timing_tolerance") else None
+        window = lag_windows(ifo[i], ifo[j], spread[i], spread[j], self.settings, config)
         keep = np.ones(len(out), bool)
         factor = np.ones(len(out))
         if self.settings.lag_cut != "none":
@@ -253,11 +327,13 @@ class ScreenedFinder:
             out["network_lag_s"] = [lag for lag, _ in lags]
             out["network_lag_width_s"] = [width for _, width in lags]
             out["network_lag_window_s"] = window
+            out["network_lag_window_rule"] = rule
             lag = out["network_lag_s"].to_numpy(float)
             if self.settings.lag_cut == "cut":
                 keep &= np.isfinite(lag) & (np.abs(lag) <= window)
             else:
-                out["network_lag_factor"] = lag_factor(lag, window, self.settings.lag_scale)
+                scale = window if self.settings.lag_scale == SCALE_IS_WINDOW else self.settings.lag_scale
+                out["network_lag_factor"] = lag_factor(lag, window, scale)
                 factor = factor * out["network_lag_factor"].to_numpy(float)
         if self.census is not None:
             start = pd.to_numeric(nodes["gpsStart"]).to_numpy(float)
