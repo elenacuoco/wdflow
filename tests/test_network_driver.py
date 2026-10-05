@@ -70,17 +70,19 @@ def test_the_driver_reproduces_the_catalogue_paper_path():
     result = run_network(par, triggers=triggers)
     expected = frozen("paper_path_network.parquet")
     assert len(expected) >= 1
-    pd.testing.assert_frame_equal(result.candidates.drop(columns=["rank"]), expected,
-                                  check_exact=True)
+    pd.testing.assert_frame_equal(result.candidates[expected.columns], expected, check_exact=True)
     expected_rank = result.candidates.groupby("ifos_involved")["network_morphology"].rank(
         ascending=False, method="min").astype(int)
     assert (result.candidates["rank"] == expected_rank).all()
     for ifo in snap.DELAY:
         pd.testing.assert_frame_equal(result.events[ifo],
                                       frozen(f"paper_path_events_{ifo}.parquet"), check_exact=True)
-    assert set(vars(par)) == {"NetworkLagCut", "NetworkLagWindow", "NetworkLagTolerance", "NetworkLagScale",
+    assert set(vars(par)) - {"NetworkLagCut", "NetworkLagWindow", "NetworkLagTolerance", "NetworkLagScale",
+                             "NetworkLagSearch", "NetworkGlitchVeto", "NetworkGlitchTolerance",
+                             "NetworkGlitchFactor"} == set()
+    assert {"NetworkLagCut", "NetworkLagWindow", "NetworkLagTolerance", "NetworkLagScale",
                               "NetworkLagSearch", "NetworkGlitchVeto", "NetworkGlitchTolerance",
-                              "NetworkGlitchFactor"}
+                              "NetworkGlitchFactor"} <= set(vars(par))
     assert par.NetworkLagCut == "none" and par.NetworkGlitchVeto == "none"
 
 
@@ -138,7 +140,7 @@ def test_the_network_stream_holds_and_forgets():
         stream.add(ifo, t)
     held = stream.candidates().candidates
     expected = frozen("paper_path_network.parquet")
-    pd.testing.assert_frame_equal(held.drop(columns=["rank"]), expected, check_exact=True)
+    pd.testing.assert_frame_equal(held[expected.columns], expected, check_exact=True)
     short = NetworkStream(Parameters(NetworkMemory=1.0), list(triggers))
     for ifo, t in triggers.items():
         short.add(ifo, t)
@@ -157,3 +159,48 @@ def test_the_paper_path_ranks_on_the_morphology_by_default():
                               network_enwdf=[30.0, 10.0, 20.0]))
     assert _rank(table, "network_morphology")["rank"].tolist() == [3, 1, 2]
     assert _rank(table, "network_enwdf")["rank"].tolist() == [1, 3, 2]
+
+
+
+def test_the_event_instant_is_a_choice():
+    """`NetworkEventInstant`: the instant of gps_candidate and of dt_s; the extents per detector."""
+    from wdf.analysis.network_driver import run_network
+
+    triggers = {ifo: frozen(f"paper_path_triggers_{ifo}.parquet") for ifo in snap.DELAY}
+    out = {}
+    for mode, column in (("peak", "gpsPeak"), ("centroid", "gpsCentroid"), ("envelope", "gpsEnvelope"),
+                         ("coarse", "gpsPeak")):
+        res = run_network(Parameters(NetworkEventInstant=mode), triggers=triggers)
+        c = res.candidates
+        assert len(c) and (c["event_instant"] == column).all()
+        for ifo in snap.DELAY:
+            for key in ("gpsStart", "duration", "instant"):
+                assert f"{key}_{ifo}" in c
+        row = c.iloc[0]
+        ev = {i: res.events[i].set_index("cluster_id") for i in snap.DELAY}
+        t = {row[f"ifo_{s}"]: float(ev[row[f"ifo_{s}"]].loc[int(row[f"cluster_{s}"]), column]) for s in "ij"}
+        assert row["gps_candidate"] == pytest.approx(0.5 * sum(t.values()))
+        if mode != "coarse":
+            assert row["dt_s"] == pytest.approx(t[row["ifo_i"]] - t[row["ifo_j"]])
+        assert row[f"instant_{row['ifo_i']}"] == pytest.approx(t[row["ifo_i"]])
+        out[mode] = c
+    pd.testing.assert_frame_equal(out["peak"].drop(columns=["event_instant"]),
+                                  out["coarse"].drop(columns=["event_instant"])[out["peak"].columns.drop("event_instant")],
+                                  check_exact=False) if len(out["peak"]) == len(out["coarse"]) else None
+
+
+def test_the_envelope_instant_lies_within_its_width_of_the_peak():
+    from wdf.analysis.network_driver import run_network
+
+    triggers = {ifo: frozen(f"paper_path_triggers_{ifo}.parquet") for ifo in snap.DELAY}
+    res = run_network(Parameters(NetworkEventInstant="envelope", NetworkEnvelopeWidth=0.25), triggers=triggers)
+    for ev in res.events.values():
+        assert (abs(ev["gpsEnvelope"] - ev["gpsPeak"]) <= 0.125 + 1e-9).all()
+
+
+def test_an_unknown_event_instant_is_refused():
+    from wdf.analysis.network_driver import run_network
+
+    triggers = {ifo: frozen(f"paper_path_triggers_{ifo}.parquet") for ifo in snap.DELAY}
+    with pytest.raises(ValueError):
+        run_network(Parameters(NetworkEventInstant="median"), triggers=triggers)

@@ -250,6 +250,22 @@ snapshot). With `NetworkSlides` above zero, `run_network` also draws the
 time-slide background (`TimeSlideFAR`, step `NetworkSlideStep`) and gives every
 candidate its false-alarm rate.
 
+### The event instant
+
+`NetworkEventInstant` sets the instant of an event that the pair's `dt_s`
+and `gps_candidate` (the mean of the two) are read on: "peak" (default,
+`gpsPeak`, the centre of the loudest tile), "centroid" (`gpsCentroid`, the
+EnWDF²-weighted centre), "envelope" (`gpsEnvelope`, the peak of the analytic
+envelope of the event's stitched reconstruction, `timing.envelope_instants`,
+searched over `NetworkEnvelopeWidth` about `gpsPeak`: "window" for the
+event's analysis window, or seconds) or "coarse" (`gpsPeak` for
+`gps_candidate`, and the one-to-one assignment of `IndexedCoincidenceFinder`
+gives the instants' difference no weight, `CoincidenceConfig.time_weight` 0).
+Admission is always on the two events' extents widened by the pair's
+tolerance. Each candidate carries, per detector of the pair,
+`gpsStart_<ifo>`, `duration_<ifo>` and `instant_<ifo>`, and
+`event_instant`.
+
 ### Optional screens on the paper path
 
 `NetworkLagCut` (default "none") measures each pair's lag on the two events'
@@ -445,6 +461,8 @@ waveform, so `TimeSlideFAR` runs on it.
 | `NetworkSlides` | 0 | time slides of the background |
 | `NetworkSlideStep` | 4.0 s | step between two slides |
 | `NetworkMemory` | 64 s | what `NetworkStream` holds |
+| `NetworkEventInstant` | "peak" | wavegram path: "peak", "centroid", "envelope" or "coarse" |
+| `NetworkEnvelopeWidth` | "window" | search width of "envelope" about `gpsPeak` |
 | `NetworkLagCut` | "none" | wavegram path: "none", "cut" or "penalty" on the reconstructions' lag |
 | `NetworkLagWindow` | "coincidence" | the pair's lag window: the coincidence's `timing_tolerance`, or "travel_plus_tolerance" |
 | `NetworkLagTolerance` | 0.01 s | added to the light travel time with "travel_plus_tolerance" |

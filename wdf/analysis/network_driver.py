@@ -90,6 +90,20 @@ class NetworkSettings:
     :param slides: `NetworkSlides`, time slides of the background (0: none).
     :param slide_step_s: `NetworkSlideStep`, s.
     :param memory_s: `NetworkMemory`, what `NetworkStream` holds, s.
+    :param event_instant: `NetworkEventInstant` (wavegram path), the instant
+        of an event used for the pair's dt and for `gps_candidate`: "peak"
+        (default: `INSTANT_COLUMNS`, i.e. the loudest tile's `gpsPeak` unless
+        the events carry `gpsEnvelope`), "centroid" (`gpsCentroid`, the
+        EnWDF-weighted centre), "envelope" (`gpsEnvelope`, the peak of the
+        analytic envelope of the event's stitched reconstruction,
+        `timing.envelope_instants`, searched over `NetworkEnvelopeWidth`
+        about `gpsPeak`) or "coarse" (`gpsPeak` as the candidate time; the
+        one-to-one assignment does not weigh the instants' difference,
+        `CoincidenceConfig.time_weight` = 0: pairs are admitted on the
+        events' extents and chosen on their frequency overlap, and the
+        lag criterion, if any, is read on the reconstructions).
+    :param envelope_width: `NetworkEnvelopeWidth`: "window" (default) for
+        each event's analysis window (`n_coeff` / `fs`), or seconds.
     """
 
     reconstruction: str = "wavegram"
@@ -101,6 +115,8 @@ class NetworkSettings:
     slides: int = DEFAULT_SLIDES
     slide_step_s: float = DEFAULT_SLIDE_STEP_S
     memory_s: float = DEFAULT_NETWORK_MEMORY_S
+    event_instant: str = "peak"
+    envelope_width: object = "window"
 
     @classmethod
     def from_parameters(cls, par):
@@ -119,7 +135,9 @@ class NetworkSettings:
                    comparison_bin=float(get("NetworkComparisonBin", DEFAULT_COMPARISON_BIN)),
                    slides=int(get("NetworkSlides", DEFAULT_SLIDES)),
                    slide_step_s=float(get("NetworkSlideStep", DEFAULT_SLIDE_STEP_S)),
-                   memory_s=float(get("NetworkMemory", DEFAULT_NETWORK_MEMORY_S)))
+                   memory_s=float(get("NetworkMemory", DEFAULT_NETWORK_MEMORY_S)),
+                   event_instant=_event_instant(get("NetworkEventInstant", "peak")),
+                   envelope_width=_envelope_width(get("NetworkEnvelopeWidth", "window")))
 
 
 @dataclass
@@ -222,13 +240,101 @@ def _rank(candidates, column):
     return out
 
 
-def _with_identities(candidates, nodes):
+#: `NetworkEventInstant` choices and the event columns each reads.
+EVENT_INSTANTS = {"peak": None, "centroid": ("gpsCentroid",), "envelope": ("gpsEnvelope",),
+                  "coarse": ("gpsPeak",)}
+
+
+def _event_instant(value):
+    value = str(value).strip().lower()
+    if value not in EVENT_INSTANTS:
+        raise ValueError(f"NetworkEventInstant {value!r}: use one of {tuple(EVENT_INSTANTS)}")
+    return value
+
+
+def _envelope_width(value):
+    if str(value).strip().lower() == "window":
+        return "window"
+    value = float(value)
+    if value <= 0:
+        raise ValueError("NetworkEnvelopeWidth must be 'window' or positive")
+    return value
+
+
+def instant_column(settings):
+    """The event column `gps_candidate` and dt are read on."""
+    columns = EVENT_INSTANTS[settings.event_instant]
+    return "gpsPeak" if columns is None else columns[0]
+
+
+def coincidence_config(settings):
+    """The `CoincidenceConfig` of the wavegram path for `settings.event_instant`."""
+    from wdf.analysis.robust_events import CoincidenceConfig
+
+    columns = EVENT_INSTANTS[settings.event_instant]
+    kwargs = {} if columns is None else dict(instant_columns=columns)
+    if settings.event_instant == "coarse":
+        kwargs["time_weight"] = 0.0
+    return CoincidenceConfig(**kwargs)
+
+
+def add_envelope_instants(events, graphs, labels, width):
+    """`gpsEnvelope` per event: the analytic-envelope peak of its stitched
+    reconstruction within `width` about `gpsPeak` ("window": the event's own
+    analysis window, `n_coeff` / `fs`); `gpsPeak` where it cannot be read.
+
+    :return: ``{ifo: events with gpsEnvelope}``.
+    """
+    from wdf.analysis.timing import envelope_instant
+
+    recon = _reconstructions(graphs, labels)
+    out = {}
+    for ifo, ev in events.items():
+        ev = ev.copy()
+        peak = pd.to_numeric(ev["gpsPeak"]).to_numpy(float)
+        if width == "window":
+            widths = (pd.to_numeric(ev["n_coeff"]).to_numpy(float) / pd.to_numeric(ev["fs"]).to_numpy(float)
+                      if {"n_coeff", "fs"} <= set(ev.columns) else np.full(len(ev), np.nan))
+        else:
+            widths = np.full(len(ev), float(width))
+        fs = pd.to_numeric(ev["fs"]).to_numpy(float) if "fs" in ev else np.full(len(ev), np.nan)
+        value = np.full(len(ev), np.nan)
+        for k, cid in enumerate(ev["cluster_id"].astype(int).to_numpy()):
+            if not (np.isfinite(widths[k]) and np.isfinite(fs[k])):
+                continue
+            try:
+                value[k] = envelope_instant(recon[ifo](cid), peak[k], fs[k], widths[k])
+            except (ValueError, KeyError, IndexError):
+                pass
+        ev["gpsEnvelope"] = np.where(np.isfinite(value), value, peak)
+        out[ifo] = ev
+    return out
+
+
+def _with_identities(candidates, nodes, instant="gpsPeak"):
+    """Each pair's detectors and clusters, and per detector of the pair its
+    event's extent (`gpsStart_<ifo>`, `duration_<ifo>`) and instant
+    (`instant_<ifo>`); `gps_candidate` is the mean of the two instants."""
     if candidates.empty or "node_i" not in candidates:
         return candidates
+    ifo = nodes["ifo"].to_numpy()
+    when = {}
     for side in ("i", "j"):
-        index = candidates[f"node_{side}"].astype(int)
-        candidates[f"ifo_{side}"] = nodes["ifo"].to_numpy()[index]
+        index = candidates[f"node_{side}"].astype(int).to_numpy()
+        candidates[f"ifo_{side}"] = ifo[index]
         candidates[f"cluster_{side}"] = nodes["cluster_id"].to_numpy()[index]
+        when[side] = pd.to_numeric(nodes[instant]).to_numpy(float)[index]
+        for name in sorted(set(ifo)):
+            sel = ifo[index] == name
+            for column, source in (("gpsStart", "gpsStart"), ("duration", "duration"), ("instant", instant)):
+                if source not in nodes:
+                    continue
+                key = f"{column}_{name}"
+                if key not in candidates:
+                    candidates[key] = np.nan
+                candidates.loc[sel, key] = pd.to_numeric(nodes[source]).to_numpy(float)[index][sel]
+    candidates["gps_candidate"] = 0.5 * (when["i"] + when["j"])
+    candidates["event_instant"] = instant
     return candidates
 
 
@@ -281,8 +387,12 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
                                comparison=comparison, graphs=graphs, settings=settings)
         if len(ifos) < 2:
             return result
-        builder = TriggerGraphBuilder(ifos=ifos)
-        finder = WavegramCoincidenceFinder(IndexedCoincidenceFinder(), builder, maps,
+        if settings.event_instant == "envelope":
+            events = add_envelope_instants(events, graphs, labels, settings.envelope_width)
+            result.events = events
+        config = coincidence_config(settings)
+        builder = TriggerGraphBuilder(ifos=ifos, coincidence=config)
+        finder = WavegramCoincidenceFinder(IndexedCoincidenceFinder(config), builder, maps,
                                            comparison=comparison, events=events, scorer=scorer)
         screen = PairScreenSettings.from_parameters(par)
         if screen.active or census is not None:
@@ -294,7 +404,7 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         candidates = finder.find(events)
         nodes = pd.concat([events[i].reset_index(drop=True).assign(ifo=i) for i in ifos],
                           ignore_index=True)
-        candidates = _with_identities(candidates, nodes)
+        candidates = _with_identities(candidates, nodes, instant_column(settings))
     else:
         from wdf.analysis.track_coincidence import (TrackCoincidenceFinder,
                                                     TrackCoincidenceSettings,

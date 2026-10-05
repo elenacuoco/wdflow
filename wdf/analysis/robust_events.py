@@ -477,6 +477,10 @@ class CoincidenceConfig:
     maximum_tolerance_travel_times: float = 2.5
     maximum_tolerance_s: float | None = None
     time_weight: float = 1.0
+    # The columns an event's instant is read from, in order of preference
+    # (`INSTANT_COLUMNS` by default); the first one an event table carries is
+    # used for the pair's dt.
+    instant_columns: tuple = INSTANT_COLUMNS
     frequency_weight: float = 1.0
     # Amplitude ratio is not a shape mismatch: the same signal reaches two
     # detectors with amplitudes set by their antenna responses, routinely
@@ -639,8 +643,8 @@ class IndexedCoincidenceFinder:
         # detectors at different projected amplitudes place it differently and
         # the difference lands in dt, where it is indistinguishable from
         # geometry.
-        lt = _numeric(left, INSTANT_COLUMNS)
-        rt = _numeric(right, INSTANT_COLUMNS)
+        lt = _numeric(left, self.config.instant_columns)
+        rt = _numeric(right, self.config.instant_columns)
         ls = _numeric(left, ("tSpread",), default=0.0)
         rs = _numeric(right, ("tSpread",), default=0.0)
         ls = np.where(np.isfinite(ls), ls, 0.0)
@@ -785,8 +789,8 @@ class IndexedCoincidenceFinder:
         sb = _numeric(right, ("EnWDF", "snrMax"), default=0.0)[j]
         # The same clock the admissibility used, so a candidate's recorded dt
         # is the quantity it was admitted and penalised on.
-        ta = _numeric(left, INSTANT_COLUMNS)[i]
-        tb = _numeric(right, INSTANT_COLUMNS)[j]
+        ta = _numeric(left, self.config.instant_columns)[i]
+        tb = _numeric(right, self.config.instant_columns)[j]
 
         out = pd.DataFrame({
             f"index_{left_ifo}": i,

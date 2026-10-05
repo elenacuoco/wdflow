@@ -102,6 +102,8 @@ Scorer = "classic"              # stage 4: "classic" (NetworkRankColumn) or "gnn
 GNNModel = ""                   # path of a saved GNNCoincidenceScorer; required by Scorer = "gnn"
 NetworkRankColumn = "network_morphology"  # candidate-table column the classic scorer ranks on: coherent tile energy |tile_coherence|; "network_enwdf" = hypot of the two EnWDF; "track_statistic" on the track path
 NetworkComparisonBin = 2.0      # comparison map bin, in units of the network's longest light travel time; 0 = none
+NetworkEventInstant = "peak"     # wavegram path: an event's instant for gps_candidate and the pair's dt: "peak" (loudest tile), "centroid" (EnWDF-weighted), "envelope" (analytic-envelope peak of the reconstruction), "coarse" (peak as candidate time; the assignment does not weigh dt)
+NetworkEnvelopeWidth = "window" # wavegram path: search width of "envelope" about gpsPeak: "window" = the event's analysis window, or s
 NetworkLagCut = "none"          # wavegram path: lag of the two stitched reconstructions (arrival_time_difference): "none", "cut" (|lag| <= the pair's window) or "penalty" (rank x 1/(1+(excess/scale)^2))
 NetworkLagWindow = "coincidence" # wavegram path: the pair's lag window: "coincidence" = the classical coincidence's tolerance (CoincidenceConfig.timing_tolerance, the events' tSpread); "travel_plus_tolerance" = light travel + NetworkLagTolerance
 NetworkLagTolerance = 0.01      # wavegram path: s added to the light travel time with NetworkLagWindow = "travel_plus_tolerance"

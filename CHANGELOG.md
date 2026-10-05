@@ -102,6 +102,16 @@ of at least 128 L, can still be added to `Bases`. Both workers check `Bases`
 against every scheduled window when they are built
 (`wdf.config.Parameters.check_bases`).
 
+### The event instant is a choice
+
+`NetworkEventInstant` ("peak" default, "centroid", "envelope", "coarse")
+selects the event instant of the pair's `dt_s` and of `gps_candidate`
+(`CoincidenceConfig.instant_columns`); "envelope" writes `gpsEnvelope` with
+`timing.envelope_instants` over `NetworkEnvelopeWidth` ("window" default);
+"coarse" keeps `gpsPeak` and sets the assignment's `time_weight` to 0. The
+candidate table carries `gpsStart_<ifo>`, `duration_<ifo>`, `instant_<ifo>`
+and `event_instant`.
+
 ### The lag screen's window is the coincidence's tolerance
 
 `NetworkLagWindow` chooses the window of `NetworkLagCut`: "coincidence" (the
