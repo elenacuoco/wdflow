@@ -5,6 +5,13 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### Class weighting in the GNN fit
+
+`GNNCoincidenceScorer.fit(..., pos_weight=None)` weighs the loss of the
+positive edges by `pos_weight` (`BCEWithLogitsLoss(pos_weight=...)`), for
+training sets with many more negatives than positives, such as accidental pairs
+from time slides. The default None weighs every edge alike, as before.
+
 ### The network's glitch decision
 
 Given the detectors' census of transients (`run_network(..., census=)`,

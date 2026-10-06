@@ -10,6 +10,7 @@ from wdf.analysis.gnn import (
     N_EDGE_FEATURES,
     GNNCoincidenceScorer,
     TriggerGraphBuilder,
+    _to_pyg_data,
 )
 
 
@@ -593,3 +594,55 @@ def test_a_saved_scorer_reloads_and_scores_identically(tmp_path):
     np.testing.assert_allclose(
         reloaded.feature_scale.numpy(), scorer.feature_scale.cpu().numpy(),
         rtol=0, atol=0)
+
+
+def _weighted_fit_inputs():
+    clustered, _ = _synth_graph_inputs({"H1": 25, "L1": 25})
+    coefficients = {ifo: _synth_coefficients(frame, seed=13) for ifo, frame in clustered.items()}
+    graph = TriggerGraphBuilder().build(clustered, coefficients)
+    labels = (np.arange(len(graph.cross_edges)) % 4 == 0).astype(float)
+    assert len(labels) >= 8
+    return graph, labels
+
+
+def _fresh(graph):
+    return GNNCoincidenceScorer(node_dim=graph.node_features.shape[1], hidden=8, seed=0,
+                                cross_edge_dim=graph.cross_edge_features.shape[1], device="cpu")
+
+
+def test_no_pos_weight_and_a_weight_of_one_train_alike():
+    graph, labels = _weighted_fit_inputs()
+    plain = _fresh(graph).fit([(graph, labels)], epochs=10)
+    one = _fresh(graph).fit([(graph, labels)], epochs=10, pos_weight=1.0)
+    assert plain == pytest.approx(one, rel=1e-6)
+
+
+def test_the_first_loss_is_the_positive_weighted_cross_entropy():
+    graph, labels = _weighted_fit_inputs()
+    assert labels.sum() > 0
+    model = _fresh(graph)
+    model._fit_feature_scaling([graph])
+    with torch.no_grad():
+        logits = model._edge_logits_from_data(_to_pyg_data(graph, labels)).cpu().numpy().astype(float)
+    p = 1.0 / (1.0 + np.exp(-logits))
+    w = 7.0
+    expected = np.mean(-(w * labels * np.log(p) + (1 - labels) * np.log(1 - p)))
+    history = _fresh(graph).fit([(graph, labels)], epochs=1, pos_weight=w)
+    assert history[0] == pytest.approx(expected, rel=1e-4)
+
+
+def test_a_larger_pos_weight_tilts_the_logits_towards_positive():
+    """A heavier positive weight makes a false negative dearer than a false
+    positive, so the fitted logits move up as a whole."""
+    graph, labels = _weighted_fit_inputs()
+    low, high = _fresh(graph), _fresh(graph)
+    low.fit([(graph, labels)], epochs=40, pos_weight=1.0)
+    high.fit([(graph, labels)], epochs=40, pos_weight=20.0)
+    neg = labels == 0
+    assert high.score(graph)["gnn_logit"].to_numpy()[neg].mean() > low.score(graph)["gnn_logit"].to_numpy()[neg].mean()
+
+
+def test_a_non_positive_pos_weight_is_refused():
+    graph, labels = _weighted_fit_inputs()
+    with pytest.raises(ValueError):
+        _fresh(graph).fit([(graph, labels)], epochs=1, pos_weight=0.0)

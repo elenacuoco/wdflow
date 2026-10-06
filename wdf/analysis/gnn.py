@@ -272,6 +272,7 @@ class GNNCoincidenceScorer(nn.Module):
         epochs: int = 100,
         lr: float = 1e-2,
         batch_size: int | None = None,
+        pos_weight: float | None = None,
     ) -> list[float]:
         """examples: `(graph, labels)` or `(graph, labels, mask)` per segment,
         labels a 0/1 array aligned with `graph.cross_edges` (1 = real
@@ -291,6 +292,12 @@ class GNNCoincidenceScorer(nn.Module):
         segments at once. Default (None) puts every segment in one batch per
         epoch (full-batch training), the common case when `examples` is the
         whole training set for one run, not a huge out-of-core dataset.
+
+        `pos_weight` multiplies the loss of the positive edges
+        (`BCEWithLogitsLoss(pos_weight=...)`): with many more negatives than
+        positives, e.g. accidental pairs from time slides, a weight of about
+        n_negative / n_positive keeps the positives from being swamped. None
+        (default) weighs every edge alike.
         Returns the per-epoch loss history.
         """
         datas = [_to_pyg_data(example[0], example[1],
@@ -303,7 +310,13 @@ class GNNCoincidenceScorer(nn.Module):
         chunk_size = batch_size or len(datas)
 
         opt = torch.optim.Adam(self.parameters(), lr=lr)
-        loss_fn = nn.BCEWithLogitsLoss()
+        if pos_weight is None:
+            loss_fn = nn.BCEWithLogitsLoss()
+        else:
+            if not float(pos_weight) > 0.0:
+                raise ValueError("pos_weight must be positive")
+            loss_fn = nn.BCEWithLogitsLoss(
+                pos_weight=torch.tensor([float(pos_weight)], dtype=torch.float32, device=self.device))
         history = []
         for _ in range(epochs):
             opt.zero_grad()
