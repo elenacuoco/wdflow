@@ -51,7 +51,8 @@ stretch when:
   `GlitchTrigger`;
 - for a refit, its power in each octave from `GlitchCensusLow`, whitened by the
   current model, is within `ARFitLevelRatio` of white (between
-  `1 / ARFitLevelRatio` and `ARFitLevelRatio`).
+  `1 / ARFitLevelRatio` and `ARFitLevelRatio`). `ARFitLevelCheck = false`
+  drops this condition; the levels are still recorded.
 
 A refit tries `ARFitCandidates` stretches, the first ending `ARFitGap` before
 the switch and each next one `ARFitStep` seconds earlier, and takes the most
@@ -61,8 +62,39 @@ is recorded in the refits with `accepted` False and counted in
 stretch fails, the search waits `ARFitStep` seconds and judges the stretch then
 ending, up to `ARFitCandidates` stretches, and then takes the one with the
 smallest census peak. Every refit records the candidate it took, its census
-peak and its octave levels. A test checks that a stretch holding a glitch or a
-louder noise level is skipped, and that the rule reads only the past.
+peak and its octave levels; a rejected refit records the census peak and the
+octave levels of each candidate (`candidate_census_peaks`,
+`candidate_level_min`, `candidate_level_max`, ";"-joined). A test checks that a
+stretch holding a glitch or a louder noise level is skipped, and that the rule
+reads only the past.
+
+#### A sub-stretch between transients
+
+`ARFitSubStretch` (default "none") lets a fit use part of a candidate that
+holds census transients:
+
+- "latest" or "longest": when every full candidate of a refit fails, each
+  failed candidate that holds census transients offers the contiguous stretch
+  between them. A transient covers the wider of its census span and its
+  extent, padded on each side by `ARFitExcludePad` (default `GlitchSeedPad`).
+  The stretch must be at least `ARFitMinimumLearn` seconds (default half of
+  `learn`; it must exceed the whitening filter's span, `2 x
+  WhiteningLookahead_s` in the "zerophase" mode, `ARorder / resampling` in the
+  causal one). The best stretch of each candidate (most recent end, or
+  longest) is tried, in the same order across candidates;
+- the model is fitted (Burg) on those samples alone. Nothing inside the
+  stretch is zeroed or tapered. It is judged by the same rule, through the
+  current model, and taken if it passes;
+- the first fit does the same on its failed candidate, judged by its own
+  model, before waiting `ARFitStep` for the next one;
+- the stretch lies inside its candidate, so it ends at or before `now -
+  ARFitGap`: the fit stays causal;
+- the refit row records `fit_start` and `fit_end` of the sub-stretch,
+  `substretch`, `candidate_start`, `candidate_end` and `excluded_s` (the
+  candidate's seconds left out). The model file stores its fit stretch, so a
+  run with `ARModelsFrom` applies the same model at the same switch time.
+
+Without `ARFitQuality` no candidate is judged, so no sub-stretch is taken.
 
 ### One model history for several runs
 

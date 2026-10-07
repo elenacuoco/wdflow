@@ -26,8 +26,16 @@ The chain, block by block of `len` seconds:
    most recent whose whitened samples hold no census transient reaching
    `GlitchTrigger` and, for a refit, whose power in each octave from
    `GlitchCensusLow` through the current model stays within
-   `ARFitLevelRatio` of white; a refit with none keeps the current model,
-   the first fit takes the candidate of smallest census peak. Every model
+   `ARFitLevelRatio` of white (`ARFitLevelCheck`, on by default); a refit
+   with none keeps the current model, the first fit takes the candidate of
+   smallest census peak. With `ARFitSubStretch` "latest" or "longest"
+   (default "none") a fit whose candidates fail and hold census transients
+   is taken instead on the contiguous stretch between the transients (each
+   padded by `ARFitExcludePad`, default `GlitchSeedPad`), the most recent or
+   the longest, at least `ARFitMinimumLearn` seconds (default half of
+   `learn`), fitted on those samples alone (nothing zeroed or tapered) and
+   judged by the same rule; its `fit_start` and `fit_end` are written with
+   the candidate it was cut from and the seconds left out. Every model
    applied is written, with its switch time and fit stretch, to
    ``ARModels-<itf><suffix>.h5`` (`save_ar_models`; path `ARModelsFile`).
    With `ARModelsFrom` set to such a file the worker fits nothing: it applies
@@ -123,6 +131,12 @@ DEFAULT_FIT_STEP_FRACTION = 0.5
 #: Default largest octave power, through the current model, over white
 #: (and smallest, its inverse) of a refit's stretch (`ARFitLevelRatio`).
 DEFAULT_FIT_LEVEL_RATIO = 4.0
+#: What a fit takes from candidates that hold census transients
+#: (`ARFitSubStretch`): "none", nothing; "latest", the most recent contiguous
+#: stretch between them; "longest", the longest.
+FIT_SUBSTRETCH_RULES = ("none", "latest", "longest")
+#: Default shortest sub-stretch, as a fraction of `learn` (`ARFitMinimumLearn`).
+DEFAULT_FIT_MINIMUM_FRACTION = 0.5
 #: Default `SearchName` in the "zerophase" mode.
 DEFAULT_ZEROPHASE_SEARCH_NAME = "online_zerophase"
 #: Zero-phase filters the "zerophase" mode runs: those of fixed support, so
@@ -349,7 +363,13 @@ class OnlineResult:
     :param running: per slot, ``slot_end``, ``score`` and ``state`` of the
         running best path and ``emitted_at``.
     :param refits: one dict per model fit: ``emitted_at``, ``fit_start``,
-        ``fit_end``, ``sigma``.
+        ``fit_end``, ``sigma`` and the quality record (``candidate``,
+        ``census_peak``, ``census_transients``, ``level_min``,
+        ``level_max``, ``passed``, ``accepted``; with `ARFitSubStretch`
+        ``substretch``, ``candidate_start``, ``candidate_end``,
+        ``excluded_s``); one row per refit with no stretch accepted
+        (``accepted`` False), with the candidates' census peaks and octave
+        levels (`_choose_stretch`).
     :param models: the noise models applied, in switch order (the fields of
         `save_ar_models`).
     :param census: with `GlitchLabel` "census", one dict per transient of the
@@ -482,9 +502,22 @@ class wdfUnitOnline:
         if par.ARFitCandidates < 1 or par.ARFitStep < 0 or par.ARFitLevelRatio <= 1:
             raise ValueError("ARFitCandidates must be at least 1, ARFitStep not negative and "
                              "ARFitLevelRatio above 1")
+        check = getattr(par, "ARFitLevelCheck", None)
+        par.ARFitLevelCheck = bool(True if check is None else check)
+        rule = str(getattr(par, "ARFitSubStretch", None) or FIT_SUBSTRETCH_RULES[0]).lower()
+        if rule not in FIT_SUBSTRETCH_RULES:
+            raise ValueError(f"ARFitSubStretch {rule!r}: use one of {FIT_SUBSTRETCH_RULES}")
+        par.ARFitSubStretch = rule
         from wdf.processes.causal_census import CensusSettings as _Census
 
         self._fit_census = _Census.from_parameters(par)
+        pad = getattr(par, "ARFitExcludePad", None)
+        par.ARFitExcludePad = float(self._fit_census.pad if pad is None else pad)
+        shortest = getattr(par, "ARFitMinimumLearn", None)
+        par.ARFitMinimumLearn = float(DEFAULT_FIT_MINIMUM_FRACTION * par.learn if shortest is None
+                                      else shortest)
+        if par.ARFitExcludePad < 0:
+            raise ValueError("ARFitExcludePad must not be negative")
         self._model = None
         if par.ARWarmup < par.ARorder:
             raise ValueError(f"ARWarmup {par.ARWarmup} samples is shorter than the model's order "
@@ -495,6 +528,15 @@ class wdfUnitOnline:
         self.latency = None
         if mode == "zerophase":
             self._declare_latency()
+        if par.ARFitSubStretch != "none":
+            # the judge's filter must reach real data on both sides of at
+            # least one sample of the shortest sub-stretch
+            judge_s = (2.0 * par.WhiteningLookahead_s if mode == "zerophase"
+                       else par.ARorder / float(par.resampling))
+            if not judge_s < par.ARFitMinimumLearn <= par.learn:
+                raise ValueError(f"ARFitMinimumLearn {par.ARFitMinimumLearn:g} s must exceed the "
+                                 f"whitening filter's span, {judge_s:g} s, and not exceed learn "
+                                 f"{par.learn:g} s")
         #: Stage 2 the worker feeds: "wavegram" (nothing beyond the triggers)
         #: or "track" (`TrackObserver`).
         self.reconstruction = reconstruction_mode(par)
@@ -715,16 +757,24 @@ class wdfUnitOnline:
             return lfilter(filt.taps, [1.0], x)[filt.taps.size - 1:] / filt.sigma
         return fftconvolve(x, filt.taps, mode="valid") / filt.sigma
 
-    def _stretch_quality(self, w, start, current):
+    def _stretch_quality(self, w, start, current, seeds_out=None):
         """The quality rule on a whitened stretch: its census (no transient
         reaching `GlitchTrigger`) and, against the current model, its power
         in each octave from `GlitchCensusLow` over that of white noise,
-        within ``[1 / ARFitLevelRatio, ARFitLevelRatio]``."""
+        within ``[1 / ARFitLevelRatio, ARFitLevelRatio]`` (with
+        `ARFitLevelCheck`, the default; the levels are recorded either way).
+        An empty whitened stretch (shorter than the filter) fails.
+
+        :param seeds_out: a list the census seeds (`glitch_seeds`) are
+            appended to, or None.
+        """
         from wdf.processes.census import band_stream, octave_bands
         from wdf.processes.glitch_subtraction import glitch_seeds
 
         par, rate, cs = self.par, float(self.par.resampling), self._fit_census
         seeds = glitch_seeds(w, start, rate, **cs.seeds()) if w.size else []
+        if seeds_out is not None:
+            seeds_out.extend(seeds)
         peak = max((sd["peak"] for sd in seeds), default=0.0)
         ratios = []
         if current is not None and w.size:
@@ -734,16 +784,116 @@ class wdfUnitOnline:
                 ratios.append(float(np.mean(y ** 2)) / ((band[1] - band[0]) / nyquist))
         lo = min(ratios) if ratios else float("nan")
         hi = max(ratios) if ratios else float("nan")
-        level_ok = not ratios or (lo >= 1.0 / par.ARFitLevelRatio and hi <= par.ARFitLevelRatio)
+        level_ok = (not par.ARFitLevelCheck or not ratios
+                    or (lo >= 1.0 / par.ARFitLevelRatio and hi <= par.ARFitLevelRatio))
         return dict(census_peak=float(peak), census_transients=len(seeds), level_min=lo,
-                    level_max=hi, passed=bool(not seeds and level_ok))
+                    level_max=hi, passed=bool(w.size and not seeds and level_ok))
+
+    def _judge(self, x, fit_start, judge, current, seeds_out=None):
+        """`_stretch_quality` of the stretch `x` (from `fit_start`) whitened
+        by the filter `judge`, where it reached real data on every side."""
+        rate = float(self.par.resampling)
+        w = self._whitened_stretch(judge, x)
+        offset = (x.size - w.size) / rate if self.mode == "causal" else 0.5 * (x.size - w.size) / rate
+        return self._stretch_quality(w, fit_start + offset, current, seeds_out)
+
+    def _gaps(self, fit_start, fit_end, seeds):
+        """With `ARFitSubStretch`: the contiguous stretches of
+        ``[fit_start, fit_end]`` outside every census seed (the wider of its
+        census span ``[first, last]`` and its extent ``centre +-
+        half_width``, padded by `ARFitExcludePad`), at least
+        `ARFitMinimumLearn` long, best first by the rule ("latest": latest
+        end, then longest; "longest": longest, then latest end).
+
+        :return: list of (start, end), GPS.
+        """
+        par, rate = self.par, float(self.par.resampling)
+        pad = par.ARFitExcludePad
+        cut = sorted((max(fit_start, min(s["first"], s["centre"] - s["half_width"]) - pad),
+                      min(fit_end, max(s["last"], s["centre"] + s["half_width"]) + pad))
+                     for s in seeds)
+        gaps, at = [], fit_start
+        for a, b in cut:
+            if a > at:
+                gaps.append((at, a))
+            at = max(at, b)
+        if fit_end > at:
+            gaps.append((at, fit_end))
+        gaps = [g for g in gaps if g[1] - g[0] >= par.ARFitMinimumLearn - 0.5 / rate]
+        if par.ARFitSubStretch == "latest":
+            return sorted(gaps, key=lambda g: (-g[1], -(g[1] - g[0])))
+        return sorted(gaps, key=lambda g: (-(g[1] - g[0]), -g[1]))
+
+    def _sub_stretch(self, past, past_start, now, gap, candidate, current):
+        """Fit on one sub-stretch of a candidate and judge it: by the current
+        model for a refit, by its own for the first fit. The samples are
+        used as they are (no zeroing, no taper); the sub-stretch lies inside
+        its candidate, so it ends at or before ``now - ARFitGap``.
+
+        :param candidate: (index, start, end) of the candidate it is cut from.
+        :return: tuple -- (fit_start, fit_end, model, filter or None, quality).
+        """
+        rate = float(self.par.resampling)
+        j, c0, c1 = candidate
+        a = int(round((gap[0] - past_start) * rate))
+        b = int(round((gap[1] - past_start) * rate))
+        fit_start, fit_end = past_start + a / rate, past_start + b / rate
+        x = past[a:b]
+        ar = fit_autoregressive(x, fit_start, rate, self.par.ARorder)
+        filt = self._filter_of(ar, now) if self.mode == "zerophase" else None
+        judge = current if current is not None else (filt or self._filter_of(ar, now))
+        q = self._judge(x, fit_start, judge, current)
+        q.update(candidate=j, substretch=True, candidate_start=float(c0), candidate_end=float(c1),
+                 excluded_s=float((c1 - c0) - (fit_end - fit_start)))
+        return fit_start, fit_end, ar, filt, q
+
+    def _try_sub_stretches(self, past, past_start, now, failed, current):
+        """With `ARFitSubStretch`: of the failed candidates that hold census
+        seeds, the best sub-stretch of each (`_gaps`), tried best first
+        across candidates by the same rule; the first that passes the
+        quality rule, or None.
+
+        :param failed: list of (index, start, end, seeds).
+        """
+        options = []
+        for j, c0, c1, seeds in failed:
+            if seeds:
+                gaps = self._gaps(c0, c1, seeds)
+                if gaps:
+                    options.append((gaps[0], (j, c0, c1)))
+        if self.par.ARFitSubStretch == "latest":
+            options.sort(key=lambda o: (-o[0][1], -(o[0][1] - o[0][0])))
+        else:
+            options.sort(key=lambda o: (-(o[0][1] - o[0][0]), -o[0][1]))
+        for gap, candidate in options:
+            chosen = self._sub_stretch(past, past_start, now, gap, candidate, current)
+            self._sub_tried.append(chosen[4])
+            if chosen[4]["passed"]:
+                chosen[4]["accepted"] = True
+                logging.info(f"online: fit sub-stretch {chosen[0]:.1f}-{chosen[1]:.1f} of the "
+                             f"candidate {candidate[1]:.1f}-{candidate[2]:.1f} "
+                             f"({chosen[4]['excluded_s']:.1f} s left out around census transients)")
+                return chosen
+        return None
+
+    @staticmethod
+    def _full(q, fit_start, fit_end, rule):
+        """A full candidate's quality record, with the sub-stretch columns
+        when `ARFitSubStretch` is on."""
+        if rule != "none":
+            q.update(substretch=False, candidate_start=float(fit_start),
+                     candidate_end=float(fit_end), excluded_s=0.0)
+        return q
 
     def _first_stretch(self, past, past_start, now):
         """The first model's stretch: the `learn` seconds ending `ARFitGap`
         before `now`, judged by its own model's whitening. When it fails the
-        rule the search waits `ARFitStep` seconds and judges the stretch then
-        ending, up to `ARFitCandidates` stretches; then it takes the one of
-        smallest census peak. None while waiting."""
+        rule and holds census transients, with `ARFitSubStretch` its best
+        sub-stretch between them is fitted and judged by its own model, and
+        taken if it passes. Otherwise the search waits `ARFitStep` seconds
+        and judges the stretch then ending, up to `ARFitCandidates`
+        stretches; then it takes the full candidate of smallest census peak.
+        None while waiting."""
         par, rate = self.par, float(self.par.resampling)
         tried = self._first_tried
         if tried and now < tried[-1][1] + par.ARFitGap + par.ARFitStep - 0.5 / rate:
@@ -760,15 +910,19 @@ class wdfUnitOnline:
         filt = self._filter_of(ar, now) if self.mode == "zerophase" else None
         if not par.ARFitQuality:
             return fit_start, fit_end, ar, filt, dict(candidate=0, accepted=True)
-        judge = filt or self._filter_of(ar, now)
-        w = self._whitened_stretch(judge, x)
-        offset = (x.size - w.size) / rate if self.mode == "causal" else 0.5 * (x.size - w.size) / rate
-        q = self._stretch_quality(w, fit_start + offset, None)
+        seeds = []
+        q = self._judge(x, fit_start, filt or self._filter_of(ar, now), None, seeds)
         q.update(candidate=len(tried))
+        self._full(q, fit_start, fit_end, par.ARFitSubStretch)
         tried.append((fit_start, fit_end, ar, filt, q))
         if q["passed"]:
             q["accepted"] = True
             return tried[-1]
+        if par.ARFitSubStretch != "none":
+            sub = self._try_sub_stretches(past, past_start, now,
+                                          [(len(tried) - 1, fit_start, fit_end, seeds)], None)
+            if sub is not None:
+                return sub
         if len(tried) < par.ARFitCandidates:
             logging.warning(f"online: the fit stretch {fit_start:.1f}-{fit_end:.1f} holds a "
                             f"transient (census peak {q['census_peak']:.1f}); the search waits "
@@ -792,8 +946,20 @@ class wdfUnitOnline:
         current model for a refit and by its own for the first fit, and must
         hold no census transient reaching `GlitchTrigger`; a refit's candidate
         must also keep each octave's power, through the current model, within
-        `ARFitLevelRatio` of white. The first fit takes, when none passes, the
-        candidate of smallest census peak.
+        `ARFitLevelRatio` of white (`ARFitLevelCheck`). The first fit takes,
+        when none passes, the candidate of smallest census peak.
+
+        With `ARFitSubStretch` "latest" or "longest" (default "none") a refit
+        whose full candidates all fail then tries, in the candidates that
+        hold census transients, the contiguous stretch between them
+        (`_gaps`, at least `ARFitMinimumLearn` long), fitted on those samples
+        alone and judged by the same rule. Without `ARFitQuality` no
+        candidate is judged, so no sub-stretch is taken.
+
+        A refit with none passing writes one rejected row: ``census_peak``
+        (the smallest), and per candidate, ";"-joined in candidate order,
+        ``candidate_census_peaks``, ``candidate_level_min`` and
+        ``candidate_level_max``, and the sub-stretches tried.
 
         :return: tuple -- (fit_start, fit_end, model, filter or None, quality
             record) or None.
@@ -802,7 +968,7 @@ class wdfUnitOnline:
         current = self._model
         if current is None:
             return self._first_stretch(past, past_start, now)
-        tried = []
+        tried, failed = [], []
         for j in range(par.ARFitCandidates):
             fit_end = now - par.ARFitGap - j * par.ARFitStep
             fit_start = fit_end - par.learn
@@ -818,21 +984,39 @@ class wdfUnitOnline:
             filt = self._filter_of(ar, now) if self.mode == "zerophase" else None
             if not par.ARFitQuality:
                 return fit_start, fit_end, ar, filt, dict(candidate=j, accepted=True)
-            judge = current if current is not None else (filt or self._filter_of(ar, now))
-            w = self._whitened_stretch(judge, x)
-            offset = (x.size - w.size) / rate if self.mode == "causal" else 0.5 * (x.size - w.size) / rate
-            q = self._stretch_quality(w, fit_start + offset, current)
+            seeds = []
+            q = self._judge(x, fit_start, current, current, seeds)
             q.update(candidate=j)
+            self._full(q, fit_start, fit_end, par.ARFitSubStretch)
             tried.append((fit_start, fit_end, ar, filt, q))
+            failed.append((j, fit_start, fit_end, seeds))
             if q["passed"]:
                 q["accepted"] = True
                 return fit_start, fit_end, ar, filt, q
-        self.result.refits.append(dict(emitted_at=self.now, fit_start=float("nan"),
-                                       fit_end=float("nan"), sigma=float("nan"), accepted=False,
-                                       candidates=len(tried),
-                                       census_peak=min(t[4]["census_peak"] for t in tried),
-                                       **({"data_time": self.now - self.latency}
-                                          if self.latency is not None else {})))
+        self._sub_tried = []
+        if par.ARFitSubStretch != "none":
+            sub = self._try_sub_stretches(past, past_start, now, failed, current)
+            if sub is not None:
+                return sub
+
+        def joined(key, rows):
+            return ";".join(f"{r[key]:.6g}" for r in rows)
+
+        qs = [t[4] for t in tried]
+        row = dict(emitted_at=self.now, fit_start=float("nan"), fit_end=float("nan"),
+                   sigma=float("nan"), accepted=False, candidates=len(tried),
+                   census_peak=min(q["census_peak"] for q in qs),
+                   candidate_census_peaks=joined("census_peak", qs),
+                   candidate_level_min=joined("level_min", qs),
+                   candidate_level_max=joined("level_max", qs))
+        if par.ARFitSubStretch != "none":
+            subs = self._sub_tried
+            row.update(substretches_tried=len(subs),
+                       substretch_census_peaks=joined("census_peak", subs),
+                       substretch_level_max=joined("level_max", subs))
+        if self.latency is not None:
+            row["data_time"] = self.now - self.latency
+        self.result.refits.append(row)
         logging.warning(f"online: no stretch of the past passed the quality rule at {now:.1f}; "
                         "the current model is kept")
         return None
@@ -1017,7 +1201,7 @@ class wdfUnitOnline:
             self.dir = None
         par.gps = getattr(par, "gps", None) or gps_start
         self.result = OnlineResult()
-        self._model, self._first_tried = None, []
+        self._model, self._first_tried, self._sub_tried = None, [], []
         self._reused = self._load_reused()
         rate = float(par.resampling)
         ds = BandPassDownSampling(par)

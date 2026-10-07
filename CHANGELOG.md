@@ -5,6 +5,26 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### Online fit on the stretch between transients
+
+`ARFitSubStretch = "latest" | "longest"` (default "none", unchanged): when the
+online fit's candidate stretches all fail the quality rule and hold census
+transients, the model is fitted on the contiguous stretch between the
+transients (each padded by `ARFitExcludePad`, default `GlitchSeedPad`), the
+most recent or the longest, at least `ARFitMinimumLearn` seconds (default
+`learn` / 2), and taken if it passes the same rule. Nothing inside it is zeroed
+or tapered, and it ends inside its candidate, so the fit stays causal. The refit
+record carries `substretch`, `candidate_start`, `candidate_end` and
+`excluded_s`; the model file stores the sub-stretch as the fit stretch, and
+`ARModelsFrom` applies it at the same switch time. The first fit does the same
+on its failed candidate. `ARFitLevelCheck = false` (default true) drops the
+octave-level condition of a refit. A rejected refit now records each
+candidate's census peak and octave levels (`candidate_census_peaks`,
+`candidate_level_min`, `candidate_level_max`). A whitened stretch shorter than
+the whitening filter fails the rule instead of passing it. The three online
+configs enable it: `ARFitSubStretch = "latest"`, `ARFitExcludePad = 0.1`,
+`ARFitMinimumLearn = 150` (300 for V1), `ARFitLevelCheck = true`.
+
 ### Class weighting in the GNN fit
 
 `GNNCoincidenceScorer.fit(..., pos_weight=None)` weighs the loss of the

@@ -78,3 +78,108 @@ def test_the_rule_reads_only_the_past():
     a, b = run(x), run(y)
     assert a.before(t) == b.before(t)
     assert len(a.before(t)["refits"]) >= 2
+
+
+# ---- ARFitSubStretch: a fit on the stretch between census transients
+GLITCHES = (30.0, 40.0, 50.0)     # in each of the refit's candidates 36-56, 26-46, 16-36
+MODES = {"causal": {}, "zerophase": dict(WhiteningMode="zerophase", ZeroPhaseDuration=8.0)}
+
+
+def glitched(times=GLITCHES):
+    x = strain()
+    for at in times:
+        x = with_glitch(x, at)
+    return x
+
+
+def refit_at_56(r):
+    return [f for f in r.refits if f["emitted_at"] >= T0 + 56.0][0]
+
+
+@pytest.mark.parametrize("mode", sorted(MODES))
+def test_a_refit_takes_the_latest_stretch_between_glitches(mode):
+    """Every candidate holds a glitch: with "latest" the refit is fitted on the
+    most recent clean stretch long enough, inside its candidate, before the
+    switch."""
+    r = run(glitched(), ARFitSubStretch="latest", ARFitMinimumLearn=9.0, **MODES[mode])
+    refit = refit_at_56(r)
+    assert refit["accepted"] and refit["substretch"] and refit["candidate"] == 0
+    assert T0 + 40.0 < refit["fit_start"] and refit["fit_end"] < T0 + 50.0
+    assert refit["fit_end"] - refit["fit_start"] >= 9.0 - 1.0 / FS
+    assert refit["candidate_start"] <= refit["fit_start"] and refit["fit_end"] <= refit["candidate_end"]
+    assert refit["excluded_s"] == pytest.approx(
+        20.0 - (refit["fit_end"] - refit["fit_start"]), abs=1e-6)
+    assert refit["fit_end"] <= refit["emitted_at"]
+    model = [m for m in r.models if m["fit_start"] == refit["fit_start"]]
+    assert len(model) == 1 and model[0]["fit_end"] == refit["fit_end"]
+
+
+def test_a_refit_takes_the_longest_stretch_between_glitches():
+    r = run(glitched(), ARFitSubStretch="longest", ARFitMinimumLearn=9.0)
+    refit = refit_at_56(r)
+    assert refit["accepted"] and refit["substretch"] and refit["candidate"] == 2
+    assert refit["fit_start"] == pytest.approx(T0 + 16.0, abs=1e-3) and refit["fit_end"] < T0 + 30.0
+    assert refit["fit_end"] - refit["fit_start"] > 13.0
+
+
+def test_without_sub_stretches_nothing_changes():
+    """"none" (the default) keeps the current model when every candidate holds
+    a glitch, as before; the rejected row holds every candidate's levels."""
+    x = glitched()
+    a, b = run(x), run(x, ARFitSubStretch="none")
+    assert a.before(END) == b.before(END)
+    refit = refit_at_56(a)
+    assert refit["accepted"] is False and "substretch" not in refit
+    assert len(refit["candidate_census_peaks"].split(";")) == refit["candidates"] == 3
+    assert min(float(p) for p in refit["candidate_census_peaks"].split(";")) == pytest.approx(
+        refit["census_peak"], rel=1e-5)
+    assert len(refit["candidate_level_max"].split(";")) == 3
+
+
+def test_a_sub_stretch_too_short_is_not_taken():
+    r = run(glitched(), ARFitSubStretch="latest", ARFitMinimumLearn=15.0)
+    refit = refit_at_56(r)
+    assert refit["accepted"] is False and refit["substretches_tried"] == 0
+    assert r.parameters.RefitRejected >= 1
+
+
+def test_the_shortest_sub_stretch_must_exceed_the_filter():
+    with pytest.raises(ValueError, match="ARFitMinimumLearn"):
+        wdfUnitOnline(parameters(ARFitSubStretch="latest", ARFitMinimumLearn=5.0, **MODES["zerophase"]))
+    with pytest.raises(ValueError, match="ARFitMinimumLearn"):
+        wdfUnitOnline(parameters(ARFitSubStretch="latest", ARFitMinimumLearn=25.0))
+    with pytest.raises(ValueError, match="ARFitSubStretch"):
+        wdfUnitOnline(parameters(ARFitSubStretch="first"))
+    par = wdfUnitOnline(parameters(ARFitSubStretch="longest")).par
+    assert par.ARFitMinimumLearn == pytest.approx(0.5 * par.learn)
+    assert par.ARFitExcludePad == pytest.approx(0.1) and par.ARFitLevelCheck is True
+
+
+@pytest.mark.parametrize("mode", sorted(MODES))
+def test_the_first_fit_takes_a_sub_stretch(mode):
+    """The first candidate (6-26) holds a glitch at 15: the first model is
+    fitted on its latest clean part, at once, judged by its own model."""
+    r = run(with_glitch(strain(), 15.0), ARFitSubStretch="latest", ARFitMinimumLearn=9.0,
+            **MODES[mode])
+    first = r.refits[0]
+    assert first["accepted"] and first["substretch"] and first["candidate"] == 0
+    assert first["fit_start"] > T0 + 15.0 and first["fit_end"] == pytest.approx(T0 + 26.0, abs=1.0)
+    assert first["fit_end"] <= first["emitted_at"]
+
+
+def test_the_level_check_can_be_off():
+    r = run(loud(strain(), 28.0, 60.0), ARFitLevelCheck=False)
+    refit = refit_at_56(r)
+    assert refit["accepted"] and refit["candidate"] == 0 and refit["level_max"] > 4.0
+
+
+def test_sub_stretches_read_only_the_past():
+    x = glitched()
+    t = T0 + 70.0
+    y = x.copy()
+    i = int(round((t - T0) * FS))
+    y[i:] = np.random.default_rng(9).standard_normal(y.size - i) * 3.0
+    kw = dict(ARFitSubStretch="latest", ARFitMinimumLearn=9.0)
+    a, b = run(x, **kw), run(y, **kw)
+    assert a.before(t) == b.before(t)
+    assert any(f.get("substretch") for f in a.before(t)["refits"])

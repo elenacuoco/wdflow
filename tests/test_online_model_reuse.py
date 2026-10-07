@@ -115,3 +115,31 @@ def test_a_history_of_another_configuration_is_refused(runs):
         wdfUnitOnline(parameters(ARModelsFrom=runs["path"], ARorder=40, ARWarmup=40,
                                  **runs["kw"])).process(ArraySource(runs["x"], T0, FS), START,
                                                         T0 + SECONDS)
+
+
+@pytest.mark.parametrize("mode", sorted(MODES))
+def test_a_sub_stretch_model_is_reused_at_its_switch_time(mode, tmp_path):
+    """A background whose refit is fitted on a sub-stretch between glitches
+    writes it with its fit stretch; the foreground applies the same model at
+    the same switch time."""
+    from test_online_fit_quality import glitched
+
+    kw = dict(MODES[mode], ARFitStep=10.0, ARFitCandidates=3)
+    x = glitched()
+    end = T0 + 100.0
+    bg = Recording(parameters(outdir=str(tmp_path) + "/", run="bg", ARFitSubStretch="latest",
+                              ARFitMinimumLearn=9.0, **kw))
+    bg.segmentProcess((START, end), ArraySource(x, T0, FS))
+    sub = [r for r in bg.result.refits if r.get("substretch")]
+    assert sub and sub[0]["fit_end"] - sub[0]["fit_start"] < bg.par.learn
+    models, _ = load_ar_models(bg.par.ARModelsFile)
+    assert [(m["switch_gps"], m["fit_start"], m["fit_end"]) for m in models] == [
+        (m["switch_gps"], m["fit_start"], m["fit_end"]) for m in bg.result.models]
+    assert any(m["fit_start"] == sub[0]["fit_start"] and m["fit_end"] == sub[0]["fit_end"]
+               for m in models)
+    fg = Recording(parameters(ARModelsFrom=bg.par.ARModelsFile, **kw))
+    fg.process(ArraySource(x + injections(x.size), T0, FS), START, end)
+    assert [m["switch_gps"] for m in fg.result.models] == [m["switch_gps"] for m in models]
+    for a, b in zip(fg.result.models, models):
+        np.testing.assert_array_equal(a["ar"], b["ar"])
+        assert (a["fit_start"], a["fit_end"]) == (b["fit_start"], b["fit_end"])
