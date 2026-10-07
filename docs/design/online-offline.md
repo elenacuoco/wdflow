@@ -71,7 +71,8 @@ reads only the past.
 #### A sub-stretch between transients
 
 `ARFitSubStretch` (default "none") lets a fit use part of a candidate that
-holds census transients:
+holds census transients. The shipped configurations keep "none"; set it to use
+the sub-stretch:
 
 - "latest" or "longest": when every full candidate of a refit fails, each
   failed candidate that holds census transients offers the contiguous stretch

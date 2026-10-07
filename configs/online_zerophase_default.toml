@@ -40,10 +40,6 @@ ARFitQuality = true             # choose each fit stretch from the past by the q
 ARFitCandidates = 3             # stretches tried: a refit goes back ARFitStep at a time and keeps the current model if none passes; the first fit waits ARFitStep at a time, then takes the least loud
 ARFitStep = 150.0               # s between two candidate stretches (learn / 2)
 ARFitLevelRatio = 4.0           # largest octave power over white (and smallest, 1 / it) of a refit's stretch through the current model
-ARFitLevelCheck = true          # a refit's stretch must also keep each octave within ARFitLevelRatio of white (false: census only; levels still recorded)
-ARFitSubStretch = "latest"      # when every candidate fails and holds census transients: fit on the contiguous stretch between them ("latest" = most recent, "longest"; "none" = keep the current model)
-ARFitExcludePad = 0.1           # s added on each side of a census transient left out of a sub-stretch (= GlitchSeedPad)
-ARFitMinimumLearn = 150.0       # shortest sub-stretch, s (learn / 2); V1 overrides below
 ARModelsFrom = ""               # path of another run's ARModels-<ifo>-Search<name>.h5: apply its noise models at its switch times, no fit of its own (e.g. an injection run reusing its background run); "" = fit as above
 ARWarmup = 3000                 # unused by the zero-phase whitening (its past is the conditioned stream); kept at least ARorder
 
@@ -157,5 +153,4 @@ learn = 300                     # fit stretch, s
 ARorder = 16000                 # V1 needs 16000 to resolve its lines
 ARWarmup = 16000                # at least ARorder
 learn = 600                     # fit stretch, s
-ARFitMinimumLearn = 300.0       # shortest fit sub-stretch, s (learn / 2)
 ZeroPhaseDuration = 32.0        # with 16 s V1's lines are not resolved; Latency_s 16 + 2 = 18 s

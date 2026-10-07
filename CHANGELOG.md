@@ -21,9 +21,10 @@ on its failed candidate. `ARFitLevelCheck = false` (default true) drops the
 octave-level condition of a refit. A rejected refit now records each
 candidate's census peak and octave levels (`candidate_census_peaks`,
 `candidate_level_min`, `candidate_level_max`). A whitened stretch shorter than
-the whitening filter fails the rule instead of passing it. The three online
-configs enable it: `ARFitSubStretch = "latest"`, `ARFitExcludePad = 0.1`,
-`ARFitMinimumLearn = 150` (300 for V1), `ARFitLevelCheck = true`.
+the whitening filter fails the rule instead of passing it (it cannot occur
+with a fit stretch longer than the filter, as in every shipped configuration).
+The shipped configurations do not set these keys: they run with
+`ARFitSubStretch = "none"` and whiten as before.
 
 ### Class weighting in the GNN fit
 
