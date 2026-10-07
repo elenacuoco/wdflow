@@ -52,6 +52,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from wdf.analysis.hrss import HrssSettings, ModelHistory, add_hrss, network_hrss
 from wdf.analysis.pair_screen import RANK_STATISTIC, PairScreenSettings, ScreenedFinder
 from wdf.config.Parameters import network_path
 
@@ -313,8 +314,10 @@ def add_envelope_instants(events, graphs, labels, width):
 
 def _with_identities(candidates, nodes, instant="gpsPeak"):
     """Each pair's detectors and clusters, and per detector of the pair its
-    event's extent (`gpsStart_<ifo>`, `duration_<ifo>`) and instant
-    (`instant_<ifo>`); `gps_candidate` is the mean of the two instants."""
+    event's extent (`gpsStart_<ifo>`, `duration_<ifo>`), instant
+    (`instant_<ifo>`) and, when the events carry them (`HrssEstimate`), its
+    `hrss_<ifo>`, `hrss_err_<ifo>`, `hrss_noise_<ifo>`; `gps_candidate` is the
+    mean of the two instants."""
     if candidates.empty or "node_i" not in candidates:
         return candidates
     ifo = nodes["ifo"].to_numpy()
@@ -326,7 +329,9 @@ def _with_identities(candidates, nodes, instant="gpsPeak"):
         when[side] = pd.to_numeric(nodes[instant]).to_numpy(float)[index]
         for name in sorted(set(ifo)):
             sel = ifo[index] == name
-            for column, source in (("gpsStart", "gpsStart"), ("duration", "duration"), ("instant", instant)):
+            for column, source in (("gpsStart", "gpsStart"), ("duration", "duration"), ("instant", instant),
+                                   ("hrss", "hrss"), ("hrss_err", "hrss_err"),
+                                   ("hrss_noise", "hrss_noise")):
                 if source not in nodes:
                     continue
                 key = f"{column}_{name}"
@@ -338,8 +343,23 @@ def _with_identities(candidates, nodes, instant="gpsPeak"):
     return candidates
 
 
+def _with_hrss(events, graphs, labels, ar_models, settings):
+    """Every detector's events with `wdf.analysis.hrss.HRSS_COLUMNS`."""
+    if ar_models is None:
+        raise ValueError("HrssEstimate needs the workers' noise models (run_network ar_models=)")
+    out = {}
+    for ifo, ev in events.items():
+        if ifo not in ar_models:
+            raise ValueError(f"HrssEstimate: no noise model for {ifo}")
+        history = ar_models[ifo]
+        if not isinstance(history, ModelHistory):
+            history = ModelHistory.from_files(history)
+        out[ifo] = add_hrss(ev, graphs[ifo], labels[ifo], history, settings)
+    return out
+
+
 def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=None,
-                census=None):
+                census=None, ar_models=None):
     """Stages 2, 3 and 4 on the path `par` selects.
 
     :param par: run configuration (`Reconstruction`, `Coincidence`, `Scorer`,
@@ -358,6 +378,11 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         worker's ``GlitchCensusOnline`` or the offline census. With it, the
         pairs carry the network's glitch decision (`glitch_single_ifo`),
         used as `NetworkGlitchVeto` says.
+    :param ar_models: ``{ifo: ModelHistory}`` or ``{ifo: ARModels file(s)}``
+        (wavegram path), the noise models the workers applied; read when
+        `HrssEstimate` is true, which adds `wdf.analysis.hrss.HRSS_COLUMNS` to
+        the events, ``hrss_<ifo>``, ``hrss_err_<ifo>``, ``hrss_noise_<ifo>``
+        and `hrss_network_det` to the candidates.
     :return: NetworkResult
     """
     from wdf.analysis.network_graph import TriggerGraphBuilder, WavegramCoincidenceFinder
@@ -376,6 +401,9 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
             raise ValueError("the wavegram path reads the detectors' triggers")
         ifos = list(triggers)
         graphs, labels, events, maps = wavegram_stage(triggers)
+        hrss = HrssSettings.from_parameters(par)
+        if hrss.active:
+            events = _with_hrss(events, graphs, labels, ar_models, hrss)
         comparison = None
         if settings.comparison_bin > 0:
             from wdf.analysis.detector_graph import event_coefficients
@@ -405,6 +433,7 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         nodes = pd.concat([events[i].reset_index(drop=True).assign(ifo=i) for i in ifos],
                           ignore_index=True)
         candidates = _with_identities(candidates, nodes, instant_column(settings))
+        candidates = network_hrss(candidates, ifos)
     else:
         from wdf.analysis.track_coincidence import (TrackCoincidenceFinder,
                                                     TrackCoincidenceSettings,
@@ -412,6 +441,8 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
 
         if tracks is None:
             raise ValueError("the track path reads the detectors' track events")
+        if HrssSettings.from_parameters(par).active:
+            raise ValueError("HrssEstimate is read on the wavegram path's reconstructions")
         ifos = list(tracks)
         events = {i: tracks[i].reset_index(drop=True).assign(ifo=i) for i in ifos}
         waveforms = waveforms or {i: {} for i in ifos}
@@ -479,10 +510,13 @@ class NetworkStream:
 
     :param par: run configuration (as `run_network`).
     :param ifos: the detectors.
+    :param ar_models: ``{ifo: ModelHistory or ARModels file(s)}`` for
+        `HrssEstimate` (as `run_network`); `models` replaces one detector's.
     """
 
-    def __init__(self, par, ifos):
+    def __init__(self, par, ifos, ar_models=None):
         self.par = par
+        self.ar_models = dict(ar_models or {})
         self.settings = NetworkSettings.from_parameters(par)
         self.ifos = list(ifos)
         self.tables = {i: pd.DataFrame() for i in self.ifos}
@@ -514,6 +548,13 @@ class NetworkStream:
         end = pd.to_numeric(frame["gps"]).to_numpy(float) + _window_s(frame)
         self.latest = max(self.latest, float(np.nanmax(end)))
         self._forget()
+
+    def models(self, ifo, history):
+        """The noise models of `ifo` read by `HrssEstimate` from now on.
+
+        :param history: `wdf.analysis.hrss.ModelHistory` or ARModels file(s).
+        """
+        self.ar_models[ifo] = history
 
     def _forget(self):
         horizon = self.latest - self.settings.memory_s
@@ -547,4 +588,5 @@ class NetworkStream:
             return run_network(self.par, tracks=held, waveforms=self.waveforms)
         census = ({i: c for i, c in self.census.items()}
                   if any(len(c) for c in self.census.values()) else None)
-        return run_network(self.par, triggers=held, census=census)
+        return run_network(self.par, triggers=held, census=census,
+                           ar_models=self.ar_models or None)

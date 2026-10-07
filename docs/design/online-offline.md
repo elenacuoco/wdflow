@@ -299,6 +299,41 @@ tolerance. Each candidate carries, per detector of the pair,
 `gpsStart_<ifo>`, `duration_<ifo>` and `instant_<ifo>`, and
 `event_instant`.
 
+### The hrss estimate
+
+With `HrssEstimate = true` (default false: no column is added) and the noise
+models the workers applied (`run_network(..., ar_models={ifo: ARModels
+file(s) or ModelHistory})`, `NetworkStream(..., ar_models=)` or
+`NetworkStream.models`), every event of the wavegram path gets its
+detector-frame root-sum-square strain amplitude (`wdf.analysis.hrss`):
+
+- the event's stitched reconstruction (`event_waveform`) is in the whitened
+  stream's units, the conditioned strain convolved with the whitening taps of
+  the model in force at the event's `gpsPeak` (`truncated_taps`, the zero-phase
+  `LookaheadWhitening`, not divided by the model's scale);
+- its spectrum is divided by the taps' response and, with
+  `HrssBandPassCorrection`, by the band-pass's power gain, and set to zero
+  outside the band [`HrssLowFrequency`, `HrssHighFrequency`] (by default
+  `MinFrequency` to the low-pass corner, 32-900 Hz with `MinFrequency = 32`);
+- `hrss = sqrt(sum h_k^2 / fs)` of the result.
+
+`hrss_err` is the one-sigma spread for a signal plus Gaussian noise on the
+event's independent surviving coefficients (its members' survivors of the
+reconstructed window length, times stride over window), each with the
+variance `sigma^2` of the event's noise level; `hrss_noise` is the hrss that
+noise alone would give on those coefficients. The estimate is biased up by
+about `hrss_noise^2` in `hrss^2` near threshold, and down by the signal energy
+the threshold discarded and by any part of the signal outside the event's
+reconstruction (`hrss_start` to `hrss_end`): a long chirp seen as an event of
+one or a few windows reports the hrss of that part only. It is the hrss of the
+strain each detector records, the antenna-pattern projection of the source,
+not the source-frame `sqrt(hrss_+^2 + hrss_x^2)`.
+
+The candidates carry `hrss_<ifo>`, `hrss_err_<ifo>`, `hrss_noise_<ifo>` per
+detector of the pair and `hrss_network_det`, the root-sum-square of the
+detectors' hrss (detector frame). The track path and the causal whitening
+(`WhiteningMode = "causal"`) are refused.
+
 ### Optional screens on the paper path
 
 `NetworkLagCut` (default "none") measures each pair's lag on the two events'
@@ -496,6 +531,10 @@ waveform, so `TimeSlideFAR` runs on it.
 | `NetworkMemory` | 64 s | what `NetworkStream` holds |
 | `NetworkEventInstant` | "peak" | wavegram path: "peak", "centroid", "envelope" or "coarse" |
 | `NetworkEnvelopeWidth` | "window" | search width of "envelope" about `gpsPeak` |
+| `HrssEstimate` | false | wavegram path, zero-phase whitening: the events' and candidates' hrss columns |
+| `HrssLowFrequency` | "MinFrequency" | low edge of the hrss band ("MinFrequency", or `LowFrequencyCut` when it is 0; or Hz) |
+| `HrssHighFrequency` | "lowpass" | high edge of the hrss band (the band-pass's low-pass corner, or Hz) |
+| `HrssBandPassCorrection` | true | divide the band-pass's power gain out of the strain |
 | `NetworkLagCut` | "none" | wavegram path: "none", "cut" or "penalty" on the reconstructions' lag |
 | `NetworkLagWindow` | "coincidence" | the pair's lag window: the coincidence's `timing_tolerance`, or "travel_plus_tolerance" |
 | `NetworkLagTolerance` | 0.01 s | added to the light travel time with "travel_plus_tolerance" |

@@ -325,6 +325,12 @@ wdf.analysis.network_driver
 .. automodule:: wdf.analysis.network_driver
    :members:
 
+wdf.analysis.hrss
+~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.hrss
+   :members:
+
 wdf.analysis.pair_screen
 ~~~~~~~~~~~~~~~~~~~~~~~~
 

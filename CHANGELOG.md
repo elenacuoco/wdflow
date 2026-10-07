@@ -5,6 +5,23 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### hrss of the events
+
+`HrssEstimate = true` (default false, no column added) adds to every event of
+the wavegram path its detector-frame hrss in a band (`HrssLowFrequency`,
+default `MinFrequency`; `HrssHighFrequency`, default the band-pass's low-pass
+corner): the event's reconstruction is brought back to strain by the
+whitening of the noise model in force (`ARModels` files, `run_network(...,
+ar_models=)`, `NetworkStream(..., ar_models=)` and `NetworkStream.models`) and
+by the band-pass's power gain (`HrssBandPassCorrection`, default true). Events
+get `hrss`, `hrss_err` (one sigma), `hrss_noise` (the noise floor of the
+event's surviving coefficients), `hrss_start` and `hrss_end` (the span
+integrated); candidates get `hrss_<ifo>`, `hrss_err_<ifo>`, `hrss_noise_<ifo>`
+and `hrss_network_det` (root-sum-square over the detectors). New module
+`wdf.analysis.hrss` (`HrssSettings`, `ModelHistory`, `strain_from_whitened`,
+`event_hrss`, `add_hrss`, `network_hrss`). Zero-phase whitening only; the
+track path refuses it. The shipped configurations do not set the keys.
+
 ### Online fit on the stretch between transients
 
 `ARFitSubStretch = "latest" | "longest"` (default "none", unchanged): when the
