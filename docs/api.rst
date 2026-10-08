@@ -331,6 +331,12 @@ wdf.analysis.hrss
 .. automodule:: wdf.analysis.hrss
    :members:
 
+wdf.analysis.alerts
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.alerts
+   :members:
+
 wdf.analysis.pair_screen
 ~~~~~~~~~~~~~~~~~~~~~~~~
 

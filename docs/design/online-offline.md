@@ -334,6 +334,57 @@ detector of the pair and `hrss_network_det`, the root-sum-square of the
 detectors' hrss (detector frame). The track path and the causal whitening
 (`WhiteningMode = "causal"`) are refused.
 
+### The alert table
+
+`wdf.analysis.alerts` turns a network result into the rows an alert system
+would receive, one per candidate whose false-alarm rate is at or below
+`AlertFARThreshold` (default one per day, 1 / 86400 Hz), in the fields a
+GraceDB burst event carries (the common ones and those of the `MultiBurst`
+and `MLyBurst` models) and with the provenance of the run. `alert_table`
+reads the rate the candidate table states (`far_hz`, else `far_per_day`,
+else `n_background_ge` over a livetime: the `TimeSlideFAR` rule, (n + 1) /
+livetime) and never recomputes it; a table without a rate yields no alert.
+`write_alerts` writes the table as a CSV with a header and empty cells for
+what is unknown; `run_network` does both when `AlertCSV` names a file
+(`{start}`, `{end}`, `{run}` filled in), which needs `NetworkSlides > 0`.
+The default (no `AlertCSV`) writes nothing and changes no output.
+
+A row holds: the identity (`pipeline`, `group`, `search`, `run`,
+`candidate_id`, `stretch`, `rank`, `ifos`); the times (`gpstime`, the
+candidate's `gps_candidate`; `gps_<ifo>`, the instants the pair was formed
+on, `event_instant` naming the column; `peak_time_<ifo>`, `start_time_<ifo>`;
+combined `start_time`, `end_time`); the rate (`far_hz`, `far_per_day`,
+`far_trials_hz` = `AlertTrialsFactor` x the rate, `significant` when it is
+below `AlertSignificantFAR`, default one per year; the counts and livetime
+when the table has them); the statistic (`detection_statistic_name` and
+`detection_statistic`: `gnn_logit`, else `network_rank_statistic`,
+`track_statistic` or `network_morphology`; `network_enwdf`,
+`network_min_enwdf`, `network_morphology`, `network_correlation`,
+`tile_coherence`, the GNN and track columns when present; `glitch`, the
+network's `glitch_single_ifo`, and `glitch_<ifo>`); the morphology from the
+events of stage 2, when given (`central_freq_<ifo>` = `freqMean`,
+`bandwidth_<ifo>` = `freqQ95` - `freqQ05`, `freq_low_<ifo>`, `freq_high_<ifo>`,
+`duration_<ifo>`, `duration90_<ifo>`, `EnWDF_<ifo>`, `snrPeak_<ifo>`; combined
+`central_freq`, the EnWDF-weighted mean of the detectors' `freqMean`,
+`bandwidth`, the union of their 5-95 % bands, `duration`, the largest
+`duration90`); the hrss (`hrss_<ifo>`, `hrss_err_<ifo>`, `hrss_noise_<ifo>`,
+`hrss_network_det` and `hrss_err_network_det`, the rss error propagated);
+the timing (`dt_envelope_s_<ab>`, the first detector's instant minus the
+second's, `light_travel_s_<ab>`, `dt_physical_<ab>`; `dt_xcorr_s`,
+`dt_xcorr_width_s`, `dt_xcorr_window_s` from the lag screen); the sky
+(`sky_timing`, "xcorr" or "envelope"; `sky_dt_s`, `sky_sigma_s`;
+`sky_area50_deg2`, `sky_area90_deg2`, `sky_ra_max_deg`, `sky_dec_max_deg`
+from `skymap.localise`, the ring of a two-detector timing; `sky_map_path`
+when `AlertSkyMapDir` is set); the provenance (`config_path` and its
+`config_sha256`, `model_path` and `model_sha256`, `wdflow_commit`,
+`wdflow_version`, `data_start`, `data_end`, `created_utc`).
+
+The sky uses the cross-correlation lag (`AlertSkyTiming = "xcorr"`, with
+`network_lag_width_s` as its uncertainty) when the table carries one, else
+the instants' difference; the uncertainty is floored at `AlertSkySigmaFloor`
+("sample", one sample of the stream, or seconds) and split in quadrature
+between the two detectors. The grid cell is `AlertSkyResolution` degrees.
+
 ### Optional screens on the paper path
 
 `NetworkLagCut` (default "none") measures each pair's lag on the two events'
@@ -535,6 +586,17 @@ waveform, so `TimeSlideFAR` runs on it.
 | `HrssLowFrequency` | "MinFrequency" | low edge of the hrss band ("MinFrequency", or `LowFrequencyCut` when it is 0; or Hz) |
 | `HrssHighFrequency` | "lowpass" | high edge of the hrss band (the band-pass's low-pass corner, or Hz) |
 | `HrssBandPassCorrection` | true | divide the band-pass's power gain out of the strain |
+| `AlertCSV` | none | the alert CSV `run_network` writes (`{start}`, `{end}`, `{run}` filled in); needs `NetworkSlides` > 0 |
+| `AlertFARThreshold` | 1 / 86400 Hz | a candidate is an alert at or below this rate (one per day) |
+| `AlertTrialsFactor` | 1 | multiplies the rate before the significance test |
+| `AlertSignificantFAR` | 1 / year, Hz | `significant` when the trials-corrected rate is below it |
+| `AlertRunName` | "" | the `run` column |
+| `AlertPipeline`, `AlertGroup`, `SearchName` | "WDF", "Burst", "AllSky" | the identity columns |
+| `AlertSkyMap` | true | localise each alert from its timing |
+| `AlertSkyTiming` | "xcorr" | "xcorr" (the lag screen's `network_lag_s`, else the instants) or "envelope" (the instants) |
+| `AlertSkySigmaFloor` | "sample" | the smallest timing uncertainty: one sample of the stream, or seconds |
+| `AlertSkyResolution` | 1 deg | the sky grid's cell |
+| `AlertSkyMapDir` | none | where each alert's map is written (`<run>-<candidate_id>.npz`) |
 | `NetworkLagCut` | "none" | wavegram path: "none", "cut" or "penalty" on the reconstructions' lag |
 | `NetworkLagWindow` | "coincidence" | the pair's lag window: the coincidence's `timing_tolerance`, or "travel_plus_tolerance" |
 | `NetworkLagTolerance` | 0.01 s | added to the light travel time with "travel_plus_tolerance" |

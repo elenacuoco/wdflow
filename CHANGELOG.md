@@ -5,6 +5,26 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### The alert table
+
+`wdf.analysis.alerts`: `alert_table(candidates, events, par)` selects the
+candidates whose false-alarm rate is at or below `AlertFARThreshold` (default
+one per day) and describes each in the fields a GraceDB burst event carries:
+identity (`pipeline`, `group`, `search`, `run`, `ifos`), times (`gpstime`,
+`gps_<ifo>`, `peak_time_<ifo>`, `start_time`, `end_time`), the rate
+(`far_hz`, `far_per_day`, `far_trials_hz` with `AlertTrialsFactor`,
+`significant` below `AlertSignificantFAR`, default one per year), the
+statistic (`detection_statistic`, `network_enwdf`, `EnWDF_<ifo>`, `glitch`),
+the morphology from the events (`central_freq`, `bandwidth`, `duration`, per
+detector and combined), the hrss columns, the timing (`dt_envelope_s_<ab>`,
+`light_travel_s_<ab>`, `dt_xcorr_s`), the sky ring of the timing
+(`skymap.localise`: areas, peak, optional map file with `AlertSkyMapDir`) and
+the provenance (configuration and model paths with their sha256, the library
+commit and version, the data stretch). `write_alerts` writes it as a CSV;
+`run_network` does so when `AlertCSV` names a file (default off, nothing
+changes), which needs `NetworkSlides > 0`; `NetworkResult.alerts_path`. The
+rate is read from the table, never recomputed.
+
 ### hrss of the events
 
 `HrssEstimate = true` (default false, no column added) adds to every event of

@@ -52,6 +52,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from wdf.analysis.alerts import AlertSettings, alert_path, alert_table, provenance, write_alerts
 from wdf.analysis.hrss import HrssSettings, ModelHistory, add_hrss, network_hrss
 from wdf.analysis.pair_screen import RANK_STATISTIC, PairScreenSettings, ScreenedFinder
 from wdf.config.Parameters import network_path
@@ -155,6 +156,7 @@ class NetworkResult:
     :param background: the time-slide background, or None.
     :param finder: the stage-3 finder, for further slides.
     :param settings: the settings used.
+    :param alerts_path: the alert CSV written (`AlertCSV`), or None.
     """
 
     candidates: pd.DataFrame
@@ -166,6 +168,7 @@ class NetworkResult:
     background: pd.DataFrame = None
     finder: object = None
     settings: NetworkSettings = None
+    alerts_path: str = None
 
 
 def longest_travel(ifos):
@@ -383,12 +386,20 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         `HrssEstimate` is true, which adds `wdf.analysis.hrss.HRSS_COLUMNS` to
         the events, ``hrss_<ifo>``, ``hrss_err_<ifo>``, ``hrss_noise_<ifo>``
         and `hrss_network_det` to the candidates.
+
+    With `AlertCSV` (`wdf.analysis.alerts`, default off) the candidates at or
+    below `AlertFARThreshold` are also written to that file, in the
+    GraceDB-like fields of `alert_table`; `NetworkSlides` must be positive.
     :return: NetworkResult
     """
     from wdf.analysis.network_graph import TriggerGraphBuilder, WavegramCoincidenceFinder
     from wdf.analysis.robust_events import FARConfig, IndexedCoincidenceFinder, TimeSlideFAR
 
     settings = NetworkSettings.from_parameters(par)
+    alerts = AlertSettings.from_parameters(par)
+    if alerts.csv and settings.slides <= 0:
+        raise ValueError("AlertCSV selects candidates on their false-alarm rate, which needs a "
+                         "background: set NetworkSlides > 0")
     scorer = None
     if settings.scorer == "gnn":
         from wdf.analysis.gnn import GNNCoincidenceScorer
@@ -495,6 +506,13 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
                                          score_column=rank_column)
         result.background = background
     result.candidates = candidates
+    if alerts.csv:
+        start, end = (segment_bounds or _bounds(events, triggers, _window_s))[ifos[0]]
+        fs = next((float(pd.to_numeric(t["fs"]).iloc[0]) for t in (triggers or {}).values()
+                   if "fs" in t and len(t)), None)
+        table = alert_table(candidates, events=events, par=par, settings=alerts, fs=fs,
+                            provenance_fields=provenance(par, data_start=start, data_end=end))
+        result.alerts_path = write_alerts(table, alert_path(alerts.csv, start, end, alerts.run))
     return result
 
 
