@@ -315,7 +315,7 @@ def _events_table(events):
         table = events
     if "ifo" not in table or "cluster_id" not in table:
         raise ValueError("events need 'ifo' and 'cluster_id' columns to be joined to the pairs")
-    return table.set_index(["ifo", pd.to_numeric(table["cluster_id"]).astype(int)])
+    return table.set_index(["ifo", pd.to_numeric(table["cluster_id"]).astype(int)]).sort_index()
 
 
 def _event_value(table, ifo, cluster, column):
