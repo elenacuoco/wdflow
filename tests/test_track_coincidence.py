@@ -107,6 +107,28 @@ def test_a_coincident_chirp_is_admitted_at_the_planted_lag(detectors):
     assert "network_enwdf" in table and "dt_instant_s" in table
 
 
+def test_a_superseded_track_makes_no_pair(detectors):
+    """H1's chirp track written twice, the second row naming the first in
+    track_supersedes (TrackOverlapPolicy "supersede"): the first is skipped,
+    so the chirp yields the one pair, with the superseding id; the same twin
+    without the column doubles the pairs."""
+    events, waveforms = detectors
+    base = finder(detectors).find(events)
+    old = int(on_chirp(base)["cluster_i"].iloc[0])
+    h1 = events["H1"]
+    twin = h1[h1["cluster_id"] == old].copy()
+    twin["cluster_id"] = 99
+    twin["track_supersedes"] = [[old]]
+    doubled = twin.copy()
+    doubled["track_supersedes"] = [[]]
+    wf = {"H1": {**waveforms["H1"], 99: waveforms["H1"][old]}, "L1": waveforms["L1"]}
+    for extra, n, ids in ((twin, len(base), {99}), (doubled, len(base) + 1, {old, 99})):
+        ev = {"H1": pd.concat([h1, extra], ignore_index=True), "L1": events["L1"]}
+        table = TrackCoincidenceFinder(IndexedCoincidenceFinder(), ev, wf, FS,
+                                       TrackCoincidenceSettings(coherence_min=COHERENCE_MIN)).find(ev)
+        assert len(table) == n and set(on_chirp(table)["cluster_i"].astype(int)) == ids
+
+
 def test_the_noise_pair_is_formed_but_not_admitted(detectors):
     """The two noise tracks, 16 s after the chirp, overlap in time: the
     classical rule forms the pair; the track admission does not."""

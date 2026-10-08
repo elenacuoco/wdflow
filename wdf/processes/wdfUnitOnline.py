@@ -1330,6 +1330,8 @@ class wdfUnitOnline:
             par.TrackSeeds = len(self._tracker.records)
             par.TrackSeedsDropped = self._tracker.dropped
             par.TrackSeedsAbsorbed = self._tracker.absorbed
+            par.TrackSuperseded = self._tracker.superseded
+            par.TrackSeedsCarried = self._tracker.carried
             par.TrackSeedsPending = len(self._tracker.queue)
             par.TrackCount = len(self.result.tracks)
         self.result.running = {k: np.asarray(v) for k, v in self._running.items()}

@@ -518,10 +518,15 @@ class TrackCoincidenceFinder:
         """The admitted pairs with their track features.
 
         :type events_by_ifo: dict
-        :param events_by_ifo: ``{ifo: track event table}``, possibly slid.
+        :param events_by_ifo: ``{ifo: track event table}``, possibly slid;
+            the tracks a later track superseded (`track_supersedes`) are
+            skipped.
         :return: pandas.DataFrame -- one row per admitted pair; empty when
             none is.
         """
+        from wdf.analysis.track_reconstruction import drop_superseded
+
+        events_by_ifo = {ifo: drop_superseded(ev) for ifo, ev in events_by_ifo.items()}
         if any(ev.empty for ev in events_by_ifo.values()):
             return pd.DataFrame()
         found = (self._classic(events_by_ifo) if self.scorer is None

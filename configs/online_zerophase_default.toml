@@ -120,6 +120,8 @@ TrackHorizon = 1.0              # track path: s of map after it; adds to the dec
 TrackBasis = "LocalCos128"      # track path: waveform basis, LocalCos64 | LocalCos128 | CosinePackets<m> (best basis, segments from m samples)
 TrackSeedStates = 1             # track path: states either side of the seed's loudest tile the track must pass
 TrackPacketCost = "entropy"     # track path: cosine-packet best-basis cost, l1 | entropy | wdfUniversal | wdfBlock
+TrackOverlapPolicy = "drop"     # track path, online: a track of a later drain sharing map cells with an emitted track: "drop" = discarded (seeds counted absorbed); "supersede" = emitted in their place when its score is higher, with their seeds and their ids in track_supersedes
+TrackEventInstant = "peak"      # track path: the event's instant gpsPeak (candidate time, pair dt): "peak" = peak of the waveform's envelope; "end" = end of the track's last slot
 TrackLambda = 3.7               # track path: penalty per octave of a move beyond the allowance (stiff, as ridge v1)
 TrackMcRange = [1.0, 30.0]      # track path: chirp masses (solar, detector frame) whose largest one-slot sweep from the lower state is the allowance
 TrackAllowanceMax = 0.27        # track path: largest allowance, octaves per slot (bounds it near coalescence); symmetric up and down

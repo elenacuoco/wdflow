@@ -65,8 +65,12 @@ def test_the_settings_are_parameters_and_are_recorded():
     assert (ts.lookback, ts.horizon, ts.basis, ts.seed_states) == (2.0, 1.0, "CosinePackets32", 1)
     assert par.TrackHorizon == 1.0 and par.TrackPacketCost == "entropy"
     assert settings()[0].basis == "LocalCos128"
+    assert (ts.overlap_policy, ts.event_instant) == ("drop", "peak")
+    assert par.TrackOverlapPolicy == "drop" and par.TrackEventInstant == "peak"
+    assert settings(TrackOverlapPolicy="supersede")[0].overlap_policy == "supersede"
     for bad in (dict(TrackBasis="Haar"), dict(TrackBasis="CosinePackets30"),
-                dict(TrackPacketCost="l2"), dict(TrackHorizon=-1.0)):
+                dict(TrackPacketCost="l2"), dict(TrackHorizon=-1.0),
+                dict(TrackOverlapPolicy="merge"), dict(TrackEventInstant="start")):
         with pytest.raises(ValueError):
             settings(**bad)
 
@@ -108,6 +112,101 @@ def test_overlapping_seeds_make_one_track(planted):
              trigger(81.375, 81.8, float(planted_f(T0 + 81.8)))]
     (events, _, tracks), *_ = run(planted, "LocalCos128", seeds)
     assert len(tracks) == 1 and events["track_n_seeds"][0] == 2
+
+
+def test_the_event_instant_is_the_envelope_peak_or_the_track_end(planted):
+    """"peak" (the default) puts gpsPeak at the waveform's envelope peak, inside
+    the chirp; "end" at the end of the track's last slot."""
+    seed = trigger(81.5, 82.0, float(planted_f(T0 + 82.0)))
+    (peak, _, tracks), *_ = run(planted, "LocalCos64", [seed])
+    (end, _, _), *_ = run(planted, "LocalCos64", [seed], TrackEventInstant="end")
+    assert T0 + CHIRP_AT < peak["gpsPeak"][0] < T0 + CHIRP_AT + CHIRP_S
+    assert peak["gpsPeak"][0] != end["gpsPeak"][0]
+    assert end["gpsPeak"][0] == end["track_t_end"][0] == tracks[0].t_end
+    assert peak["track_supersedes"][0] == [] and end["track_supersedes"][0] == []
+
+
+# ================================================================ online batches
+def two_batches(planted, policy, order=("short", "long")):
+    """The planted chirp seeded in two drains of a TrackObserver: one seed
+    early on the chirp (its slice ends before the chirp does), one near its
+    end whose track runs back over the first track's cells. Returns the
+    observer and the rows of each drain."""
+    from wdf.analysis.track_reconstruction import calibrated
+    from wdf.observers.TrackObserver import TrackObserver
+
+    x, _ = planted
+    ts, _ = settings(TrackBasis="LocalCos64", RidgeBasis="LocalCos64", TrackOverlapPolicy=policy)
+    X, origin, offs, co, sg = stream_cells(x, T0, FS, ts.ridge)
+    Z = background_z(X, ts.ridge)
+    cal = calibrated(ts, Z)
+    seeds = dict(short=trigger(80.5, 81.0, float(planted_f(T0 + 81.0))),
+                 long=trigger(82.2, 82.6, float(planted_f(T0 + 82.6))))
+    obs = TrackObserver(ts, FS, "H1")
+    held = (T0 + offs / FS, co[0.0], sg[0.0])
+    out = []
+    for name in order:
+        obs.queue = [seeds[name]]
+        hi = seed_window(seeds[name], ts, origin).slot_hi
+        rows, kept = obs.drain(origin, hi, [(k, Z[k], X[k]) for k in range(hi)], held, cal)
+        out.append((rows, kept))
+    return obs, out
+
+
+def test_a_chirp_seeded_in_two_batches_is_dropped_or_superseded(planted):
+    """"drop": the second, longer and higher-scoring track is discarded, the
+    chirp's track stops a second short of its end. "supersede": it is emitted
+    with the first track's seed and its id in track_supersedes, reaching the
+    end of the chirp; the first row is untouched; the counters say so."""
+    from wdf.analysis.track_reconstruction import drop_superseded
+
+    end = T0 + CHIRP_AT + CHIRP_S
+    drop, (d1, d2) = two_batches(planted, "drop")
+    assert len(d1[0]) == 1 and d2 == ([], {})
+    first = d1[0][0]
+    assert first["track_t_end"] < end - 0.3 and first["track_supersedes"] == []
+    assert (drop.absorbed, drop.superseded, drop.carried, drop.count) == (1, 0, 0, 1)
+
+    sup, (s1, s2) = two_batches(planted, "supersede")
+    assert s1[0] == [first] and s1[1].keys() == d1[1].keys()
+    np.testing.assert_array_equal(s1[1][0][1], d1[1][0][1])
+    assert len(s2[0]) == 1
+    second = s2[0][0]
+    assert second["cluster_id"] == 1 and second["track_supersedes"] == [0]
+    assert second["track_score"] > first["track_score"]
+    assert second["track_t_end"] > first["track_t_end"] + 0.5 and second["track_t_end"] >= end - 0.5
+    assert second["track_t_start"] <= first["track_t_start"]
+    assert second["track_n_seeds"] == 2 and sorted(second["track_seed_gps"]) == \
+        sorted([first["track_seed_gps"][0], T0 + 82.2])
+    assert second["seed_end"] == T0 + 82.2 + 1024 / FS and 1 in s2[1]
+    assert (sup.absorbed, sup.superseded, sup.carried, sup.count) == (0, 1, 1, 2)
+    table = pd.DataFrame(s1[0] + s2[0])
+    assert drop_superseded(table)["cluster_id"].tolist() == [1]
+
+
+def test_a_lower_scoring_overlap_is_discarded_under_supersede(planted):
+    """Seeded the other way round, the long track comes first and the short
+    one, of lower score, is absorbed by either policy."""
+    for policy in ("drop", "supersede"):
+        obs, (b1, b2) = two_batches(planted, policy, order=("long", "short"))
+        assert len(b1[0]) == 1 and b2 == ([], {}) and obs.absorbed == 1 and obs.superseded == 0
+
+
+def test_superseded_tracks_are_written_and_left_out_on_reading(planted, tmp_path):
+    from wdf.analysis.track_reconstruction import load_tracks, save_tracks, superseded_ids
+
+    _, (s1, s2) = two_batches(planted, "supersede")
+    events = pd.DataFrame(s1[0] + s2[0], columns=TRACK_EVENT_COLUMNS)
+    waveforms = {**s1[1], **s2[1]}
+    save_tracks(events, waveforms, str(tmp_path / "e.csv"), str(tmp_path / "w.npz"))
+    read, wf = load_tracks(str(tmp_path / "e.csv"), str(tmp_path / "w.npz"))
+    assert read["cluster_id"].tolist() == [1] and list(wf) == [1]
+    assert read["track_supersedes"][0] == [0]
+    every, wf_all = load_tracks(str(tmp_path / "e.csv"), str(tmp_path / "w.npz"), superseded="keep")
+    assert every["cluster_id"].tolist() == [0, 1] and sorted(wf_all) == [0, 1]
+    assert superseded_ids(every) == {0}
+    with pytest.raises(ValueError):
+        load_tracks(str(tmp_path / "e.csv"), superseded="all")
 
 
 def test_the_anchored_path_has_no_preferred_direction():
@@ -203,6 +302,8 @@ def test_the_track_latency_is_declared(trun):
                                                + par.RidgeSlot
                                                + (par.RidgeWindow - par.RidgeOverlap / 2) / 2048.0)
     assert trun.tracks and par.TrackCount == len(trun.tracks)
+    assert par.TrackOverlapPolicy == "drop" and par.TrackSuperseded == 0
+    assert par.TrackSeedsCarried == 0 and par.TrackSeedsAbsorbed >= 0
     for row in trun.tracks:
         assert row["latency"] <= par.TrackLatency_s + par.len + 1e-9
         assert row["emitted_at"] == pytest.approx(row["data_time"] + par.Latency_s)

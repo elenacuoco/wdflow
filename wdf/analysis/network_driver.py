@@ -373,7 +373,8 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
     :param triggers: ``{ifo: trigger table with its coefficients}`` (the
         wavegram path; read with `wdf.analysis.io.triggers_from_files`).
     :param tracks: ``{ifo: track event table}`` (the track path;
-        `load_tracks` of the workers' ``TrackEvents`` files).
+        `load_tracks` of the workers' ``TrackEvents`` files); rows named in
+        a `track_supersedes` are skipped.
     :param waveforms: ``{ifo: {cluster_id: (t0, waveform)}}`` (track path).
     :param segment_bounds: ``{ifo: (start, end)}`` for the time slides; from
         the triggers or events when None.
@@ -455,7 +456,11 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         if HrssSettings.from_parameters(par).active:
             raise ValueError("HrssEstimate is read on the wavegram path's reconstructions")
         ifos = list(tracks)
-        events = {i: tracks[i].reset_index(drop=True).assign(ifo=i) for i in ifos}
+        from wdf.analysis.track_reconstruction import drop_superseded
+
+        # The tracks a later track superseded (TrackOverlapPolicy "supersede")
+        # are not events: a signal yields one track.
+        events = {i: drop_superseded(tracks[i].reset_index(drop=True)).assign(ifo=i) for i in ifos}
         waveforms = waveforms or {i: {} for i in ifos}
         fs = float(next((float(ev["fs"].iloc[0]) for ev in events.values() if len(ev)), np.nan))
         result = NetworkResult(candidates=pd.DataFrame(), events=events, waveforms=waveforms,

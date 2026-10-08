@@ -7,7 +7,14 @@ coefficients, which the track needs for its seed's loudest tile.
 Online (`wdfUnitOnline`) the worker calls `drain` after every block: the
 seeds whose slice of the map (`TrackHorizon` past their window included) is
 complete are reconstructed from the map rows and window coefficients the
-streaming map still holds, and leave the queue. Offline (`wdfUnitOffline`) the
+streaming map still holds, and leave the queue. A track of one drain may share
+cells of the map with a track emitted by an earlier drain (a long inspiral is
+seeded again and again as it rises): `TrackOverlapPolicy` "drop" discards it
+and counts its seeds as absorbed; "supersede" emits it when its score is
+higher than that of every emitted track it overlaps, with their seeds and
+their ids in `track_supersedes`, and discards it otherwise. An emitted row is
+never changed afterwards; the superseded rows stay in the output and are
+skipped by `load_tracks` and the coincidence. Offline (`wdfUnitOffline`) the
 records are read once the segment's map is computed.
 """
 __author__ = "Elena Cuoco"
@@ -36,10 +43,17 @@ class TrackObserver(Observer):
         self.settings, self.fs, self.ifo = settings, float(fs), ifo
         self.queue = []
         self.records = []
+        #: The last emitted tracks still in force: ``(cluster_id, cells,
+        #: score, seeds)``; a superseding track takes the cells of the tracks
+        #: it replaces, so that later tracks are compared with it.
         self.emitted = []
         self.count = 0
         self.dropped = 0
+        #: Seeds of the tracks discarded for overlapping an emitted track.
         self.absorbed = 0
+        #: Tracks superseded, and the seeds carried over from them.
+        self.superseded = 0
+        self.carried = 0
 
     def update(self, event):
         """Keep one trigger's record, coefficients included."""
@@ -66,7 +80,7 @@ class TrackObserver(Observer):
         :return: tuple -- (list of event rows, ``{cluster_id: (t0,
             waveform)}``).
         """
-        from wdf.analysis.track_reconstruction import (reconstruct, seed_window)
+        from wdf.analysis.track_reconstruction import (reconstruct, seed_window, track_row)
 
         ready, waiting = [], []
         for record in self.queue:
@@ -86,14 +100,28 @@ class TrackObserver(Observer):
                                                 coeffs, sigmas, starts, first_slot=first,
                                                 first_id=self.count)
         out, kept = [], {}
+        policy = self.settings.overlap_policy
         for (_, row), track in zip(events.iterrows(), tracks):
             cells = set(zip(track.slots.tolist(), track.states.tolist()))
-            if any(cells & other for other in self.emitted):
-                self.absorbed += len(track.seeds)
-                continue
-            self.emitted.append(cells)
-            row = row.to_dict()
+            overlapped = [e for e in self.emitted if cells & e[1]]
             cid = self.count
+            if overlapped:
+                if policy != "supersede" or track.score <= max(e[2] for e in overlapped):
+                    self.absorbed += len(track.seeds)
+                    continue
+                # The new track replaces the emitted ones it overlaps: their
+                # seeds become its own, their cells block later tracks as its.
+                for e in overlapped:
+                    track.seeds.extend(s for s in e[3] if not any(s is q for q in track.seeds))
+                    cells |= e[1]
+                    self.emitted.remove(e)
+                self.superseded += len(overlapped)
+                self.carried += sum(len(e[3]) for e in overlapped)
+                row = track_row(track, cid, self.ifo, self.fs, self.settings.event_instant,
+                                supersedes=[e[0] for e in overlapped])
+            else:
+                row = row.to_dict()
+            self.emitted.append((cid, cells, float(track.score), list(track.seeds)))
             row["cluster_id"] = cid
             row["seed_end"] = max(s.t_hi for s in track.seeds)
             if track.waveform is not None:

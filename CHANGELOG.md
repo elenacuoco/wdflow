@@ -5,6 +5,28 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### Track overlap policy and event instant
+
+`TrackOverlapPolicy` (default "drop", nothing changes): online, a track of a
+later drain that shares a cell of the map with an emitted track is discarded
+and its seeds counted in `TrackSeedsAbsorbed`. With "supersede" it is emitted
+when its score is higher than that of every emitted track it overlaps,
+carrying their seeds (the seed columns recomputed) and their ids in the new
+column `track_supersedes`; otherwise it is discarded as before. The emitted
+rows are never changed; the superseded ones stay in `TrackEvents` and are
+left out by `load_tracks` (`superseded="drop"`, the default; "keep" reads
+them), by `run_network` and by `TrackCoincidenceFinder.find`
+(`drop_superseded`, `superseded_ids`). New counters `TrackSuperseded` and
+`TrackSeedsCarried`. `configs/online_zerophase_track.toml` sets "supersede"
+(a long inspiral, seeded again as it rises, now yields the track that reaches
+the merger); the other configurations keep "drop".
+
+`TrackEventInstant` (default "peak", nothing changes): the track event's
+`gpsPeak`, hence the candidate time and `dt_instant_s`, is the peak of the
+waveform's envelope or, with "end", the end of the track's last slot.
+`track_row` and `track_events` take `instant`; `track_row` takes
+`supersedes`.
+
 ### The alert table
 
 `wdf.analysis.alerts`: `alert_table(candidates, events, par)` selects the

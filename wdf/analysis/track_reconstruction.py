@@ -35,7 +35,15 @@ The chain:
 
 The same functions run offline, on the segment's map (`wdfUnitOffline`), and
 online, on the rows and coefficients the streaming map holds
-(`wdfUnitOnline`, `TrackObserver`).
+(`wdfUnitOnline`, `TrackObserver`). Online the seeds come in batches, one per
+drain, and a track of a later batch may share cells with a track already
+emitted: `TrackOverlapPolicy` says whether it is dropped ("drop") or, when its
+score is higher, emitted in the old tracks' place with their seeds and their
+ids in `track_supersedes` ("supersede"; `TrackObserver`). Superseded rows are
+kept where they were written and skipped by `load_tracks` and the coincidence
+(`drop_superseded`). `TrackEventInstant` chooses the event's instant
+(`gpsPeak`): the peak of the waveform's envelope ("peak") or the end of the
+track's last slot ("end").
 """
 __author__ = "Elena Cuoco"
 __license__ = "GPL"
@@ -62,7 +70,7 @@ PACKET_COSTS = ("l1", "entropy", "wdfUniversal", "wdfBlock")
 TRACK_COLUMNS = [
     "track_t_start", "track_t_end", "track_times", "track_f", "track_energy", "track_snr",
     "track_score", "track_z_sum", "track_n_slots", "track_basis", "track_method",
-    "track_n_seeds", "track_seed_gps", "track_waveform_t0",
+    "track_n_seeds", "track_seed_gps", "track_waveform_t0", "track_supersedes",
 ]
 #: Columns of a track event table.
 TRACK_EVENT_COLUMNS = DETECTOR_EVENT_COLUMNS + TRACK_COLUMNS
@@ -148,6 +156,14 @@ class TrackSettings:
         may pass through and still contain it (`TrackSeedStates`).
     :param packet_cost: cost of the cosine-packet best basis
         (`TrackPacketCost`), one of `PACKET_COSTS`.
+    :param overlap_policy: online, a track of a later batch sharing cells
+        with emitted tracks (`TrackOverlapPolicy`): "drop" = discarded, its
+        seeds counted as absorbed; "supersede" = emitted when its score is
+        higher than every emitted track it overlaps, carrying their seeds and
+        their ids in `track_supersedes`, else discarded.
+    :param event_instant: the event's instant, `gpsPeak`
+        (`TrackEventInstant`): "peak" = centre of the largest sample of the
+        waveform's envelope; "end" = end of the track's last slot.
     :param ridge: the map's settings with the track's penalty
         (`TrackRidgeSettings`): `TrackLambda` (default 3.7 per octave),
         `TrackMcRange` (default 1 to 30 solar masses), `TrackAllowanceMax`
@@ -162,10 +178,17 @@ class TrackSettings:
     seed_states: int
     packet_cost: str
     ridge: RidgeSettings
+    overlap_policy: str = "drop"
+    event_instant: str = "peak"
 
     KEYS = dict(lookback="TrackLookback", horizon="TrackHorizon", basis="TrackBasis",
-                seed_states="TrackSeedStates", packet_cost="TrackPacketCost")
-    DEFAULTS = dict(lookback=4.0, horizon=1.0, seed_states=1, packet_cost="entropy")
+                seed_states="TrackSeedStates", packet_cost="TrackPacketCost",
+                overlap_policy="TrackOverlapPolicy", event_instant="TrackEventInstant")
+    DEFAULTS = dict(lookback=4.0, horizon=1.0, seed_states=1, packet_cost="entropy",
+                    overlap_policy="drop", event_instant="peak")
+    #: Values of `TrackOverlapPolicy` and `TrackEventInstant`.
+    OVERLAP_POLICIES = ("drop", "supersede")
+    EVENT_INSTANTS = ("peak", "end")
     #: The track penalty's parameters and defaults: the stiff penalty of
     #: ridge v1, which followed inspirals, beyond a chirp allowance.
     PENALTY = dict(TrackLambda=3.7, TrackMcRange=(1.0, 30.0), TrackAllowanceMax=0.27,
@@ -196,7 +219,9 @@ class TrackSettings:
                   horizon=float(get("horizon", d["horizon"])),
                   basis=str(get("basis", ridge.basis)),
                   seed_states=int(get("seed_states", d["seed_states"])),
-                  packet_cost=str(get("packet_cost", d["packet_cost"])), ridge=ridge)
+                  packet_cost=str(get("packet_cost", d["packet_cost"])), ridge=ridge,
+                  overlap_policy=str(get("overlap_policy", d["overlap_policy"])),
+                  event_instant=str(get("event_instant", d["event_instant"])))
         out.check(rate)
         for name, key in cls.KEYS.items():
             setattr(par, key, getattr(out, name))
@@ -250,6 +275,12 @@ class TrackSettings:
                              f"{COSINE_PACKETS}<m>")
         if self.packet_cost not in PACKET_COSTS:
             raise ValueError(f"TrackPacketCost {self.packet_cost!r}: use one of {PACKET_COSTS}")
+        if self.overlap_policy not in self.OVERLAP_POLICIES:
+            raise ValueError(f"TrackOverlapPolicy {self.overlap_policy!r}: use one of "
+                             f"{self.OVERLAP_POLICIES}")
+        if self.event_instant not in self.EVENT_INSTANTS:
+            raise ValueError(f"TrackEventInstant {self.event_instant!r}: use one of "
+                             f"{self.EVENT_INSTANTS}")
 
     def completion_s(self, rate):
         """Seconds of whitened stream after a slot's end that the map reads
@@ -804,12 +835,15 @@ def _quantile(values, weights, q):
     return float(values[order][np.searchsorted(c, q * c[-1])])
 
 
-def track_row(track, cluster_id, ifo, fs):
+def track_row(track, cluster_id, ifo, fs, instant="peak", supersedes=()):
     """One track as a row of `TRACK_EVENT_COLUMNS`.
 
     The time columns are moments of the waveform's energy (`gpsCentroid`,
-    `tSpread`, `duration90`) and the centre of its largest envelope sample
-    (`gpsPeak`); `gpsStart`, `gps` and `duration` are the track's span. The
+    `tSpread`, `duration90`) and the event's instant `gpsPeak`: the centre of
+    the waveform's largest envelope sample (`instant` "peak") or the end of
+    the track's last slot ("end"); `gpsStart`, `gps` and `duration` are the
+    track's span. `supersedes` are the ids of the emitted tracks this one
+    replaces (`track_supersedes`, empty but online under "supersede"). The
     frequency columns are the path's states, weighted by the cells' energy.
     `EnWDF` is the square root of the waveform's energy (`track_snr`);
     `EnWDF_window`, `sigma`, `snrPeak`, `significance`, `n_coeff` and
@@ -834,6 +868,11 @@ def track_row(track, cluster_id, ifo, fs):
         d90 = float((np.searchsorted(c, 0.95) - np.searchsorted(c, 0.05)) / fs)
     else:
         centroid = spread = peak = d90 = float("nan")
+    if instant == "end":
+        peak = float(track.t_end)
+    elif instant != "peak":
+        raise ValueError(f"TrackEventInstant {instant!r}: use one of "
+                         f"{TrackSettings.EVENT_INSTANTS}")
     snr = float(np.sqrt(energy)) if np.isfinite(energy) else float("nan")
     half = 0.5 * (track.t_end - track.t_start) / track.slots.size
     ridge = event_ridge_features(track.times() - half, track.times() + half,
@@ -857,12 +896,12 @@ def track_row(track, cluster_id, ifo, fs):
         track_snr=snr, track_score=track.score, track_z_sum=track.z_sum,
         track_n_slots=int(track.slots.size), track_basis=basis, track_method=track.method,
         track_n_seeds=len(seeds), track_seed_gps=[float(s.get("gps", np.nan)) for s in seeds],
-        track_waveform_t0=float(t0))
+        track_waveform_t0=float(t0), track_supersedes=[int(i) for i in supersedes])
     row.update({k: ridge.get(k, float("nan")) for k in RIDGE_FEATURES})
     return row
 
 
-def track_events(tracks, ifo, fs, first_id=0):
+def track_events(tracks, ifo, fs, first_id=0, instant="peak"):
     """A detector's tracks as its event table.
 
     :type tracks: list[Track]
@@ -873,10 +912,45 @@ def track_events(tracks, ifo, fs, first_id=0):
     :param fs: sampling rate of the waveforms, Hz.
     :type first_id: int
     :param first_id: `cluster_id` of the first track.
+    :type instant: str
+    :param instant: the event's instant (`TrackEventInstant`, `track_row`).
     :return: pandas.DataFrame -- `TRACK_EVENT_COLUMNS`, one row per track.
     """
-    rows = [track_row(t, first_id + i, ifo, fs) for i, t in enumerate(tracks)]
+    rows = [track_row(t, first_id + i, ifo, fs, instant) for i, t in enumerate(tracks)]
     return pd.DataFrame(rows, columns=TRACK_EVENT_COLUMNS)
+
+
+def superseded_ids(events):
+    """The `cluster_id` values named in the `track_supersedes` of a track
+    event table: tracks replaced by a later emission (`TrackOverlapPolicy`
+    "supersede"), to be skipped by the coincidence.
+
+    :type events: pandas.DataFrame
+    :return: set[int]
+    """
+    out = set()
+    if events is None or "track_supersedes" not in events:
+        return out
+    for value in events["track_supersedes"]:
+        if isinstance(value, str):
+            import json
+            value = json.loads(value) if value else []
+        if isinstance(value, (list, tuple, np.ndarray)):
+            out.update(int(i) for i in value)
+    return out
+
+
+def drop_superseded(events):
+    """`events` without the rows a later track superseded (`superseded_ids`).
+
+    :type events: pandas.DataFrame
+    :return: pandas.DataFrame -- the same table when nothing is superseded.
+    """
+    gone = superseded_ids(events)
+    if not gone or "cluster_id" not in events:
+        return events
+    keep = ~events["cluster_id"].astype(int).isin(gone)
+    return events[keep.to_numpy()].reset_index(drop=True)
 
 
 def track_waveforms(tracks, first_id=0):
@@ -905,7 +979,8 @@ def reconstruct(triggers, Z, X, origin, fs, settings, ifo, coefficients=None, si
     tracks = seeded_tracks(Z, X, origin, seeds, settings, first_slot=first_slot)
     for t in tracks:
         t.waveform = track_waveform(t, fs, origin, settings, coefficients, sigmas, starts, stream)
-    return (track_events(tracks, ifo, fs, first_id), track_waveforms(tracks, first_id), tracks)
+    return (track_events(tracks, ifo, fs, first_id, settings.event_instant),
+            track_waveforms(tracks, first_id), tracks)
 
 
 def save_tracks(events, waveforms, csv_path, npz_path):
@@ -915,6 +990,9 @@ def save_tracks(events, waveforms, csv_path, npz_path):
     out = events.copy()
     for column in ("track_times", "track_f", "track_seed_gps"):
         out[column] = [json.dumps(list(map(float, v))) for v in out[column]]
+    if "track_supersedes" in out:
+        out["track_supersedes"] = [json.dumps([int(i) for i in v]) if isinstance(v, (list, tuple, np.ndarray))
+                                   else "[]" for v in out["track_supersedes"]]
     out.to_csv(csv_path, index=False)
     arrays = {}
     for cid, (t0, y) in waveforms.items():
@@ -923,24 +1001,41 @@ def save_tracks(events, waveforms, csv_path, npz_path):
     np.savez(npz_path, **arrays)
 
 
-def load_tracks(csv_path, npz_path=None):
+def load_tracks(csv_path, npz_path=None, superseded="drop"):
     """Read what `save_tracks` wrote.
 
+    :type superseded: str
+    :param superseded: "drop" = the tracks a later track superseded
+        (`track_supersedes`) are left out, with their waveforms, so that a
+        signal yields one track; "keep" = every row written.
     :return: tuple -- (event table, ``{cluster_id: (t0, waveform)}``).
     """
     import json
     import os
 
+    if superseded not in ("drop", "keep"):
+        raise ValueError(f"superseded {superseded!r}: 'drop' or 'keep'")
     events = pd.read_csv(csv_path) if os.path.getsize(csv_path) > 1 else pd.DataFrame(
         columns=TRACK_EVENT_COLUMNS)
     for column in ("track_times", "track_f", "track_seed_gps"):
         if column in events:
             events[column] = [json.loads(v) if isinstance(v, str) else v for v in events[column]]
+    if "track_supersedes" in events:
+        events["track_supersedes"] = [[int(i) for i in json.loads(v)] if isinstance(v, str) and v
+                                      else (list(v) if isinstance(v, (list, tuple)) else [])
+                                      for v in events["track_supersedes"]]
+    else:
+        events["track_supersedes"] = [[] for _ in range(len(events))]
+    if superseded == "drop":
+        events = drop_superseded(events)
+    ids = set(events["cluster_id"].astype(int)) if len(events) else set()
     waveforms = {}
     if npz_path is not None and os.path.exists(npz_path):
         z = np.load(npz_path)
         for key in z.files:
             if key.startswith("t0_"):
                 cid = int(key[3:])
+                if superseded == "drop" and cid not in ids:
+                    continue
                 waveforms[cid] = (float(z[key][0]), z[f"y_{cid}"])
     return events, waveforms

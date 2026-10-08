@@ -492,6 +492,36 @@ are built after the segment's ridge, on its map and its whitened stream. Both
 write `TrackEvents` (CSV) and `TrackWaveforms` (npz), read back with
 `load_tracks`.
 
+Online the seeds come in batches, one per drain, and a long inspiral is seeded
+again and again as it rises: the track of a later batch runs back through the
+lookback into the cells of a track already emitted. `TrackOverlapPolicy` says
+what the observer does with a track that shares a (slot, state) cell with an
+emitted one:
+
+- "drop" (the default): it is discarded and its seeds are counted in
+  `TrackSeedsAbsorbed`;
+- "supersede": when its score is higher than that of every emitted track it
+  overlaps, it is emitted with their seeds added to its own (the seed columns
+  are recomputed) and their ids in `track_supersedes`; otherwise it is
+  discarded as above. The tracks it replaces are counted in
+  `TrackSuperseded`, their seeds in `TrackSeedsCarried`; their cells block
+  later tracks as the new track's own.
+
+The rule is causal: an emitted row is never changed, the new row goes out at
+its own drain with the usual latency (`seed_end` is that of the newest seed).
+The superseded rows stay in `TrackEvents` as written; `load_tracks` leaves
+them out (`superseded="drop"`, the default; "keep" reads every row),
+`run_network` and `TrackCoincidenceFinder.find` skip them
+(`drop_superseded`), so a signal yields one track and the background is not
+counted twice. Within one batch, two tracks sharing a cell are merged into
+the one of higher score (`merge_tracks`), as offline over the whole segment.
+
+`TrackEventInstant` chooses the event's instant, `gpsPeak`, which gives the
+candidate time and the pair's `dt_instant_s`: "peak" (the default) is the
+centre of the largest sample of the waveform's envelope; "end" is the end of
+the track's last slot, a convention that is the merger for a rising track
+only.
+
 `TrackCoincidenceFinder` describes each pair the classical rule forms with:
 
 - `track_time_overlap`, `track_f_distance`, `track_f_overlap`,
@@ -610,6 +640,8 @@ waveform, so `TimeSlideFAR` runs on it.
 | `TrackBasis` | `RidgeBasis` | `LocalCos<M>` or `CosinePackets<m>` |
 | `TrackSeedStates` | 1 | states either side of the seed's cell |
 | `TrackPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |
+| `TrackOverlapPolicy` | "drop" | online, a track overlapping an emitted one: "drop" or "supersede" |
+| `TrackEventInstant` | "peak" | the event's instant: envelope "peak" or track "end" |
 | `TrackTimingJitter` | 0.0035 s | added to the light travel time |
 | `TrackFrequencyTolerance` | 0.5 octave | f(t) tolerance between two tracks |
 | `TrackMinCommonFraction` | 0.5 | admission 1: least fraction of the shorter track the two f(t) agree over |
