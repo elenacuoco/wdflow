@@ -183,3 +183,54 @@ def test_sub_stretches_read_only_the_past():
     a, b = run(x, **kw), run(y, **kw)
     assert a.before(t) == b.before(t)
     assert any(f.get("substretch") for f in a.before(t)["refits"])
+
+
+def scale_too_low(monkeypatch, after=1):
+    """Every fit after the first `after` returns its model with the
+    prediction-error scale four times too low."""
+    import wdf.processes.wdfUnitOnline as online
+
+    fitted = online.fit_autoregressive
+    calls = []
+
+    def fit(samples, start, rate, order):
+        ar = np.array(fitted(samples, start, rate, order), dtype=float)
+        calls.append(start)
+        if len(calls) > after:
+            ar[0] *= 0.25
+        return ar
+
+    monkeypatch.setattr(online, "fit_autoregressive", fit)
+
+
+def test_the_own_level_check_is_off_by_default_and_parsed():
+    par = wdfUnitOnline(parameters()).par
+    assert par.ARFitOwnLevelCheck is False and par.ARFitOwnLevelRatio == par.ARFitLevelRatio
+    par = wdfUnitOnline(parameters(ARFitOwnLevelCheck=True, ARFitOwnLevelRatio=2.0)).par
+    assert par.ARFitOwnLevelCheck is True and par.ARFitOwnLevelRatio == 2.0
+    with pytest.raises(ValueError, match="ARFitOwnLevelRatio"):
+        wdfUnitOnline(parameters(ARFitOwnLevelRatio=1.0))
+
+
+def test_a_refit_with_a_wrong_scale_passes_without_the_own_level_check(monkeypatch):
+    scale_too_low(monkeypatch)
+    refit = refit_at_56(run(strain()))
+    assert refit["accepted"] and refit["sigma"] > 0 and "own_level_max" not in refit
+
+
+def test_the_own_level_check_rejects_a_refit_with_a_wrong_scale(monkeypatch):
+    scale_too_low(monkeypatch)
+    r = run(strain(), ARFitOwnLevelCheck=True)
+    first = r.refits[0]
+    assert first["accepted"] and first["own_level_ok"]
+    assert 1 / 4 <= first["own_level_min"] <= first["own_level_max"] <= 4
+    refit = refit_at_56(r)
+    assert refit["accepted"] is False and r.parameters.RefitRejected >= 1
+    assert all(float(v) > 4.0 for v in refit["candidate_own_level_max"].split(";"))
+
+
+def test_the_own_level_check_keeps_a_good_refit():
+    plain = refit_at_56(run(strain()))
+    checked = refit_at_56(run(strain(), ARFitOwnLevelCheck=True))
+    assert checked["accepted"] and checked["own_level_ok"]
+    assert (checked["candidate"], checked["fit_start"]) == (plain["candidate"], plain["fit_start"])

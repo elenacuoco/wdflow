@@ -53,6 +53,16 @@ stretch when:
   current model, is within `ARFitLevelRatio` of white (between
   `1 / ARFitLevelRatio` and `ARFitLevelRatio`). `ARFitLevelCheck = false`
   drops this condition; the levels are still recorded.
+- with `ARFitOwnLevelCheck = true` (off by default), its power in each
+  octave, whitened by the model fitted on it, is within `ARFitOwnLevelRatio`
+  (default `ARFitLevelRatio`) of white. This applies to the first fit, the
+  refits and the sub-stretches, and rejects a model whose scale or spectral
+  shape does not whiten its own fit stretch, which the check through the
+  current model cannot see. The levels are recorded as `own_level_min`,
+  `own_level_max`, `own_level_ok`; a rejected refit records them per
+  candidate (`candidate_own_level_min`, `candidate_own_level_max`). When no
+  first-fit candidate passes, the fallback takes the least loud among those
+  that pass the own-level check, or among all when none does.
 
 A refit tries `ARFitCandidates` stretches, the first ending `ARFitGap` before
 the switch and each next one `ARFitStep` seconds earlier, and takes the most

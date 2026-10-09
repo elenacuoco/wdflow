@@ -40,6 +40,8 @@ ARFitQuality = true             # choose each fit stretch from the past by the q
 ARFitCandidates = 3             # stretches tried: a refit goes back ARFitStep at a time and keeps the current model if none passes; the first fit waits ARFitStep at a time, then takes the least loud
 ARFitStep = 150.0               # s between two candidate stretches (learn / 2)
 ARFitLevelRatio = 4.0           # largest octave power over white (and smallest, 1 / it) of a refit's stretch through the current model
+ARFitOwnLevelCheck = false      # also require each octave's power through the stretch's own new model within ARFitOwnLevelRatio of white (first fit, refits, sub-stretches)
+ARFitOwnLevelRatio = 4.0        # largest octave power over white (and smallest, 1 / it) through the new model; default ARFitLevelRatio
 ARModelsFrom = ""               # path of another run's ARModels-<ifo>-Search<name>.h5: apply its noise models at its switch times, no fit of its own (e.g. an injection run reusing its background run); "" = fit as above
 ARWarmup = 3000                 # unused by the zero-phase whitening (its past is the conditioned stream); kept at least ARorder
 

@@ -28,7 +28,13 @@ The chain, block by block of `len` seconds:
    `GlitchCensusLow` through the current model stays within
    `ARFitLevelRatio` of white (`ARFitLevelCheck`, on by default); a refit
    with none keeps the current model, the first fit takes the candidate of
-   smallest census peak. With `ARFitSubStretch` "latest" or "longest"
+   smallest census peak. With `ARFitOwnLevelCheck` (off by default) every
+   candidate, first fit and sub-stretches included, must also keep each
+   octave's power through its OWN model within `ARFitOwnLevelRatio`
+   (default `ARFitLevelRatio`) of white, which rejects a model whose scale
+   or shape does not whiten the stretch it was fitted on; the first fit
+   then falls back on the least loud candidate that passes this check, if
+   any. With `ARFitSubStretch` "latest" or "longest"
    (default "none") a fit whose candidates fail and hold census transients
    is taken instead on the contiguous stretch between the transients (each
    padded by `ARFitExcludePad`, default `GlitchSeedPad`), the most recent or
@@ -504,6 +510,11 @@ class wdfUnitOnline:
                              "ARFitLevelRatio above 1")
         check = getattr(par, "ARFitLevelCheck", None)
         par.ARFitLevelCheck = bool(True if check is None else check)
+        par.ARFitOwnLevelCheck = bool(getattr(par, "ARFitOwnLevelCheck", None) or False)
+        own = getattr(par, "ARFitOwnLevelRatio", None)
+        par.ARFitOwnLevelRatio = float(par.ARFitLevelRatio if own is None else own)
+        if par.ARFitOwnLevelRatio <= 1:
+            raise ValueError("ARFitOwnLevelRatio must be above 1")
         rule = str(getattr(par, "ARFitSubStretch", None) or FIT_SUBSTRETCH_RULES[0]).lower()
         if rule not in FIT_SUBSTRETCH_RULES:
             raise ValueError(f"ARFitSubStretch {rule!r}: use one of {FIT_SUBSTRETCH_RULES}")
@@ -768,7 +779,6 @@ class wdfUnitOnline:
         :param seeds_out: a list the census seeds (`glitch_seeds`) are
             appended to, or None.
         """
-        from wdf.processes.census import band_stream, octave_bands
         from wdf.processes.glitch_subtraction import glitch_seeds
 
         par, rate, cs = self.par, float(self.par.resampling), self._fit_census
@@ -776,18 +786,45 @@ class wdfUnitOnline:
         if seeds_out is not None:
             seeds_out.extend(seeds)
         peak = max((sd["peak"] for sd in seeds), default=0.0)
-        ratios = []
-        if current is not None and w.size:
-            nyquist = 0.5 * rate
-            for band in octave_bands(rate, cs.low):
-                y = band_stream(w, rate, band, cs.order)
-                ratios.append(float(np.mean(y ** 2)) / ((band[1] - band[0]) / nyquist))
+        ratios = self._octave_levels(w) if current is not None else []
         lo = min(ratios) if ratios else float("nan")
         hi = max(ratios) if ratios else float("nan")
         level_ok = (not par.ARFitLevelCheck or not ratios
                     or (lo >= 1.0 / par.ARFitLevelRatio and hi <= par.ARFitLevelRatio))
         return dict(census_peak=float(peak), census_transients=len(seeds), level_min=lo,
                     level_max=hi, passed=bool(w.size and not seeds and level_ok))
+
+    def _octave_levels(self, w):
+        """The power of a whitened stretch in each octave from
+        `GlitchCensusLow` up, over that of white noise of unit variance; an
+        empty list for an empty stretch."""
+        from wdf.processes.census import band_stream, octave_bands
+
+        rate, cs = float(self.par.resampling), self._fit_census
+        if not w.size:
+            return []
+        nyquist = 0.5 * rate
+        return [float(np.mean(band_stream(w, rate, band, cs.order) ** 2)) / ((band[1] - band[0]) / nyquist)
+                for band in octave_bands(rate, cs.low)]
+
+    def _own_level(self, q, x, ar, filt, now):
+        """With `ARFitOwnLevelCheck`: the stretch `x` whitened by the model
+        fitted on it (`ar`, its filter `filt` in the "zerophase" mode), each
+        octave's power over white within ``[1 / ARFitOwnLevelRatio,
+        ARFitOwnLevelRatio]``. Writes ``own_level_min``, ``own_level_max``
+        and ``own_level_ok`` into the quality record `q`, and fails it when
+        the check fails. Without the check `q` is returned unchanged.
+        """
+        par = self.par
+        if not par.ARFitOwnLevelCheck:
+            return q
+        ratios = self._octave_levels(self._whitened_stretch(filt or self._filter_of(ar, now), x))
+        lo = min(ratios) if ratios else float("nan")
+        hi = max(ratios) if ratios else float("nan")
+        ok = bool(ratios) and lo >= 1.0 / par.ARFitOwnLevelRatio and hi <= par.ARFitOwnLevelRatio
+        q.update(own_level_min=lo, own_level_max=hi, own_level_ok=ok)
+        q["passed"] = bool(q["passed"] and ok)
+        return q
 
     def _judge(self, x, fit_start, judge, current, seeds_out=None):
         """`_stretch_quality` of the stretch `x` (from `fit_start`) whitened
@@ -842,7 +879,7 @@ class wdfUnitOnline:
         ar = fit_autoregressive(x, fit_start, rate, self.par.ARorder)
         filt = self._filter_of(ar, now) if self.mode == "zerophase" else None
         judge = current if current is not None else (filt or self._filter_of(ar, now))
-        q = self._judge(x, fit_start, judge, current)
+        q = self._own_level(self._judge(x, fit_start, judge, current), x, ar, filt, now)
         q.update(candidate=j, substretch=True, candidate_start=float(c0), candidate_end=float(c1),
                  excluded_s=float((c1 - c0) - (fit_end - fit_start)))
         return fit_start, fit_end, ar, filt, q
@@ -892,8 +929,9 @@ class wdfUnitOnline:
         sub-stretch between them is fitted and judged by its own model, and
         taken if it passes. Otherwise the search waits `ARFitStep` seconds
         and judges the stretch then ending, up to `ARFitCandidates`
-        stretches; then it takes the full candidate of smallest census peak.
-        None while waiting."""
+        stretches; then it takes the full candidate of smallest census peak
+        (with `ARFitOwnLevelCheck`, among those whose own level passes, when
+        any does). None while waiting."""
         par, rate = self.par, float(self.par.resampling)
         tried = self._first_tried
         if tried and now < tried[-1][1] + par.ARFitGap + par.ARFitStep - 0.5 / rate:
@@ -912,6 +950,7 @@ class wdfUnitOnline:
             return fit_start, fit_end, ar, filt, dict(candidate=0, accepted=True)
         seeds = []
         q = self._judge(x, fit_start, filt or self._filter_of(ar, now), None, seeds)
+        q = self._own_level(q, x, ar, filt, now)
         q.update(candidate=len(tried))
         self._full(q, fit_start, fit_end, par.ARFitSubStretch)
         tried.append((fit_start, fit_end, ar, filt, q))
@@ -928,7 +967,8 @@ class wdfUnitOnline:
                             f"transient (census peak {q['census_peak']:.1f}); the search waits "
                             f"{par.ARFitStep:g} s for the next one")
             return None
-        best = min(tried, key=lambda c: c[4]["census_peak"])
+        pool = [c for c in tried if c[4].get("own_level_ok", True)] or tried
+        best = min(pool, key=lambda c: c[4]["census_peak"])
         best[4]["accepted"] = True
         logging.warning(f"online: no fit stretch passed the quality rule; the first model is "
                         f"fitted on {best[0]:.1f}-{best[1]:.1f}, census peak "
@@ -946,8 +986,12 @@ class wdfUnitOnline:
         current model for a refit and by its own for the first fit, and must
         hold no census transient reaching `GlitchTrigger`; a refit's candidate
         must also keep each octave's power, through the current model, within
-        `ARFitLevelRatio` of white (`ARFitLevelCheck`). The first fit takes,
-        when none passes, the candidate of smallest census peak.
+        `ARFitLevelRatio` of white (`ARFitLevelCheck`). With
+        `ARFitOwnLevelCheck` every candidate must also keep each octave's
+        power, through its own model, within `ARFitOwnLevelRatio` of white
+        (`_own_level`). The first fit takes, when none passes, the candidate
+        of smallest census peak among those that pass the own-level check,
+        or among all when none does.
 
         With `ARFitSubStretch` "latest" or "longest" (default "none") a refit
         whose full candidates all fail then tries, in the candidates that
@@ -986,6 +1030,7 @@ class wdfUnitOnline:
                 return fit_start, fit_end, ar, filt, dict(candidate=j, accepted=True)
             seeds = []
             q = self._judge(x, fit_start, current, current, seeds)
+            q = self._own_level(q, x, ar, filt, now)
             q.update(candidate=j)
             self._full(q, fit_start, fit_end, par.ARFitSubStretch)
             tried.append((fit_start, fit_end, ar, filt, q))
@@ -1009,6 +1054,9 @@ class wdfUnitOnline:
                    candidate_census_peaks=joined("census_peak", qs),
                    candidate_level_min=joined("level_min", qs),
                    candidate_level_max=joined("level_max", qs))
+        if par.ARFitOwnLevelCheck:
+            row.update(candidate_own_level_min=joined("own_level_min", qs),
+                       candidate_own_level_max=joined("own_level_max", qs))
         if par.ARFitSubStretch != "none":
             subs = self._sub_tried
             row.update(substretches_tried=len(subs),
