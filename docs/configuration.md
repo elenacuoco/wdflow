@@ -44,7 +44,7 @@ are the shipped configurations; a value set per detector is given as
 | `learn` | required | 300/300/600 | 300/300/600 | 300/300/600 | 300/300/600 | fit stretch, s, ending ARFitGap before the model starts whitening; V1 overrides below |
 | `ARFitGap` | `0.0` | `0.0` | `0.0` | `0.0` | -- | s between the fit stretch's end and the start of its use |
 | `ARFitContext` | `20.0` | `5.0` | `5.0` | `5.0` | `5.0` | band-pass settling read before the first fit stretch, s |
-| `ARRefitInterval` | `0.0` | `1800.0` | `1800.0` | `1800.0` | -- | refit from the past every this many s (0 = never); not yet studied |
+| `ARRefitInterval` | `0.0` | `1800.0` | `1800.0` | `1800.0` | -- | refit from the past every this many s (0 = never) |
 | `ARFitQuality` | `true` | `true` | `true` | `true` | -- | choose each fit stretch from the past by the quality rule: no census transient reaching GlitchTrigger; for a refit, octave power through the current model within ARFitLevelRatio of white |
 | `ARFitCandidates` | `3` | `3` | `3` | `3` | -- | stretches tried: a refit goes back ARFitStep at a time and keeps the current model if none passes; the first fit waits ARFitStep at a time, then takes the least loud |
 | `ARFitStep` | `150.0` | `150.0` | `150.0` | `150.0` | -- | s between two candidate stretches (learn / 2) |

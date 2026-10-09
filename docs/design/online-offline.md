@@ -367,8 +367,8 @@ combined `start_time`, `end_time`); the rate (`far_hz`, `far_per_day`,
 `far_trials_hz` = `AlertTrialsFactor` x the rate, `significant` when it is
 below `AlertSignificantFAR`, default one per year; the counts and livetime
 when the table has them); the statistic (`detection_statistic_name` and
-`detection_statistic`: `gnn_logit`, else `network_rank_statistic`,
-`track_statistic` or `network_morphology`; `network_enwdf`,
+`detection_statistic`: `network_rank_statistic` when a penalty applies,
+else `gnn_logit`, `track_statistic` or `network_morphology`; `network_enwdf`,
 `network_min_enwdf`, `network_morphology`, `network_correlation`,
 `tile_coherence`, the GNN and track columns when present; `glitch`, the
 network's `glitch_single_ifo`, and `glitch_<ifo>`); the morphology from the

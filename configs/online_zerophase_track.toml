@@ -36,7 +36,7 @@ ARorder = 3000                  # autoregressive order, samples; V1 overrides be
 learn = 300                     # fit stretch, s, ending ARFitGap before the first sample the model whitens; V1 overrides below
 ARFitGap = 0.0                  # s between the fit stretch's end and the first sample the model whitens
 ARFitContext = 5.0              # band-pass settling read before the first fit stretch, s
-ARRefitInterval = 1800.0        # refit from the past every this many s (0 = never); not yet studied
+ARRefitInterval = 1800.0        # refit from the past every this many s (0 = never)
 ARFitQuality = true             # choose each fit stretch from the past by the quality rule: no census transient reaching GlitchTrigger; for a refit, octave power through the current model within ARFitLevelRatio of white
 ARFitCandidates = 3             # stretches tried: a refit goes back ARFitStep at a time and keeps the current model if none passes; the first fit waits ARFitStep at a time, then takes the least loud
 ARFitStep = 150.0               # s between two candidate stretches (learn / 2)

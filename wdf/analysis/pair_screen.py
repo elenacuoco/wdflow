@@ -45,15 +45,13 @@ spreads reach the cap, 25.0, 68.2 and 66.1 ms. Without a
 (``network_lag_window_s``, ``network_lag_window_rule``).
 With "cut" a pair is kept only when ``|network_lag_s| <= window``; a pair
 whose lag cannot be measured within the search is dropped. With "penalty"
-every pair is kept and ``network_lag_factor``,
-
-    ``1 / (1 + (max(0, |tau| - window) / scale)^2)``, with ``scale`` the pair's
-own window when `NetworkLagScale` is "window" (the default) or that number of
-seconds,
-
-1 within the window, decreasing with the excess, the same for either sign,
-0 when the lag cannot be measured, penalises the ranking column into
-``network_rank_statistic``, which the pairs are then ranked on.
+every pair is kept and ``network_lag_factor``
+``= 1 / (1 + (max(0, |tau| - window) / scale)^2)``, with ``scale`` the
+pair's own window when `NetworkLagScale` is "window" (the default) or that
+number of seconds, penalises the ranking column into
+``network_rank_statistic``, which the pairs are then ranked on. The factor
+is 1 within the window and decreases with the excess, the same for either
+sign; it is 0 when the lag cannot be measured.
 
 How a factor penalises the ranking column is set by `NetworkPenaltySpace`.
 "multiply" multiplies the column by the factor; it is meant for the
