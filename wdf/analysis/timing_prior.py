@@ -23,18 +23,22 @@ from __future__ import annotations
 
 import numpy as np
 
+from wdf.config.defaults import defaults
+
+_D = defaults("timing_prior")
+
 #: How many bins the two densities are estimated on, over the full range of
 #: the fraction of tolerance a pair may consume. The number is a resolution
 #: and not a tuning: a pair's timing error is a continuum, and the bins only
 #: have to be finer than the feature they must resolve --- the peak the signal
 #: population makes at zero --- and coarser than the count supports.
-BINS = 41
+BINS = _D["bins"]
 
 #: The smallest density either population is credited with, as a fraction of a
 #: uniform one. A bin no injection landed in is a bin the measurement did not
 #: reach, not a bin a signal cannot occupy, and a zero there would send the
 #: ratio to minus infinity on the evidence of one absent count.
-FLOOR = 1e-3
+FLOOR = _D["floor"]
 
 
 class TimingPrior:

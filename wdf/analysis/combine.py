@@ -43,14 +43,19 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.robust_events import CoincidenceConfig
+from wdf.config.defaults import defaults
 
-#: Default `CombineMatch`: the per-detector instants within the window.
-DEFAULT_MATCH = "instant"
+_D = defaults("combine")
+
+#: Default `CombineMatch` (`[combine] CombineMatch`); "instant" matches the
+#: per-detector instants within the window.
+DEFAULT_MATCH = _D["CombineMatch"]
 #: The match rules.
 MATCH_RULES = ("instant", "candidate", "extent")
-#: Default `CombineTimePreference`: the wavegram path's time when it found the
-#: candidate, else the track path's.
-DEFAULT_TIME_PREFERENCE = ("w", "t")
+#: Default `CombineTimePreference` (`[combine] CombineTimePreference`); ("w",
+#: "t") takes the wavegram path's time when it found the candidate, else the
+#: track path's.
+DEFAULT_TIME_PREFERENCE = _D["CombineTimePreference"]
 #: The per-detector columns carried from the preferred path, when present.
 PER_IFO_COLUMNS = ("instant", "gpsStart", "duration", "gpsPeak", "gpsEnd", "track_t_start",
                    "track_t_end", "hrss", "hrss_err", "hrss_noise")
@@ -74,21 +79,21 @@ class CombineSettings:
 
     :param window_s: `CombineWindow`, seconds, or None (default): the
         coincidence window of the detector pair.
-    :param match: `CombineMatch`, "instant" (default), "candidate" or
-        "extent".
+    :param match: `CombineMatch`, "instant", "candidate" or "extent".
     :param trials_factor: `NetworkTrialsFactor`, multiplies the best path's
         rate; None (default) means the number of paths combined.
     :param time_preference: `CombineTimePreference`, the path names in the
-        order their time is preferred (default ("w", "t")).
+        order their time is preferred.
     :param ifos: the detectors of the pair, for the default window and the
-        per-detector columns (default ("H1", "L1")).
+        per-detector columns. Defaults: `[combine]` of
+        wdf/config/defaults.toml.
     """
 
     window_s: float | None = None
     match: str = DEFAULT_MATCH
     trials_factor: float | None = None
     time_preference: tuple = DEFAULT_TIME_PREFERENCE
-    ifos: tuple = ("H1", "L1")
+    ifos: tuple = _D["ifos"]
 
     def __post_init__(self):
         self.match = str(self.match).strip().lower()

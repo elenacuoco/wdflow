@@ -31,6 +31,10 @@ import pandas as pd
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
 from wdf.analysis.robust_events import EPS
+from wdf.config.constants import UNIFORM_VARIANCE_DIVISOR
+from wdf.config.defaults import defaults
+
+_D = defaults("pixel_graph")
 
 PIXEL_EDGE_FEATURES = [
     "time_gap", "frequency_overlap", "log_scale_ratio",
@@ -59,8 +63,8 @@ class PixelGraphConfig:
         what lets one threshold serve every window length and every band.
     """
 
-    time_tolerance: float = 1.0
-    minimum_significance: float = 0.0
+    time_tolerance: float = _D["time_tolerance"]
+    minimum_significance: float = _D["minimum_significance"]
 
 
 class PixelGraph:
@@ -302,7 +306,7 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
     # The tiles' own widths belong in the spread: a tile holds its energy over
     # its extent and not at its centre, and a uniform extent of width w carries
     # a variance of w^2/12 about it.
-    about = (centre - centroid[labels]) ** 2 + width ** 2 / 12.0
+    about = (centre - centroid[labels]) ** 2 + width ** 2 / UNIFORM_VARIANCE_DIVISOR
     spread = np.sqrt(np.maximum(
         np.bincount(labels, weights=counted * about, minlength=n_events) / safe, 0.0))
     log_frequency = np.bincount(labels, weights=counted * np.log(np.maximum(band_centre, EPS)),
@@ -361,11 +365,11 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
             if len(rows) < 2:
                 continue
             here = counted[rows]
-            low, high = energy_quantile(t_lo[rows], t_hi[rows], here, (0.05, 0.95))
+            low, high = energy_quantile(t_lo[rows], t_hi[rows], here, _D["descriptor_quantiles"])
             duration90[event] = high - low
             low, high = energy_quantile(np.log(np.maximum(band_lo[rows], EPS)),
                                         np.log(np.maximum(f_hi[rows], EPS)),
-                                        here, (0.05, 0.95))
+                                        here, _D["descriptor_quantiles"])
             band_q05[event], band_q95[event] = np.exp(low), np.exp(high)
 
     # Which triggers the event was assembled from. The reconstruction reads the
@@ -396,7 +400,7 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
         "gps": lowest_time,
         "gpsStart": lowest_time,
         "gpsCentroid": np.where(measured, centroid, centre[peak]),
-        "tSpread": np.where(measured, spread, width[peak] / np.sqrt(12.0)),
+        "tSpread": np.where(measured, spread, width[peak] / np.sqrt(UNIFORM_VARIANCE_DIVISOR)),
         "gpsPeak": centre[peak],
         "duration": highest_time - lowest_time,
         "duration90": duration90,
@@ -424,7 +428,7 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
     return events[CLUSTER_COLUMNS]
 
 
-def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = 64,
+def cluster_wavegrams(graph: PixelGraph, labels=None, time_bins: int = _D["wavegram_time_bins"],
                       bin_seconds: float | None = None) -> dict:
     """Each event's wavegram, rendered from the tiles the event owns.
 

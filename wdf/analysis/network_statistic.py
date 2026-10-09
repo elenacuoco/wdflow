@@ -32,6 +32,9 @@ from __future__ import annotations
 import numpy as np
 
 from wdf.analysis.timing_prior import BINS, FLOOR, TimingPrior
+from wdf.config.defaults import defaults
+
+_D = defaults("network_statistic")
 
 #: How many light travel times the lag is estimated over. A pair is admitted on
 #: its events' extents, so the shared tiles may sit up to the travel time apart
@@ -40,7 +43,7 @@ from wdf.analysis.timing_prior import BINS, FLOOR, TimingPrior
 #: pair beyond it is scored in one bin together with the accidentals just
 #: outside; it is a range and not a tolerance, and nothing is refused for
 #: falling outside it.
-LAG_SPAN_TRAVEL_TIMES = 5.0
+LAG_SPAN_TRAVEL_TIMES = _D["lag_span_travel_times"]
 
 #: What one nat of timing evidence is worth in units of coherent energy. The
 #: coherent energy is twice a log likelihood ratio for whitened coefficients in

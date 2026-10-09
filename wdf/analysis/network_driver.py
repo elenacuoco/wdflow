@@ -28,8 +28,8 @@ Two paths, which do not mix (`wdf.config.Parameters.network_path`):
   is recorded as `TrackCoherenceMinUsed`.
 
 Stage 4 is "classic", the column `NetworkRankColumn` (default
-"network_morphology" on the wavegram path, "track_statistic" on the track
-path; "network_enwdf" and any other column of the table may be chosen),
+`[network.wavegram]` / `[network.track] NetworkRankColumn` of
+wdf/config/defaults.toml; any column of the table may be chosen),
 or "gnn", a
 `GNNCoincidenceScorer` loaded from `GNNModel` (column ``gnn_logit``). With
 `NetworkSlides` above zero the time-slide background is drawn
@@ -55,25 +55,38 @@ import pandas as pd
 from wdf.analysis.alerts import AlertSettings, alert_path, alert_table, provenance, write_alerts
 from wdf.analysis.hrss import HrssSettings, ModelHistory, add_hrss, network_hrss
 from wdf.analysis.pair_screen import RANK_STATISTIC, PairScreenSettings, ScreenedFinder
-from wdf.config.Parameters import network_path
+from wdf.config.Parameters import (DEFAULT_COINCIDENCE, DEFAULT_RECONSTRUCTION, DEFAULT_SCORER,
+                                   network_path)
+from wdf.config.defaults import defaults
 
-#: Comparison map bin, in units of the network's longest light travel time.
-DEFAULT_COMPARISON_BIN = 2.0
-#: Light travel time used for the comparison map of a single detector, s.
-SINGLE_DETECTOR_TRAVEL_S = 0.01
+_D = defaults("network.driver")
+_WAVEGRAM = defaults("network.wavegram")
+_TRACK = defaults("network.track")
+
+#: Comparison map bin, in units of the network's longest light travel time
+#: (`[network.driver] NetworkComparisonBin`).
+DEFAULT_COMPARISON_BIN = _D["NetworkComparisonBin"]
+#: Light travel time used for the comparison map of a single detector, s
+#: (`[network.driver] single_detector_travel_s`).
+SINGLE_DETECTOR_TRAVEL_S = _D["single_detector_travel_s"]
 #: Default ranking column of the classic scorer on the wavegram path: the
 #: coherent energy of the two events' tiles (`network_morphology`, the
 #: absolute `tile_coherence`), the paper's deterministic ranking. It asks the
 #: two detectors to be loud in the same places of the plane, where
 #: `network_enwdf` (the quadrature sum of the two `EnWDF`) is large whenever
 #: one detector is loud, a single loud glitch included.
-DEFAULT_RANK_COLUMN = "network_morphology"
-#: Default ranking column of the track path.
-TRACK_RANK_COLUMN = "track_statistic"
-#: Default slide step, s, and number of slides (0: no background).
-DEFAULT_SLIDE_STEP_S, DEFAULT_SLIDES = 4.0, 0
-#: Default memory of `NetworkStream`, s.
-DEFAULT_NETWORK_MEMORY_S = 64.0
+#: (`[network.wavegram] NetworkRankColumn`).
+DEFAULT_RANK_COLUMN = _WAVEGRAM["NetworkRankColumn"]
+#: Default ranking column of the track path (`[network.track] NetworkRankColumn`).
+TRACK_RANK_COLUMN = _TRACK["NetworkRankColumn"]
+#: Default slide step, s, and number of slides (0: no background)
+#: (`[network.driver] NetworkSlideStep`, `NetworkSlides`).
+DEFAULT_SLIDE_STEP_S, DEFAULT_SLIDES = _D["NetworkSlideStep"], _D["NetworkSlides"]
+#: Default memory of `NetworkStream`, s (`[network.driver] NetworkMemory`).
+DEFAULT_NETWORK_MEMORY_S = _D["NetworkMemory"]
+#: Default `NetworkEventInstant` and `NetworkEnvelopeWidth`.
+DEFAULT_EVENT_INSTANT = _D["NetworkEventInstant"]
+DEFAULT_ENVELOPE_WIDTH = _D["NetworkEnvelopeWidth"]
 
 
 @dataclass
@@ -85,16 +98,18 @@ class NetworkSettings:
     :param scorer: `Scorer`, "classic" or "gnn".
     :param gnn_model: `GNNModel`, the saved scorer for "gnn".
     :param rank_column: `NetworkRankColumn`, the classic ranking column;
-        "network_morphology" on the wavegram path, "track_statistic" on the
-        track path, when not given.
+        when not given, `[network.wavegram] NetworkRankColumn` on the wavegram
+        path and `[network.track] NetworkRankColumn` on the track path.
     :param comparison_bin: `NetworkComparisonBin`, the comparison map's bin
         over the longest light travel time; 0 for no comparison map.
     :param slides: `NetworkSlides`, time slides of the background (0: none).
     :param slide_step_s: `NetworkSlideStep`, s.
     :param memory_s: `NetworkMemory`, what `NetworkStream` holds, s.
+        The defaults of these keys are in `[network.driver]` of
+        wdf/config/defaults.toml.
     :param event_instant: `NetworkEventInstant` (wavegram path), the instant
         of an event used for the pair's dt and for `gps_candidate`: "peak"
-        (default: `INSTANT_COLUMNS`, i.e. the loudest tile's `gpsPeak` unless
+        (`INSTANT_COLUMNS`, i.e. the loudest tile's `gpsPeak` unless
         the events carry `gpsEnvelope`), "centroid" (`gpsCentroid`, the
         EnWDF-weighted centre), "envelope" (`gpsEnvelope`, the peak of the
         analytic envelope of the event's stitched reconstruction,
@@ -104,21 +119,21 @@ class NetworkSettings:
         `CoincidenceConfig.time_weight` = 0: pairs are admitted on the
         events' extents and chosen on their frequency overlap, and the
         lag criterion, if any, is read on the reconstructions).
-    :param envelope_width: `NetworkEnvelopeWidth`: "window" (default) for
+    :param envelope_width: `NetworkEnvelopeWidth`: "window" for
         each event's analysis window (`n_coeff` / `fs`), or seconds.
     """
 
-    reconstruction: str = "wavegram"
-    coincidence: str = "wavegram"
-    scorer: str = "classic"
+    reconstruction: str = DEFAULT_RECONSTRUCTION
+    coincidence: str = DEFAULT_COINCIDENCE
+    scorer: str = DEFAULT_SCORER
     gnn_model: str = None
     rank_column: str = DEFAULT_RANK_COLUMN
     comparison_bin: float = DEFAULT_COMPARISON_BIN
     slides: int = DEFAULT_SLIDES
     slide_step_s: float = DEFAULT_SLIDE_STEP_S
     memory_s: float = DEFAULT_NETWORK_MEMORY_S
-    event_instant: str = "peak"
-    envelope_width: object = "window"
+    event_instant: str = DEFAULT_EVENT_INSTANT
+    envelope_width: object = DEFAULT_ENVELOPE_WIDTH
 
     @classmethod
     def from_parameters(cls, par):
@@ -138,8 +153,8 @@ class NetworkSettings:
                    slides=int(get("NetworkSlides", DEFAULT_SLIDES)),
                    slide_step_s=float(get("NetworkSlideStep", DEFAULT_SLIDE_STEP_S)),
                    memory_s=float(get("NetworkMemory", DEFAULT_NETWORK_MEMORY_S)),
-                   event_instant=_event_instant(get("NetworkEventInstant", "peak")),
-                   envelope_width=_envelope_width(get("NetworkEnvelopeWidth", "window")))
+                   event_instant=_event_instant(get("NetworkEventInstant", DEFAULT_EVENT_INSTANT)),
+                   envelope_width=_envelope_width(get("NetworkEnvelopeWidth", DEFAULT_ENVELOPE_WIDTH)))
 
 
 @dataclass
@@ -482,7 +497,7 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         else:
             par.TrackCoherenceMinUsed = track_settings.coherence_min
         if scorer is not None:
-            basis = str(getattr(par, "TrackGraphBasis", None) or "LocalCos64")
+            basis = str(getattr(par, "TrackGraphBasis", None) or _TRACK["TrackGraphBasis"])
             par.TrackGraphBasis = basis
             window = int(max(pd.to_numeric(ev["n_coeff"]).max() for ev in events.values()))
             maps = {i: track_event_coefficients(events[i], waveforms.get(i, {}), fs, window, basis)

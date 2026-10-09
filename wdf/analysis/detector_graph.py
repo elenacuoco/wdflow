@@ -45,6 +45,9 @@ from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.robust_events import EPS
 from wdf.analysis.wavelets import (coeff_freq_bands, coeff_time_bounds, ladder_rows,
                                    packet_depths)
+from wdf.config.defaults import defaults
+
+_D = defaults("detector_graph")
 
 TRIGGER_EDGE_FEATURES = [
     "dt_s", "time_overlap", "frequency_overlap", "log_scale_ratio",
@@ -60,7 +63,11 @@ DETECTOR_EVENT_COLUMNS = [
     "EnWDF_window",
 ] + RIDGE_FEATURES
 
-WAVEGRAM_TIME_BINS = 64
+#: Time bins per band in a node's wavegram (`[detector_graph] wavegram_time_bins`).
+WAVEGRAM_TIME_BINS = _D["wavegram_time_bins"]
+#: Energy quantiles bounding an event's `duration90` and its `freqQ05` /
+#: `freqQ95` (`[detector_graph] descriptor_quantiles`).
+DESCRIPTOR_QUANTILES = _D["descriptor_quantiles"]
 
 
 @dataclass
@@ -84,16 +91,16 @@ class DetectorGraphConfig:
     :param wavegram_time_bins: time bins per band in a node's wavegram.
     """
 
-    time_tolerance: float = 1.0
-    minimum_frequency_overlap: float = 0.0
-    band_adjacency: int = 1
-    maximum_log_energy_jump: float = 3.0
-    minimum_significance: float = 0.0
+    time_tolerance: float = _D["time_tolerance"]
+    minimum_frequency_overlap: float = _D["minimum_frequency_overlap"]
+    band_adjacency: int = _D["band_adjacency"]
+    maximum_log_energy_jump: float = _D["maximum_log_energy_jump"]
+    minimum_significance: float = _D["minimum_significance"]
     # Whether two windows must have been represented in the same basis to
     # continue one another. Off by default: a transient whose character changes
     # --- a chirp entering a different regime --- can legitimately be won by a
     # different basis, and the band test already asks for continuity of energy.
-    same_basis: bool = False
+    same_basis: bool = _D["same_basis"]
     wavegram_time_bins: int = WAVEGRAM_TIME_BINS
 
 
@@ -342,7 +349,7 @@ def occupied_bands(triggers: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
     mask = np.zeros(len(triggers), dtype=np.uint64)
     if triggers.empty:
         return mask
-    if len(bands) > 64:
+    if len(bands) > np.iinfo(mask.dtype).bits:
         raise ValueError(
             f"{len(bands)} bands do not fit one integer; the ladder spans "
             "sampling rate over window length and should not reach this")
@@ -843,7 +850,7 @@ def detector_events(graph: DetectorGraph, significance=None,
                     lo, hi, band_lo, band_hi, tile_energy).items():
                 events.at[event, name] = value
             events.at[event, "duration90"] = float(np.diff(energy_quantile(
-                lo, hi, tile_energy, (0.05, 0.95)))[0])
+                lo, hi, tile_energy, DESCRIPTOR_QUANTILES))[0])
             # The coarsest tile starts at zero frequency, which has no
             # logarithm and no geometric centre: it is represented by half its
             # upper edge, as `tile_frequency` represents it everywhere else.
@@ -852,7 +859,7 @@ def detector_events(graph: DetectorGraph, significance=None,
             floor = np.where(band_lo > 0.0, band_lo, 0.5 * band_hi)
             band = energy_quantile(np.log(np.maximum(floor, EPS)),
                                    np.log(np.maximum(band_hi, EPS)),
-                                   tile_energy, (0.05, 0.95))
+                                   tile_energy, DESCRIPTOR_QUANTILES)
             events.at[event, "freqQ05"] = float(np.exp(band[0]))
             events.at[event, "freqQ95"] = float(np.exp(band[1]))
             # The geometric moment over the same tiles, which is the frequency
@@ -1228,18 +1235,17 @@ def flatten_clouds(clouds):
         empty = np.zeros(0)
         return dict(t_lo=empty, t_hi=empty, f_lo=empty, f_hi=empty,
                     energy=empty, amplitude=empty, starts=starts, counts=counts)
-    field = lambda k: np.concatenate(
-        [np.asarray(c[k], dtype=float) for c in clouds
-         if c is not None and len(c[4])])
-    return dict(t_lo=field(0), t_hi=field(1), f_lo=field(2), f_hi=field(3),
-                energy=field(4), amplitude=field(5), starts=starts,
+    t_lo, t_hi, f_lo, f_hi, energy, amplitude = (
+        np.concatenate([np.asarray(f, dtype=float) for f in fields]) for fields in zip(*kept))
+    return dict(t_lo=t_lo, t_hi=t_hi, f_lo=f_lo, f_hi=f_hi,
+                energy=energy, amplitude=amplitude, starts=starts,
                 counts=counts)
 
 
 # Tile pairs laid out per run of event pairs: enough to keep the reduction
 # vectorised, small enough that the working arrays stay bounded whatever the
 # events' sizes.
-TILE_PAIR_BLOCK = 20_000_000
+TILE_PAIR_BLOCK = _D["tile_pair_block"]
 
 
 def _tile_offsets(flat, displacement):

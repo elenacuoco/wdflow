@@ -43,24 +43,35 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.detectors import light_travel_time
+from wdf.config.constants import (DAYS_PER_JULIAN_YEAR, FULL_TURN_DEG, QUARTER_TURN_DEG,
+                                  SECONDS_PER_DAY)
+from wdf.config.defaults import defaults
+
+_D = defaults("alerts")
 
 #: Seconds in a Julian year.
-SECONDS_PER_YEAR = 365.25 * 86400.0
-#: Default `AlertFARThreshold`: one accidental per day, Hz.
-DEFAULT_FAR_THRESHOLD_HZ = 1.0 / 86400.0
-#: Default `AlertTrialsFactor`: the rate as measured.
-DEFAULT_TRIALS_FACTOR = 1.0
-#: Default `AlertSignificantFAR`: one per year, Hz, on the trials-corrected rate.
-DEFAULT_SIGNIFICANT_FAR_HZ = 1.0 / SECONDS_PER_YEAR
+SECONDS_PER_YEAR = DAYS_PER_JULIAN_YEAR * SECONDS_PER_DAY
+#: Default `AlertFARThreshold`, Hz: `[alerts] far_threshold_per_day`
+#: accidentals per day.
+DEFAULT_FAR_THRESHOLD_HZ = _D["far_threshold_per_day"] / SECONDS_PER_DAY
+#: Default `AlertTrialsFactor` (`[alerts] AlertTrialsFactor`).
+DEFAULT_TRIALS_FACTOR = _D["AlertTrialsFactor"]
+#: Default `AlertSignificantFAR`, Hz, on the trials-corrected rate:
+#: `[alerts] significant_far_per_year` per Julian year.
+DEFAULT_SIGNIFICANT_FAR_HZ = _D["significant_far_per_year"] / SECONDS_PER_YEAR
 #: Default `AlertPipeline`, `AlertGroup`, `SearchName`.
-DEFAULT_PIPELINE, DEFAULT_GROUP, DEFAULT_SEARCH = "WDF", "Burst", "AllSky"
+DEFAULT_PIPELINE, DEFAULT_GROUP, DEFAULT_SEARCH = (_D["AlertPipeline"], _D["AlertGroup"],
+                                                   _D["SearchName"])
 #: Default `AlertSkyResolution`: the sky grid's cell, degrees.
-DEFAULT_SKY_RESOLUTION_DEG = 1.0
-#: Default `AlertSkySigmaFloor`: "sample", one sample of the stream.
-DEFAULT_SKY_SIGMA_FLOOR = "sample"
-#: Default `AlertSkyTiming`: the reconstructions' cross-correlation lag when
-#: the table carries one (`network_lag_s`), else the event instants.
-DEFAULT_SKY_TIMING = "xcorr"
+DEFAULT_SKY_RESOLUTION_DEG = _D["AlertSkyResolution"]
+#: Default `AlertSkySigmaFloor`: "sample" is one sample of the stream.
+DEFAULT_SKY_SIGMA_FLOOR = _D["AlertSkySigmaFloor"]
+#: Default `AlertSkyTiming`: "xcorr" is the reconstructions' cross-correlation
+#: lag when the table carries one (`network_lag_s`), else the event instants.
+DEFAULT_SKY_TIMING = _D["AlertSkyTiming"]
+#: Credible levels of the two sky areas an alert reports
+#: (``sky_area50_deg2``, ``sky_area90_deg2``).
+SKY_CREDIBLE_LEVELS = _D["sky_credible_levels"]
 
 #: Event columns joined to the row of each detector, when events are given.
 EVENT_COLUMNS = ("EnWDF", "EnWDF_window", "snrPeak", "freqMin", "freqMean", "freqMax",
@@ -113,31 +124,31 @@ def _rate(key, value, default):
 
 @dataclass
 class AlertSettings:
-    """The alert table's choices, read from the run parameters.
+    """The alert table's choices, read from the run parameters. The defaults
+    are in `[alerts]` of wdf/config/defaults.toml.
 
     :param far_threshold_hz: `AlertFARThreshold`, Hz; a candidate is an alert
-        at or below it (default one per day).
+        at or below it (default `far_threshold_per_day` per day).
     :param trials_factor: `AlertTrialsFactor`, multiplies the rate before the
-        significance test (default 1).
+        significance test.
     :param significant_far_hz: `AlertSignificantFAR`, Hz; ``significant`` when
-        the trials-corrected rate is below it (default one per year).
+        the trials-corrected rate is below it (default
+        `significant_far_per_year` per Julian year).
     :param csv: `AlertCSV`, the file `run_network` writes, or None (default:
         nothing written). ``{start}``, ``{end}`` (the searched span's GPS,
         whole seconds) and ``{run}`` are filled in.
-    :param run: `AlertRunName`, the ``run`` column (default "").
-    :param pipeline: `AlertPipeline` (default "WDF").
-    :param group: `AlertGroup` (default "Burst").
-    :param search: `SearchName` (default "AllSky").
-    :param sky: `AlertSkyMap` (default true): localise each alert from its
-        timing.
-    :param sky_timing: `AlertSkyTiming`, "xcorr" (default; the
+    :param run: `AlertRunName`, the ``run`` column.
+    :param pipeline: `AlertPipeline`.
+    :param group: `AlertGroup`.
+    :param search: `SearchName`.
+    :param sky: `AlertSkyMap`: localise each alert from its timing.
+    :param sky_timing: `AlertSkyTiming`, "xcorr" (the
         cross-correlation lag of the reconstructions, falling back to the
         instants when the table has none) or "envelope" (the event instants).
-    :param sky_sigma_floor: `AlertSkySigmaFloor`, "sample" (default: one
+    :param sky_sigma_floor: `AlertSkySigmaFloor`, "sample" (one
         sample of the stream, 1 / fs) or seconds; the smallest timing
         uncertainty a pair is given.
-    :param sky_resolution_deg: `AlertSkyResolution`, the grid cell in degrees
-        (default 1).
+    :param sky_resolution_deg: `AlertSkyResolution`, the grid cell in degrees.
     :param sky_map_dir: `AlertSkyMapDir`, where each alert's map is written as
         ``<run>-<candidate_id>.npz`` (``ra``, ``dec``, ``weight``), or None
         (default: no map file).
@@ -147,11 +158,11 @@ class AlertSettings:
     trials_factor: float = DEFAULT_TRIALS_FACTOR
     significant_far_hz: float = DEFAULT_SIGNIFICANT_FAR_HZ
     csv: str = None
-    run: str = ""
+    run: str = _D["AlertRunName"]
     pipeline: str = DEFAULT_PIPELINE
     group: str = DEFAULT_GROUP
     search: str = DEFAULT_SEARCH
-    sky: bool = True
+    sky: bool = _D["AlertSkyMap"]
     sky_timing: str = DEFAULT_SKY_TIMING
     sky_sigma_floor: object = DEFAULT_SKY_SIGMA_FLOOR
     sky_resolution_deg: float = DEFAULT_SKY_RESOLUTION_DEG
@@ -182,7 +193,7 @@ class AlertSettings:
             if not np.isfinite(floor) or floor <= 0.0:
                 raise ValueError(f"AlertSkySigmaFloor must be positive seconds, got {floor!r}")
         resolution = float(get("AlertSkyResolution", DEFAULT_SKY_RESOLUTION_DEG))
-        if not np.isfinite(resolution) or resolution <= 0.0 or resolution > 90.0:
+        if not np.isfinite(resolution) or resolution <= 0.0 or resolution > QUARTER_TURN_DEG:
             raise ValueError(f"AlertSkyResolution is a cell in degrees, got {resolution!r}")
         csv = get("AlertCSV", None)
         sky_dir = get("AlertSkyMapDir", None)
@@ -193,11 +204,11 @@ class AlertSettings:
                                             get("AlertSignificantFAR", None),
                                             DEFAULT_SIGNIFICANT_FAR_HZ),
                    csv=None if csv is None else str(csv),
-                   run=str(get("AlertRunName", "")),
+                   run=str(get("AlertRunName", _D["AlertRunName"])),
                    pipeline=str(get("AlertPipeline", DEFAULT_PIPELINE)),
                    group=str(get("AlertGroup", DEFAULT_GROUP)),
                    search=str(get("SearchName", DEFAULT_SEARCH)),
-                   sky=_flag(get("AlertSkyMap", None), True),
+                   sky=_flag(get("AlertSkyMap", None), _D["AlertSkyMap"]),
                    sky_timing=timing, sky_sigma_floor=floor, sky_resolution_deg=resolution,
                    sky_map_dir=None if sky_dir is None else str(sky_dir))
 
@@ -213,7 +224,7 @@ class AlertSettings:
     @property
     def sky_grid(self):
         """``(n_ra, n_dec)`` of the sky grid at `sky_resolution_deg`."""
-        n_ra = max(int(round(360.0 / self.sky_resolution_deg)), 4)
+        n_ra = max(int(round(FULL_TURN_DEG / self.sky_resolution_deg)), _D["sky_min_ra_cells"])
         return n_ra, max(n_ra // 2, 2)
 
 
@@ -222,7 +233,7 @@ def _sha256(path):
         return None
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
+        for block in iter(lambda: handle.read(_D["hash_block_bytes"]), b""):
             digest.update(block)
     return digest.hexdigest()
 
@@ -231,10 +242,10 @@ def _commit():
     here = os.path.dirname(os.path.abspath(__file__))
     try:
         out = subprocess.run(["git", "-C", here, "rev-parse", "HEAD"], capture_output=True,
-                             text=True, check=True, timeout=10).stdout.strip()
+                             text=True, check=True, timeout=_D["git_timeout_s"]).stdout.strip()
         dirty = subprocess.run(["git", "-C", here, "status", "--porcelain", "--", here],
                                capture_output=True, text=True, check=True,
-                               timeout=10).stdout.strip()
+                               timeout=_D["git_timeout_s"]).stdout.strip()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
     return out + ("-dirty" if dirty else "")
@@ -288,7 +299,7 @@ def far_hz_of(candidates, livetime_s=None) -> np.ndarray:
         return pd.to_numeric(candidates["far_hz"], errors="coerce").to_numpy(dtype=float)
     if "far_per_day" in candidates:
         return pd.to_numeric(candidates["far_per_day"],
-                             errors="coerce").to_numpy(dtype=float) / 86400.0
+                             errors="coerce").to_numpy(dtype=float) / SECONDS_PER_DAY
     if "n_background_ge" in candidates:
         if "background_livetime_s" in candidates:
             live = pd.to_numeric(candidates["background_livetime_s"]).to_numpy(dtype=float)
@@ -356,8 +367,8 @@ def _sky(arrivals, spreads, settings, path=None):
     n_ra, n_dec = settings.sky_grid
     ra, dec, weight = localise(arrivals, spreads, n_ra=n_ra, n_dec=n_dec)
     k = int(np.argmax(weight))
-    out = {"sky_area50_deg2": credible_area(weight, 0.5),
-           "sky_area90_deg2": credible_area(weight, 0.9),
+    out = {"sky_area50_deg2": credible_area(weight, SKY_CREDIBLE_LEVELS[0]),
+           "sky_area90_deg2": credible_area(weight, SKY_CREDIBLE_LEVELS[1]),
            "sky_ra_max_deg": float(np.degrees(ra.reshape(-1)[k])),
            "sky_dec_max_deg": float(np.degrees(dec.reshape(-1)[k])),
            "sky_map_path": None}
@@ -429,7 +440,7 @@ def _row(cand, far_hz, settings, events, statistic, ifos_all, fs, prov):
                 "bandwidth": agg(highs, np.max) - agg(lows, np.min)})
 
     trials = settings.trials_factor * far_hz
-    row.update({"far_hz": far_hz, "far_per_day": far_hz * 86400.0,
+    row.update({"far_hz": far_hz, "far_per_day": far_hz * SECONDS_PER_DAY,
                 "trials_factor": settings.trials_factor, "far_trials_hz": trials,
                 "significant": bool(trials < settings.significant_far_hz),
                 "far_threshold_hz": settings.far_threshold_hz,

@@ -14,6 +14,10 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import DBSCAN
 
+from wdf.config.defaults import defaults
+
+_D = defaults("clustering")
+
 CLUSTER_COL = "cluster_id"
 
 CLUSTERED_EVENT_COLUMNS = [
@@ -35,11 +39,11 @@ class TriggerClusterer:
 
     def __init__(
         self,
-        method: str = "dbscan",
-        time_eps_s: float = 0.5,
-        freq_eps_hz: float = 50.0,
-        min_samples: int = 2,
-        stat_weight: float = 0.0,
+        method: str = _D["method"],
+        time_eps_s: float = _D["time_eps_s"],
+        freq_eps_hz: float = _D["freq_eps_hz"],
+        min_samples: int = _D["min_samples"],
+        stat_weight: float = _D["stat_weight"],
         time_col: str = "gpsPeak",
         freq_col: str = "freqMean",
         stat_col: str = "EnWDF",

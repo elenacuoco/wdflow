@@ -21,10 +21,10 @@ slide alike, it measures:
   labels both. The network can: an event that overlaps a census transient of
   its detector is a glitch (``glitch_i``, ``glitch_j``) only when the other
   detector of the pair has NO census transient within the light travel time
-  plus `NetworkGlitchTolerance` (0.01 s) of it. Transients coincident in the
+  plus `NetworkGlitchTolerance` of it. Transients coincident in the
   two detectors are not glitches. ``glitch_single_ifo`` is true when either
   event is one. "veto" drops those pairs; "penalty" penalises the ranking
-  column by the factor `NetworkGlitchFactor` (0.1) for them (see
+  column by the factor `NetworkGlitchFactor` for them (see
   `NetworkPenaltySpace` below); "none" (the default) only
   reports the columns. Online, the decision reads the other detector's
   census at the same latency as its triggers: run it once both detectors'
@@ -66,6 +66,8 @@ A time slide moves an event's times; the screen reads each event's
 displacement from its `gpsPeak` against the unslid events and moves its
 reconstruction and its detector's census by it, so the slid pairs are
 screened as the zero-lag ones.
+
+The defaults of these keys are in `[pair_screen]` of wdf/config/defaults.toml.
 """
 __author__ = "Elena Cuoco"
 __license__ = "GPL"
@@ -77,6 +79,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+
+from wdf.analysis.timing import MAX_LAG_S
+from wdf.config.defaults import defaults
+
+_D = defaults("pair_screen")
 
 #: The lag criteria (`NetworkLagCut`).
 LAG_CUTS = ("none", "cut", "penalty")
@@ -96,41 +103,42 @@ PENALTY_SPACES = ("auto", "multiply", "log-odds")
 
 @dataclass
 class PairScreenSettings:
-    """The screens' choices, read from the run parameters.
+    """The screens' choices, read from the run parameters. The defaults are
+    the keys of the same names in `[pair_screen]` of wdf/config/defaults.toml,
+    and `[timing] max_lag_s` for `NetworkLagSearch`.
 
-    :param lag_cut: `NetworkLagCut`, one of `LAG_CUTS` (default "none").
-    :param lag_window: `NetworkLagWindow`, one of `LAG_WINDOWS` (default
-        "coincidence"): "coincidence" is each pair's admission tolerance of
+    :param lag_cut: `NetworkLagCut`, one of `LAG_CUTS`.
+    :param lag_window: `NetworkLagWindow`, one of `LAG_WINDOWS`:
+        "coincidence" is each pair's admission tolerance of
         the classical coincidence, `CoincidenceConfig.timing_tolerance` with
         the two events' timing spreads (`tSpread`); "travel_plus_tolerance" is
         the pair's light travel time plus `NetworkLagTolerance`.
     :param lag_tolerance: `NetworkLagTolerance`, s added to the light travel
-        time with "travel_plus_tolerance" (default 0.01).
+        time with "travel_plus_tolerance".
     :param lag_scale: `NetworkLagScale`, the scale of the lag penalty: "window"
-        (default) for each pair's own window, or a number of seconds.
+        for each pair's own window, or a number of seconds.
     :param lag_search: `NetworkLagSearch`, half-width of the lag search, s
-        (default `wdf.analysis.timing.MAX_LAG_S`, 0.25).
-    :param glitch_veto: `NetworkGlitchVeto`, one of `GLITCH_VETOES`
-        (default "none").
+        (default `wdf.analysis.timing.MAX_LAG_S`).
+    :param glitch_veto: `NetworkGlitchVeto`, one of `GLITCH_VETOES`.
     :param glitch_tolerance: `NetworkGlitchTolerance`, s added to the light
-        travel time for two transients to be coincident (default 0.01).
+        travel time for two transients to be coincident.
     :param glitch_factor: `NetworkGlitchFactor`, the rank factor of a
-        single-detector glitch with "penalty" (default 0.1).
-    :param penalty_space: `NetworkPenaltySpace`, one of `PENALTY_SPACES`
-        (default "auto"): how a factor penalises the ranking column, see
+        single-detector glitch with "penalty".
+    :param penalty_space: `NetworkPenaltySpace`, one of `PENALTY_SPACES`:
+        how a factor penalises the ranking column, see
         `apply_penalty`; "auto" is "log-odds" for a signed logit and
         "multiply" for a non-negative statistic.
     """
 
-    lag_cut: str = "none"
-    lag_window: str = "coincidence"
-    lag_tolerance: float = 0.01
-    lag_scale: object = SCALE_IS_WINDOW
-    lag_search: float = 0.25
-    glitch_veto: str = "none"
-    glitch_tolerance: float = 0.01
-    glitch_factor: float = 0.1
-    penalty_space: str = "auto"
+    lag_cut: str = _D["NetworkLagCut"]
+    lag_window: str = _D["NetworkLagWindow"]
+    lag_tolerance: float = _D["NetworkLagTolerance"]
+    lag_scale: object = _D["NetworkLagScale"]
+    lag_search: float = MAX_LAG_S if _D["NetworkLagSearch"] is None else _D["NetworkLagSearch"]
+    glitch_veto: str = _D["NetworkGlitchVeto"]
+    glitch_tolerance: float = _D["NetworkGlitchTolerance"]
+    glitch_factor: float = _D["NetworkGlitchFactor"]
+    penalty_space: str = _D["NetworkPenaltySpace"]
 
     KEYS = dict(lag_cut="NetworkLagCut", lag_window="NetworkLagWindow", lag_tolerance="NetworkLagTolerance",
                 lag_scale="NetworkLagScale", lag_search="NetworkLagSearch",

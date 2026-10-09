@@ -57,6 +57,14 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from wdf.config.constants import (DB_AMPLITUDE, DECIBEL_BASE, NONCENTRAL_ENERGY_NOISE_POWER,
+                                  NONCENTRAL_ENERGY_SIGNAL_FACTOR)
+from wdf.config.defaults import defaults
+
+_D = defaults("hrss")
+#: The online zero-phase worker's defaults, whose `HoldOutsideBand` `_held` mirrors.
+_ZEROPHASE = defaults("worker.online.zerophase")
+
 #: Per-detector event columns `add_hrss` writes.
 HRSS_COLUMNS = ("hrss", "hrss_err", "hrss_noise")
 #: Per-detector event columns `add_hrss` writes beside them: the GPS span of
@@ -98,10 +106,10 @@ class HrssSettings:
     :param par: the run configuration, read for the band-pass and the band.
     """
 
-    active: bool = False
-    low_frequency: object = "MinFrequency"
-    high_frequency: object = "lowpass"
-    bandpass_correction: bool = True
+    active: bool = _D["HrssEstimate"]
+    low_frequency: object = _D["HrssLowFrequency"]
+    high_frequency: object = _D["HrssHighFrequency"]
+    bandpass_correction: bool = _D["HrssBandPassCorrection"]
     par: object = field(default=None, repr=False)
 
     @classmethod
@@ -109,10 +117,11 @@ class HrssSettings:
         """The settings a run asks for."""
         low = getattr(par, "HrssLowFrequency", None)
         high = getattr(par, "HrssHighFrequency", None)
-        return cls(active=_flag(getattr(par, "HrssEstimate", None), False),
-                   low_frequency="MinFrequency" if low is None else low,
-                   high_frequency="lowpass" if high is None else high,
-                   bandpass_correction=_flag(getattr(par, "HrssBandPassCorrection", None), True),
+        return cls(active=_flag(getattr(par, "HrssEstimate", None), _D["HrssEstimate"]),
+                   low_frequency=_D["HrssLowFrequency"] if low is None else low,
+                   high_frequency=_D["HrssHighFrequency"] if high is None else high,
+                   bandpass_correction=_flag(getattr(par, "HrssBandPassCorrection", None),
+                                             _D["HrssBandPassCorrection"]),
                    par=par)
 
     def bandpass(self, resampling):
@@ -120,7 +129,7 @@ class HrssSettings:
         (the input rate is `sampling`, or `resampling` x `ResamplingFactor`)."""
         from wdf.processes.BandPassDownSampling import BandPassDownSampling
 
-        factor = int(getattr(self.par, "ResamplingFactor", None) or 1)
+        factor = int(getattr(self.par, "ResamplingFactor", None) or _D["ResamplingFactor"])
         sampling = getattr(self.par, "sampling", None)
         sampling = int(round(resampling * factor)) if sampling is None else int(sampling)
         return BandPassDownSampling(_Rates(self.par, sampling=sampling,
@@ -212,7 +221,7 @@ class ModelHistory:
 def _held(settings, resampling):
     """``band`` and ``blend`` of `HoldOutsideBand`, as the online worker builds them."""
     par = settings.par
-    if not _flag(getattr(par, "HoldOutsideBand", None), False):
+    if not _flag(getattr(par, "HoldOutsideBand", None), _ZEROPHASE["HoldOutsideBand"]):
         return None
     from wdf.processes.wdfUnitDSWorker import DEFAULT_PASSBAND_LEVEL_DB
     from wdf.processes.zero_phase_whitening import DEFAULT_BAND_BLEND_HZ
@@ -225,9 +234,9 @@ def _held(settings, resampling):
 
 def grid_length(samples, taps):
     """FFT length `strain_from_whitened` works on: a power of two holding the
-    series and four filter lengths, so the inverse filter does not wrap onto
+    series and `[hrss] grid_filter_lengths` filter lengths, so the inverse filter does not wrap onto
     the event."""
-    return 1 << int(np.ceil(np.log2(int(samples) + 4 * int(taps))))
+    return 1 << int(np.ceil(np.log2(int(samples) + _D["grid_filter_lengths"] * int(taps))))
 
 
 def response_on_grid(taps, n, fs, bandpass=None):
@@ -245,7 +254,7 @@ def response_on_grid(taps, n, fs, bandpass=None):
     response = np.abs(np.fft.rfft(shifted))
     if bandpass is not None:
         freq = np.fft.rfftfreq(int(n), 1.0 / fs)
-        response = response * 10.0 ** (bandpass.response_db(freq) / 20.0)
+        response = response * DECIBEL_BASE ** (bandpass.response_db(freq) / DB_AMPLITUDE)
     return response
 
 
@@ -322,7 +331,8 @@ def event_hrss(samples, fs, taps, band, sigma, n_survivors, bandpass=None, respo
         return dict(hrss=hrss, hrss_err=np.nan, hrss_noise=np.nan)
     gain = e_strain / e_white
     noise = float(n_survivors) * float(sigma) ** 2
-    spread = np.sqrt(4.0 * max(e_white - noise, 0.0) * sigma ** 2 + 2.0 * n_survivors * sigma ** 4)
+    spread = np.sqrt(NONCENTRAL_ENERGY_SIGNAL_FACTOR * max(e_white - noise, 0.0) * sigma ** 2
+                     + 2.0 * n_survivors * sigma ** NONCENTRAL_ENERGY_NOISE_POWER)
     return dict(hrss=hrss, hrss_err=hrss * spread / (2.0 * e_white),
                 hrss_noise=np.sqrt(noise * gain / fs))
 
@@ -352,7 +362,7 @@ def add_hrss(events, graph, labels, history, settings, instant="gpsPeak"):
         when = pd.to_numeric(out[instant]).to_numpy(float)
         sigma = pd.to_numeric(out["sigma"]).to_numpy(float)
         fs = float(pd.to_numeric(graph.nodes["fs"]).iloc[0])
-        if abs(fs - rate) > 1e-6 * rate:
+        if abs(fs - rate) > _D["rate_tolerance"] * rate:
             raise ValueError(f"events at {fs} Hz, models at {rate} Hz")
         waves = event_waveform(graph, labels=labels)
         count = survivors(graph, labels)

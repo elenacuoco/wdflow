@@ -250,3 +250,160 @@ tiles_top_fraction = 0.1  # [-] plot_wavelet_tiles: fraction of the non-zero til
 tiles_floor_frequency = 0.1  # [Hz] plot_wavelet_tiles: floor of a drawn tile's lower edge, for a log frequency axis
 tiles_alpha_min = 0.25  # [-] plot_wavelet_tiles: opacity of the faintest drawn tile
 tiles_alpha_span = 0.65  # [-] plot_wavelet_tiles: opacity added up to the loudest tile, in proportion to |wt|
+
+# ============================================================================
+# Network stages: detector and pixel graphs, coincidence, significance, alerts.
+
+[network.driver]
+NetworkComparisonBin = 2.0  # [-] bin of the comparison map, in units of the network's longest light travel time; 0 for no comparison map
+NetworkSlides = 0  # [count] time slides of the background drawn by run_network; 0 for no background
+NetworkSlideStep = 4.0  # [s] step between two time slides of the background
+NetworkMemory = 64.0  # [s] stretch of the detectors' outputs NetworkStream holds
+NetworkEventInstant = "peak"  # [name] instant of an event used for the pair's dt and gps_candidate: peak, centroid, envelope or coarse
+NetworkEnvelopeWidth = "window"  # [s] width about gpsPeak the envelope instant is searched over; "window" for each event's analysis window
+single_detector_travel_s = 0.01  # [s] light travel time used for the comparison map of a single detector
+
+[network.wavegram]
+NetworkRankColumn = "network_morphology"  # [name] classic ranking column of the wavegram path
+
+[network.track]
+NetworkRankColumn = "track_statistic"  # [name] classic ranking column of the track path
+TrackGraphBasis = "LocalCos64"  # [name] basis the track events' maps are built on for the GNN scorer
+
+[network.graph]
+intra_ifo_window_s = 5.0  # [s] how far apart two events of one detector may be and still be joined in the trigger graph, as local-density context
+match_wavegrams = true  # [bool] whether the renderings of a candidate pair are compared (wavegram match, correlation, coherent statistic)
+match_gate = "admitted"  # [name] pairs the wavegram match is asked of: "admitted" (every admitted pair) or "instant" (instants within the tolerance)
+label_window_s = 0.5  # [s] how far outside its own extent an event still covers an injection, for the edge labels
+
+[robust_events.cluster]
+max_missing_windows = 1  # [count] windows that may be missing between two triggers of one cluster
+minimum_frequency_overlap = 0.0  # [fraction] least shared fraction of two triggers' frequency intervals for them to join
+maximum_log_energy_jump = 3.0  # [-] largest jump of coefficient energy between two joined triggers, as a natural-log ratio
+edge_margin_s = 0.0  # [s] triggers this close to a segment edge are dropped before clustering
+adjacency_strides = 1.5  # [stride] reach of window adjacency beyond the missing windows: one stride plus half a stride of rounding slack
+
+[robust_events.coincidence]
+light_travel_time_s = "<unset>"  # [s] light travel time of every pair; unset: derived from the positions of the pair's detectors
+timing_jitter_s = 0.0035  # [s] floor on an event's timing spread in the pair's timing tolerance
+timing_sigma = 3.0  # [-] how many combined timing spreads a pair's time difference may reach
+minimum_frequency_overlap = 0.0  # [fraction] least overlap of the two events' bands
+minimum_time_overlap = 0.0  # [fraction] least overlap of the two time supports once one shifts by the light travel time
+maximum_tolerance_travel_times = 2.5  # [-] cap on a pair's timing tolerance, in units of its light travel time
+maximum_tolerance_s = "<unset>"  # [s] explicit cap on the timing tolerance; unset: maximum_tolerance_travel_times light travel times
+time_weight = 1.0  # [-] weight of the time difference in the one-to-one assignment cost
+frequency_weight = 1.0  # [-] weight of the frequency mismatch in the one-to-one assignment cost
+morphology_weight = 0.0  # [-] weight of the amplitude-ratio mismatch in the one-to-one assignment cost
+instant_columns = ["gpsEnvelope", "gpsPeak", "gpsCentroid"]  # [name] event columns an event's instant is read from, in order of preference
+assignment_penalty = 1e6  # [-] cost added to the largest finite cost for an inadmissible pair in the assignment (numerical setting)
+
+[robust_events.far]
+n_slides = 100  # [count] time slides of the accidental background
+min_shift_s = 4.0  # [s] step between two slides; "<unset>" derives it from the admission window and the events' extents
+seed = 1  # [-] seed of the generator that picks the phase of the slide grid
+correlated_extent_quantile = 0.99  # [fraction] quantile of the events' durations taken as the length the trigger stream is correlated over
+
+[detector_graph]
+time_tolerance = 1.0  # [-] largest gap between two triggers' time supports, as a fraction of their mean window span
+minimum_frequency_overlap = 0.0  # [fraction] least shared fraction of two triggers' frequency supports
+band_adjacency = 1  # [count] octave rows apart two occupied bands may be and still touch
+maximum_log_energy_jump = 3.0  # [-] largest jump of coefficient energy between two triggers of one transient, as a natural-log ratio
+minimum_significance = 0.0  # [-] triggers below this significance are not nodes
+same_basis = false  # [bool] whether two windows must share their basis to continue one another
+wavegram_time_bins = 64  # [count] time bins per band in a node's wavegram
+descriptor_quantiles = [0.05, 0.95]  # [fraction] energy quantiles bounding an event's duration90 and freqQ05/freqQ95
+tile_pair_block = 20000000  # [count] tile pairs laid out per block of event pairs (numerical setting: bounds memory)
+
+[pixel_graph]
+time_tolerance = 1.0  # [-] largest gap between two tiles' time spans, as a fraction of their mean width
+minimum_significance = 0.0  # [-] tiles below this significance are not nodes
+descriptor_quantiles = [0.05, 0.95]  # [fraction] energy quantiles bounding a cluster's duration90 and freqQ05/freqQ95
+wavegram_time_bins = 64  # [count] time bins per band of a cluster's wavegram
+
+[timing]
+max_lag_s = 0.25  # [s] half-width of the lag search of arrival_time_difference; also the default NetworkLagSearch
+
+[pair_screen]
+NetworkLagCut = "none"  # [name] lag criterion on the reconstructions' lag: none, cut or penalty
+NetworkLagWindow = "coincidence"  # [name] lag window: "coincidence" (the pair's admission tolerance) or "travel_plus_tolerance"
+NetworkLagTolerance = 0.01  # [s] added to the light travel time with NetworkLagWindow "travel_plus_tolerance"
+NetworkLagScale = "window"  # [s] scale of the lag penalty; "window" for each pair's own window
+NetworkGlitchVeto = "none"  # [name] use of the network's glitch decision: none, veto or penalty
+NetworkGlitchTolerance = 0.01  # [s] added to the light travel time for two census transients to be coincident
+NetworkGlitchFactor = 0.1  # [-] rank factor of a single-detector glitch with NetworkGlitchVeto "penalty"
+NetworkLagSearch = "<unset>"  # [s] half-width of the reconstructions' lag search; unset: [timing] max_lag_s
+NetworkPenaltySpace = "auto"  # [name] how a factor penalises the ranking column: auto, multiply or log-odds
+
+[alerts]
+far_threshold_per_day = 1.0  # [1/day] default AlertFARThreshold: a candidate at or below this false-alarm rate is an alert
+significant_far_per_year = 1.0  # [1/yr] default AlertSignificantFAR: an alert is significant below this trials-corrected rate (Julian year)
+AlertTrialsFactor = 1.0  # [-] multiplies the false-alarm rate before the significance test
+AlertRunName = ""  # [name] the run column of the alert table and the {run} field of AlertCSV
+AlertPipeline = "WDF"  # [name] pipeline field of the alerts
+AlertGroup = "Burst"  # [name] group field of the alerts
+SearchName = "AllSky"  # [name] search field of the alerts
+AlertSkyMap = true  # [bool] localise each alert from its timing
+AlertSkyTiming = "xcorr"  # [name] timing the sky is read from: "xcorr" (reconstructions' lag) or "envelope" (event instants)
+AlertSkySigmaFloor = "sample"  # [s] smallest timing uncertainty of a pair; "sample" for one sample of the stream
+AlertSkyResolution = 1.0  # [deg] cell of the alerts' sky grid
+sky_min_ra_cells = 4  # [count] fewest right-ascension cells of the alerts' sky grid
+sky_credible_levels = [0.5, 0.9]  # [fraction] credible levels of the two sky areas an alert reports (sky_area50, sky_area90)
+hash_block_bytes = 1048576  # [bytes] block read at a time when hashing a file for provenance (numerical setting)
+git_timeout_s = 10  # [s] timeout of the git calls that record the library's commit (implementation setting)
+
+[combine]
+CombineMatch = "instant"  # [name] how two paths' candidates are matched: instant, candidate or extent
+CombineTimePreference = ["w", "t"]  # [name] path names in the order their candidate time is preferred
+ifos = ["H1", "L1"]  # [name] detectors of the pair, for the default window and the per-detector columns, when Detectors is not set
+
+[hrss]
+HrssEstimate = false  # [bool] estimate each event's hrss from its reconstruction and the workers' noise models
+HrssLowFrequency = "MinFrequency"  # [Hz] lower edge of the hrss band; "MinFrequency" for the run's MinFrequency (or its low-frequency cut)
+HrssHighFrequency = "lowpass"  # [Hz] upper edge of the hrss band; "lowpass" for the band-pass's cutoff frequency
+HrssBandPassCorrection = true  # [bool] divide the band-pass's power gain out of the strain
+grid_filter_lengths = 4  # [count] filter lengths the FFT grid holds beyond the series, so the inverse filter does not wrap onto the event
+rate_tolerance = 1e-6  # [-] relative difference allowed between the events' rate and the noise models' rate
+ResamplingFactor = 1  # [-] input rate over the stream rate for the hrss band-pass when the run sets no ResamplingFactor
+
+[coincidence]
+timing_jitter_s = 0.01  # [s] margin added to the light travel time in the classical CoincidenceFinder's window
+network_stat = "quadrature_sum"  # [name] how the detectors' EnWDF combine into network_enwdf: quadrature_sum, min or mean
+
+[clustering]
+method = "dbscan"  # [name] TriggerClusterer method: "dbscan" or "greedy"
+time_eps_s = 0.5  # [s] time-axis clustering radius of TriggerClusterer
+freq_eps_hz = 50.0  # [Hz] frequency-axis clustering radius of TriggerClusterer
+min_samples = 2  # [count] fewest members of a cluster; fewer are noise (singletons)
+stat_weight = 0.0  # [-] weight of log10 of the statistic as a third clustering axis; 0 for none
+
+[skymap]
+n_ra = 360  # [count] right-ascension cells of the sky grid
+n_dec = 180  # [count] declination cells of the sky grid (uniform in sine declination)
+credible_level = 0.9  # [fraction] credible level of credible_area and contains
+
+[timing_prior]
+bins = 41  # [count] bins the signal and accidental densities of dt/tolerance are estimated on
+floor = 1e-3  # [-] smallest density either population is credited with, as a fraction of a uniform one
+
+[network_statistic]
+lag_span_travel_times = 5.0  # [-] range the lag densities are estimated over, in light travel times
+
+[pairs]
+pair_block = 4096  # [count] events of the first index whose pairs are laid out per block (numerical setting: bounds memory)
+paired_block = 200000  # [count] pairs whose rows are gathered per block in the paired reductions (numerical setting: bounds memory)
+
+[event_significance]
+min_count = 200  # [count] fewest background events a size bin may hold
+tail_fraction = 0.1  # [fraction] upper fraction of each size bin the exponential tail is fitted on
+tail_min_count = 10  # [count] fewest events the exponential tail of a size bin is fitted on
+folds = 10  # [count] pieces the background is cut into for the out-of-sample and off-source significance
+
+[significance]
+n_slides = 200  # [count] time shifts of TimeShiftBackground
+min_shift_s = 1.0  # [s] smallest shift magnitude of TimeShiftBackground
+max_shift_s = "<unset>"  # [s] largest shift magnitude; unset: the shifted detector's segment span minus min_shift_s
+seed = 0  # [-] seed of the generator of the shifts
+
+[background]
+keep = 1000000  # [count] largest values of each ranking BackgroundAccumulator holds exactly (numerical setting: bounds memory)
+bins = 4096  # [count] bins of the histogram covering the values below the kept tail

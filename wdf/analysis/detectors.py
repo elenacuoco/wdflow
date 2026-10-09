@@ -12,15 +12,9 @@ from __future__ import annotations
 
 import numpy as np
 
-SPEED_OF_LIGHT = 299792458.0
-
-DETECTOR_VERTEX = {
-    "H1": (-2161414.93, -3834695.36, 4600350.22),
-    "L1": (-74276.05, -5496283.72, 3224257.02),
-    "V1": (4546374.10, 842989.70, 4378576.96),
-    "K1": (-3777336.02, 3484898.41, 3765313.68),
-    "G1": (3856309.94, 666598.96, 5019641.42),
-}
+# The speed of light and the detectors' vertices are constants of nature and of
+# the instruments (`wdf.config.constants`); they are re-exported here.
+from wdf.config.constants import DETECTOR_VERTEX, SPEED_OF_LIGHT  # noqa: F401
 
 
 def light_travel_time(ifo_a: str, ifo_b: str) -> float:
