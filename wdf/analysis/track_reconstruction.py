@@ -120,11 +120,15 @@ class TrackRidgeSettings(RidgeSettings):
     :param kept_quantile: the percentile of the slots kept into noise that
         the drift calibration holds at `calibration_kept`
         (`TrackCalibrationQuantile`; 50 is the median).
+    :param track_calibration_seeds: random starts of the track's drift
+        calibration (`TrackCalibrationSeeds`, default 500); the map's own
+        calibration takes `calibration_seeds` (`RidgeCalibrationSeeds`).
     """
 
     mc_range: tuple = (1.0, 30.0)
     allowance_max: float = 0.27
     kept_quantile: float = 50.0
+    track_calibration_seeds: int = 500
 
     def allowances(self):
         """``[from, to]`` allowance, octaves."""
@@ -161,6 +165,9 @@ class TrackSettings:
         seeds counted as absorbed; "supersede" = emitted when its score is
         higher than every emitted track it overlaps, carrying their seeds and
         their ids in `track_supersedes`, else discarded.
+    :param overlap_memory: online, how many of the most recently emitted
+        tracks a later track is checked against for overlap
+        (`TrackOverlapMemory`, default 256).
     :param event_instant: the event's instant, `gpsPeak`
         (`TrackEventInstant`): "peak" = centre of the largest sample of the
         waveform's envelope; "end" = end of the track's last slot.
@@ -180,19 +187,22 @@ class TrackSettings:
     ridge: RidgeSettings
     overlap_policy: str = "drop"
     event_instant: str = "peak"
+    overlap_memory: int = 256
 
     KEYS = dict(lookback="TrackLookback", horizon="TrackHorizon", basis="TrackBasis",
                 seed_states="TrackSeedStates", packet_cost="TrackPacketCost",
-                overlap_policy="TrackOverlapPolicy", event_instant="TrackEventInstant")
+                overlap_policy="TrackOverlapPolicy", event_instant="TrackEventInstant",
+                overlap_memory="TrackOverlapMemory")
     DEFAULTS = dict(lookback=4.0, horizon=1.0, seed_states=1, packet_cost="entropy",
-                    overlap_policy="drop", event_instant="peak")
+                    overlap_policy="drop", event_instant="peak", overlap_memory=256)
     #: Values of `TrackOverlapPolicy` and `TrackEventInstant`.
     OVERLAP_POLICIES = ("drop", "supersede")
     EVENT_INSTANTS = ("peak", "end")
     #: The track penalty's parameters and defaults: the stiff penalty of
     #: ridge v1, which followed inspirals, beyond a chirp allowance.
     PENALTY = dict(TrackLambda=3.7, TrackMcRange=(1.0, 30.0), TrackAllowanceMax=0.27,
-                   TrackDrift="calibrate", TrackXDrop="calibrate", TrackCalibrationQuantile=90.0)
+                   TrackDrift="calibrate", TrackXDrop="calibrate", TrackCalibrationQuantile=90.0,
+                   TrackCalibrationSeeds=500)
 
     @classmethod
     def from_parameters(cls, par, rate, ridge=None):
@@ -221,7 +231,8 @@ class TrackSettings:
                   seed_states=int(get("seed_states", d["seed_states"])),
                   packet_cost=str(get("packet_cost", d["packet_cost"])), ridge=ridge,
                   overlap_policy=str(get("overlap_policy", d["overlap_policy"])),
-                  event_instant=str(get("event_instant", d["event_instant"])))
+                  event_instant=str(get("event_instant", d["event_instant"])),
+                  overlap_memory=int(get("overlap_memory", d["overlap_memory"])))
         out.check(rate)
         for name, key in cls.KEYS.items():
             setattr(par, key, getattr(out, name))
@@ -252,9 +263,13 @@ class TrackSettings:
         quantile = float(values["TrackCalibrationQuantile"])
         if not 0 < quantile < 100:
             raise ValueError(f"TrackCalibrationQuantile {quantile}: between 0 and 100")
+        seeds = int(values["TrackCalibrationSeeds"])
+        if seeds < 1:
+            raise ValueError(f"TrackCalibrationSeeds {seeds}: at least 1")
+        par.TrackCalibrationSeeds = seeds
         return TrackRidgeSettings(**base, mc_range=mc,
                                   allowance_max=float(values["TrackAllowanceMax"]),
-                                  kept_quantile=quantile)
+                                  kept_quantile=quantile, track_calibration_seeds=seeds)
 
     def check(self, rate):
         """Refuse settings the reconstruction cannot run."""
@@ -278,6 +293,8 @@ class TrackSettings:
         if self.overlap_policy not in self.OVERLAP_POLICIES:
             raise ValueError(f"TrackOverlapPolicy {self.overlap_policy!r}: use one of "
                              f"{self.OVERLAP_POLICIES}")
+        if self.overlap_memory < 1:
+            raise ValueError(f"TrackOverlapMemory {self.overlap_memory}: at least 1")
         if self.event_instant not in self.EVENT_INSTANTS:
             raise ValueError(f"TrackEventInstant {self.event_instant!r}: use one of "
                              f"{self.EVENT_INSTANTS}")
@@ -528,8 +545,8 @@ def calibrate_track_drift(Z, settings, seed=1):
 
     As `calibrate_drift`, with the alignment the track uses (the best path
     over every state sequence from a start, `anchored_path`) in place of the
-    greedy extension: from `calibration_seeds` random starts (at most 500)
-    in the background, at the start's loudest state, the best score after k
+    greedy extension: from `track_calibration_seeds` random starts
+    (`TrackCalibrationSeeds`) in the background, at the start's loudest state, the best score after k
     slots is followed for `calibration_steps` slots. X is the
     `xdrop_percentile` of its largest drop within `xdrop_slots` slots, and b
     the smallest drift of `calibration_grid` for which the `kept_quantile`
@@ -546,7 +563,7 @@ def calibrate_track_drift(Z, settings, seed=1):
     if len(Z) < steps + 2:
         raise ValueError(f"{len(Z)} slots of background cannot calibrate the drift over {steps}")
     rng = np.random.default_rng(seed)
-    starts = rng.integers(0, len(Z) - steps - 1, min(settings.calibration_seeds, 500))
+    starts = rng.integers(0, len(Z) - steps - 1, settings.track_calibration_seeds)
     pen = settings.penalty()
     s0 = np.argmax(Z[starts], axis=1)
     result = None

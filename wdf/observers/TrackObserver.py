@@ -128,5 +128,5 @@ class TrackObserver(Observer):
                 kept[cid] = (float(track.waveform[0]), np.asarray(track.waveform[1]))
             self.count += 1
             out.append(row)
-        self.emitted = self.emitted[-256:]
+        self.emitted = self.emitted[-self.settings.overlap_memory:]
         return out, kept

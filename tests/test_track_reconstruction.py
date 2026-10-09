@@ -380,3 +380,19 @@ def _offline_par(**kw):
     from wdf.config.Parameters import Parameters
 
     return Parameters(**dict(TEST_PARAMS, sampling=4096, file="x.gwf", **kw))
+
+
+def test_the_track_calibration_seeds_and_overlap_memory_are_parameters():
+    from wdf.analysis.track_reconstruction import TrackSettings
+    from wdf.config.Parameters import Parameters
+
+    par = Parameters()
+    s = TrackSettings.from_parameters(par, 2048.0)
+    assert s.ridge.track_calibration_seeds == 500 and par.TrackCalibrationSeeds == 500
+    assert s.overlap_memory == 256 and par.TrackOverlapMemory == 256
+    s = TrackSettings.from_parameters(Parameters(TrackCalibrationSeeds=50, TrackOverlapMemory=8), 2048.0)
+    assert s.ridge.track_calibration_seeds == 50 and s.overlap_memory == 8
+    with pytest.raises(ValueError, match="TrackCalibrationSeeds"):
+        TrackSettings.from_parameters(Parameters(TrackCalibrationSeeds=0), 2048.0)
+    with pytest.raises(ValueError, match="TrackOverlapMemory"):
+        TrackSettings.from_parameters(Parameters(TrackOverlapMemory=0), 2048.0)

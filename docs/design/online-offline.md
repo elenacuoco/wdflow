@@ -777,6 +777,7 @@ module reads the two lists as written and recomputes no background.
 | `TrackSeedStates` | 1 | states either side of the seed's cell |
 | `TrackPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |
 | `TrackOverlapPolicy` | "drop" | online, a track overlapping an emitted one: "drop" or "supersede" |
+| `TrackOverlapMemory` | 256 | online, the most recently emitted tracks a later track is checked against |
 | `TrackEventInstant` | "peak" | the event's instant: envelope "peak" or track "end" |
 | `TrackTimingJitter` | 0.0035 s | added to the light travel time |
 | `TrackFrequencyTolerance` | 0.5 octave | f(t) tolerance between two tracks |
@@ -793,6 +794,7 @@ module reads the two lists as written and recomputes no background.
 | `TrackAllowanceMax` | 0.27 octave | largest allowance per slot |
 | `TrackDrift`, `TrackXDrop` | "calibrate" | the track's drift and X-drop |
 | `TrackCalibrationQuantile` | 90 | percentile of the slots kept into noise held at `RidgeCalibrationKept` |
+| `TrackCalibrationSeeds` | 500 | random starts of the track's drift calibration |
 | `TrackLightTravelTime` | from the detectors | overrides the light travel time |
 | `TrackGraphBasis` | "LocalCos64" | basis of the node maps the GNN reads on the track path |
 

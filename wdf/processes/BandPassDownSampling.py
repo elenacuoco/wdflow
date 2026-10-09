@@ -223,6 +223,9 @@ class BandPassDownSampling(object):
             required = getattr(Parameters, "AliasAttenuationDB", None)
             self.alias_requirement_db = (DEFAULT_ALIAS_ATTENUATION_DB if required is None
                                          else float(required))
+            if corner is None:
+                Parameters.LowPassCornerFraction = self.corner_fraction
+            Parameters.AliasAttenuationDB = self.alias_requirement_db
             highpass = butter(self.highpass_order, self.low_freq_hp, btype='highpass',
                               fs=self.sampling, output='sos')
             given = getattr(Parameters, "LowPassOrder", None)
