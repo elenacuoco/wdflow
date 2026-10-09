@@ -16,6 +16,18 @@ wdf.config.Parameters
 .. automodule:: wdf.config.Parameters
    :members:
 
+wdf.config.defaults
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.config.defaults
+   :members:
+
+wdf.config.constants
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.config.constants
+   :members:
+
 wdf.processes.wdfUnitDSWorker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

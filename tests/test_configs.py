@@ -192,3 +192,50 @@ def test_the_track_latency_at_2048_hz():
         used = wdfUnitOnline(load_config(TRACK, ifo, sampling=4096, channel=f"{ifo}:X",
                                          file="x.gwf")).par
         assert used.TrackLatency_s == pytest.approx(expected)
+
+
+ALL_CONFIGS = sorted(glob.glob(os.path.join(ROOT, "configs", "*.toml")))
+
+
+def _kind(value):
+    if isinstance(value, bool):
+        return bool
+    if isinstance(value, (int, float)):
+        return float
+    if isinstance(value, (list, tuple)):
+        return tuple
+    return type(value)
+
+
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=os.path.basename)
+def test_every_key_has_a_default_or_is_required(path):
+    """Every key of a shipped configuration is a key of the defaults file
+    (wdf/config/defaults.toml) or a key the run must give
+    (`REQUIRED_KEYS`), and its value has the kind of the default's: a
+    number for a number, a list for a list, a flag for a flag. A key whose
+    default is "<unset>", or a string that a number may replace (e.g.
+    "calibrate", "window"), takes any kind."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
+    from wdf.config.Parameters import DETECTOR_TABLE, REQUIRED_KEYS
+    from wdf.config.defaults import UNSET, tables
+
+    held = {}
+    for table in tables().values():
+        for key, value in table.items():
+            held.setdefault(key, []).append(value)
+    with open(path, "rb") as fh:
+        data = tomllib.load(fh)
+    entries = list(data.items())
+    for table in data.pop(DETECTOR_TABLE, {}).values():
+        entries += list(table.items())
+    for key, value in entries:
+        if key == DETECTOR_TABLE:
+            continue
+        assert key in held or key in REQUIRED_KEYS, f"{key} has no default and is not required"
+        defaults = [d for d in held.get(key, []) if d != UNSET and not isinstance(d, str)]
+        if defaults:
+            assert any(_kind(value) == _kind(d) for d in defaults), \
+                f"{key} = {value!r}; its default is {held[key]}"
