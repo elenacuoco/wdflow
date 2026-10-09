@@ -607,7 +607,8 @@ keeps 4 s instead of 8192 samples.
 
 #### Requirements
 
-`py4tsa >= 3.4.0, < 4` (the `pipeline` extra and the conda recipe): the
+`py4tsa >= 3.4.1, < 4` (the `pipeline` extra and the conda recipe; 3.4.1 is
+the first 3.4 release on PyPI): the
 search needs `LocalCos<M>` bases, the core's default list of 10 bases,
 `SetMinFrequency`, `SetBlockRemainder` and `SetBases`. Without `Bases`, the
 competition is the core's default list, which changes with p4TSA 3.4.0
