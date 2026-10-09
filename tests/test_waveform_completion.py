@@ -57,6 +57,13 @@ def test_the_settings_are_parameters_and_are_recorded():
     assert par.CompletionMethod == "mask" and par.CompletionDilationOctaves == 0.5
     assert par.CompletionQs == [2.0, 4.0] and par.CompletionLowFrequency == 16.0
     assert settings()[0].basis == "CosinePackets32"
+    from wdf.analysis.waveform_completion import DEFAULTS
+    d = CompletionSettings.defaults(FS, basis="LocalCos64")
+    assert d.basis == "LocalCos64" and d.threshold == DEFAULTS["CompletionThreshold"]
+    assert d.slot_s == DEFAULTS["CompletionSlotSamples"] / FS and d.low_frequency == 0.0
+    other = CompletionSettings.from_parameters(SimpleNamespace(), FS, defaults=dict(DEFAULTS, CompletionPad=2.0))
+    assert other.pad == 2.0
+    assert set(DEFAULTS) == set(CompletionSettings.KEYS.values())
 
 
 @pytest.mark.parametrize("bad", [dict(CompletionMethod="fit"), dict(CompletionBasis="Fourier"),
@@ -126,11 +133,11 @@ def test_build_mask_reads_the_tiles_and_pads_the_extent():
 
 def test_the_energy_ridge_follows_a_known_chirp(planted):
     x, c, ridge = planted
-    times, freqs = energy_ridge(c, T0, FS, m=64, f_low=16.0)
+    times, freqs = energy_ridge(c, T0, FS, m=64, f_low=16.0, floor=0.05)
     assert times.size and times.min() >= T0 + CHIRP_AT and times.max() <= T0 + CHIRP_AT + CHIRP_S
     expect = np.interp(times, ridge[0], ridge[1])
     assert np.median(np.abs(np.log2(freqs / expect))) < 0.25
-    assert energy_ridge(np.zeros(10), T0, FS)[0].size == 0
+    assert energy_ridge(np.zeros(10), T0, FS, 64, 16.0, 0.05)[0].size == 0
 
 
 def test_build_mask_needs_tiles_or_a_track():
@@ -242,3 +249,50 @@ def test_the_strain_undoes_the_taps_and_the_stretch_is_whitened_as_the_worker_do
     assert np.allclose(z[:cut], y[:cut] / 2.0) and np.allclose(z[cut:], y[cut:] / 4.0)
     with pytest.raises(ValueError):
         whitened_stretch(raw, 4096.0, T0, history)
+
+
+# ---------------------------------------------------------------- the gate
+def test_the_tile_coverage_reads_the_tiles_alone():
+    from wdf.analysis.waveform_completion import tile_coverage
+
+    s, _ = settings(CompletionSlot=0.25, CompletionOctaveStep=0.25)
+    full = (T0 + np.array([0.0, 1.0]), T0 + np.array([1.0, 2.0]), np.array([40.0, 40.0]), np.array([80.0, 80.0]))
+    assert tile_coverage(full, s, FS) == 1.0
+    stairs = (T0 + np.array([0.0, 1.0]), T0 + np.array([1.0, 2.0]), np.array([40.0, 80.0]), np.array([80.0, 160.0]))
+    assert tile_coverage(stairs, s, FS) == 1.0          # each time cell full over its own band
+    split = (T0 + np.array([0.0, 0.0]), T0 + np.array([2.0, 2.0]), np.array([40.0, 160.0]), np.array([80.0, 320.0]))
+    assert 0.6 < tile_coverage(split, s, FS) < 0.8      # an octave missing between two bands of an octave
+    holed = (T0 + np.array([0.0, 1.75]), T0 + np.array([0.25, 2.0]), np.array([40.0, 80.0]), np.array([80.0, 160.0]))
+    assert 0.0 < tile_coverage(holed, s, FS) < 0.5
+    reverse = (holed[0], holed[1], holed[2][::-1], holed[3][::-1])
+    assert tile_coverage(reverse, s, FS) == tile_coverage(holed, s, FS)    # symmetric in sweep direction
+    nobridge = settings(CompletionSlot=0.25, CompletionOctaveStep=0.25, CompletionBridgeGap=0.0)[0]
+    assert tile_coverage(holed, nobridge, FS) == 1.0     # nothing between the tiles to fill
+    assert np.isnan(tile_coverage((np.zeros(0),) * 4, s, FS))
+
+
+def test_the_gate_returns_the_sparse_reconstruction_above_the_coverage(planted):
+    pytest.importorskip("py4tsa")
+    from wdf.analysis.waveform_completion import tile_coverage
+
+    x, c, ridge = planted
+    sparse = (T0 + CHIRP_AT, c[int(CHIRP_AT * FS):int((CHIRP_AT + CHIRP_S) * FS)].copy())
+    base = settings(CompletionBasis="LocalCos64")[0]
+    covered = tile_coverage(TILES, base, FS)
+    assert 0.0 < covered < 1.0
+    above = complete((T0, x), FS, TILES, settings(CompletionBasis="LocalCos64",
+                                                  CompletionMaxTileCoverage=covered - 0.01)[0], sparse=sparse)
+    assert not above.completed and above.method == "sparse" and above.n_kept == 0
+    assert above.t0 == sparse[0] and np.array_equal(above.waveform, sparse[1])
+    assert above.tile_coverage == covered and above.record()["completed"] is False
+    at = complete((T0, x), FS, TILES, settings(CompletionBasis="LocalCos64",
+                                               CompletionMaxTileCoverage=covered)[0], sparse=sparse)
+    assert at.completed and at.method == "mask" and at.tile_coverage == covered
+    without_sparse = complete((T0, x), FS, TILES, settings(CompletionBasis="LocalCos64",
+                                                           CompletionMaxTileCoverage=0.0)[0])
+    assert settings(CompletionBasis="LocalCos64", CompletionMaxTileCoverage=1.0)[0].max_tile_coverage == 1.0
+    assert without_sparse.completed           # nothing to fall back on: the completion runs
+    from wdf.analysis.waveform_completion import DEFAULTS
+    assert base.max_tile_coverage == DEFAULTS["CompletionMaxTileCoverage"]
+    with pytest.raises(ValueError):
+        settings(CompletionMaxTileCoverage=1.5)

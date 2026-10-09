@@ -236,9 +236,14 @@ and `strain(taps, band)` through `hrss.strain_from_whitened`.
 `whitened_stretch` whitens a stretch of raw strain offline as the online
 worker did (`ModelHistory`), `energy_ridge` reads a model-free ridge off a
 known waveform, `hole_fraction` the share of its energy a reconstruction
-leaves at zero. The settings (`CompletionSettings.from_parameters`) are
-written back to the run parameters. Nothing calls the stage by default:
-no run output changes.
+leaves at zero. The completion runs only for an event whose tile coverage
+(`tile_coverage`: the fraction of its span -- its tiles bridged in time and
+filled in frequency -- that the tiles occupy, read from the tiles alone) is
+at or below `CompletionMaxTileCoverage` (default 0.95); above it the sparse
+reconstruction is returned unchanged, flagged `completed` False. Every
+default of the stage is in the module's `DEFAULTS` dictionary; the settings
+(`CompletionSettings.from_parameters`) are written back to the run
+parameters. Nothing calls the stage by default: no run output changes.
 
 #### Ridge tracking: a path along the cells, offline and causal
 
@@ -548,12 +553,56 @@ previous behaviour.
 #### The configuration reference
 
 `docs/configuration.md` lists every key of the shipped configurations with
-the default the code takes, the value of each configuration and its meaning
-and unit, and the keys the code reads that no configuration sets. It is
-generated from the code (`docs/generate_configuration.py`), and a test fails
-when it is stale.
+its default, unit, value in each configuration and meaning, and then every
+key of `wdf/config/defaults.toml` table by table. It is generated from the
+defaults file and the configurations (`docs/generate_configuration.py`), and
+a test fails when it is stale.
 
 ### Changed
+
+#### All analysis defaults now live in `wdf/config/defaults.toml`
+
+Every value an analysis takes when neither its caller nor the run
+configuration gives one is in one file shipped with the package,
+`wdf/config/defaults.toml`, read by `wdf.config.defaults.defaults(table)`.
+Its tables are named after the stage that reads them (`[bandpass]`,
+`[whitening.zero_phase]`, `[worker.online]`, `[ridge]`,
+`[track.reconstruction]`, `[network.driver]`, `[robust_events.coincidence]`,
+`[alerts]`, `[mock.dataset]`, ...); every key states its unit and meaning.
+A CamelCase key is the default of the run-configuration key of the same
+name; a lower-case key the default of a library argument or setting.
+`"<unset>"` is a default the code derives (for example `ARWarmup`, `ARorder`
+samples). Values tied to the sampling rate are stored in seconds, hertz or
+fractions of the Nyquist frequency.
+
+- Modules hold no analysis value of their own: dataclass field defaults,
+  default arguments, module constants (kept under their names, bound to the
+  file) and the fallbacks of run keys read from the file.
+  `wdf.config.defaults.parameter(par, key, table)` is the run's value or the
+  table's default.
+- Constants of nature, units and closed-form formulas are in
+  `wdf/config/constants.py` (the detector vertices and the speed of light
+  move there; `wdf.analysis.detectors` re-exports them).
+- `wdf.config.Parameters.REQUIRED_KEYS` names the keys a run must give;
+  every other key of a shipped configuration has its default in the file
+  (tested).
+- The mock generator's choices (rate, populations, glitch-class parameter
+  ranges, the benchmark configuration and its worker band) are the
+  `[mock.*]` tables.
+- `tests/test_analysis_defaults.py` fails on a number written in a module of
+  `wdf` outside a short allow-list, on a run key read with a written
+  fallback, on a key read by the code and missing from the file (or held by
+  the file and read by nothing), and on a key without its unit and meaning.
+- The tutorials read their values from `tutorials/tutorials.toml`;
+  `examples/zero_phase_whitening_example.py` loads a run configuration
+  (`--config`, default `configs/offline_default.toml`) and its own
+  `examples/zero_phase_whitening_example.toml`.
+
+Outputs do not change at the default rate. One default now follows the
+rate: the Welch segment of the spectrum whitenings and of `whitened_level`
+is `[whitening.zero_phase] spectrum_segment_s` = 4 s (8192 samples at
+2048 Hz, as before), so a `WhiteningModel = "spectrum"` run at another rate
+keeps 4 s instead of 8192 samples.
 
 #### Requirements
 

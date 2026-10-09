@@ -32,6 +32,13 @@ coverage number (the fraction of a reference ridge -- the track, or the
 injected one -- that the mask holds) and the overlap with the sparse
 reconstruction.
 
+The completion runs only for events whose tiles cover their own span poorly:
+`tile_coverage`, the fraction of the event's span (its tiles bridged in time
+and filled in frequency) that the tiles occupy, read from the tiles alone,
+is compared with
+`CompletionMaxTileCoverage`; above it the sparse reconstruction is returned
+unchanged, flagged ``completed=False``.
+
 Nothing calls this stage by default; a run's outputs are unchanged.
 """
 from __future__ import annotations
@@ -50,10 +57,44 @@ PACKET_COSTS = ("l1", "entropy", "wdfUniversal", "wdfBlock")
 MAD_TO_SIGMA = 1.0 / 0.6745
 
 
+# ================================================================ defaults
+#: DEFAULTS OF THE COMPLETION -- the only place they are written. Every
+#: analysis value of this module is read from the run parameters, and a key
+#: the run does not set takes its value here. To be moved into the shipped
+#: defaults configuration when there is one.
+#:
+#: "CompletionSlot" None: `CompletionSlotSamples` over the stream's rate.
+#: "CompletionLowFrequency" None: the run's `MinFrequency` (0 without one).
+DEFAULTS = {
+    "CompletionMethod": "mask",
+    "CompletionBasis": "CosinePackets32",
+    "CompletionPacketCost": "entropy",
+    "CompletionSlot": None,
+    "CompletionSlotSamples": 64,
+    "CompletionOctaveStep": 0.125,
+    "CompletionDilationTime": 0.1,
+    "CompletionDilationOctaves": 0.5,
+    "CompletionBridgeGap": 4.0,
+    "CompletionTileBand": "extent",
+    "CompletionBand": 0.5,
+    "CompletionThreshold": 1.0,
+    "CompletionPad": 0.5,
+    "CompletionLowFrequency": None,
+    "CompletionStopSNR": 4.0,
+    "CompletionMaxAtoms": 200,
+    "CompletionQs": [1.0, 2.0, 4.0, 8.0, 16.0],
+    "CompletionFrequencyCount": 40,
+    "CompletionMaxTileCoverage": 0.95,
+    "CompletionMarginSegments": 4,
+    "CompletionWaveletMargin": 0.5,
+}
+
+
 # ================================================================ settings
 @dataclass
 class CompletionSettings:
-    """Every choice of the completion, read from the run parameters.
+    """Every choice of the completion, read from the run parameters; a key
+    the run does not set takes its value in `DEFAULTS`.
 
     :param method: `CompletionMethod`: "mask" inverts every coefficient
         inside the mask; "mp" fits sine-Gaussian atoms inside it.
@@ -61,7 +102,8 @@ class CompletionSettings:
         the piece), ``LocalCos<M>``, or a p4TSA wavelet name (a mother, or a
         mother with ``P<depth>``).
     :param packet_cost: `CompletionPacketCost`, the cosine-packet cost.
-    :param slot_s: `CompletionSlot`, s: the mask's time cell.
+    :param slot_s: `CompletionSlot`, s: the mask's time cell; when not set,
+        `CompletionSlotSamples` samples at the stream's rate.
     :param octave_step: `CompletionOctaveStep`: the mask's frequency cell,
         octaves.
     :param dilation_time: `CompletionDilationTime`, s: the mask grows by this
@@ -78,87 +120,114 @@ class CompletionSettings:
     :param band: `CompletionBand`, octaves: half-width of the band around a
         track's ridge, and around the tiles' centroid with "centroid".
     :param threshold: `CompletionThreshold`: soft threshold, in units of the
-        piece's noise scale, applied to the kept coefficients (the noise
-        inside the mask shrunk, the signal's coefficients, large, kept
-        less that much); 0 keeps them as they are.
+        piece's noise scale, applied to the kept coefficients; 0 keeps them
+        as they are.
     :param pad: `CompletionPad`, s: the waveform extends this much before the
         event's first tile and after its last.
     :param low_frequency: `CompletionLowFrequency`, Hz: the mask's floor;
-        default the run's `MinFrequency`.
+        when not set, the run's `MinFrequency`.
     :param stop_snr: `CompletionStopSNR`: "mp" stops when the best atom's SNR
         is below it.
     :param max_atoms: `CompletionMaxAtoms`: ... or after this many atoms.
     :param qs: `CompletionQs`: quality factors of the atoms.
     :param frequency_count: `CompletionFrequencyCount`: atom frequencies,
         log-spaced over the mask's band.
+    :param max_tile_coverage: `CompletionMaxTileCoverage`: the completion
+        runs when the event's tile coverage (`tile_coverage`) is at or below
+        this; above it the sparse reconstruction is returned as it is. 1
+        completes every event.
+    :param margin_segments: `CompletionMarginSegments`: the piece holds this
+        many segments of a ``CosinePackets<m>`` or ``LocalCos<M>`` basis
+        beyond the mask on each side.
+    :param wavelet_margin: `CompletionWaveletMargin`, s: ... and this much
+        for a p4TSA wavelet.
+    :param slot_samples: `CompletionSlotSamples`: `slot_s` in samples at the
+        stream's rate when `CompletionSlot` is not set.
     """
 
-    method: str = "mask"
-    basis: str = "CosinePackets32"
-    packet_cost: str = "entropy"
-    slot_s: float = 64.0 / 2048.0
-    octave_step: float = 0.125
-    dilation_time: float = 0.1
-    dilation_octaves: float = 0.5
-    bridge_gap: float = 4.0
-    tile_band: str = "extent"
-    band: float = 0.5
-    threshold: float = 1.0
-    pad: float = 0.5
-    low_frequency: float = 0.0
-    stop_snr: float = 4.0
-    max_atoms: int = 200
-    qs: tuple = (1.0, 2.0, 4.0, 8.0, 16.0)
-    frequency_count: int = 40
+    method: str
+    basis: str
+    packet_cost: str
+    slot_s: float
+    octave_step: float
+    dilation_time: float
+    dilation_octaves: float
+    bridge_gap: float
+    tile_band: str
+    band: float
+    threshold: float
+    pad: float
+    low_frequency: float
+    stop_snr: float
+    max_atoms: int
+    qs: tuple
+    frequency_count: int
+    max_tile_coverage: float
+    margin_segments: int
+    wavelet_margin: float
+    slot_samples: int
 
     KEYS = dict(method="CompletionMethod", basis="CompletionBasis",
                 packet_cost="CompletionPacketCost", slot_s="CompletionSlot",
                 octave_step="CompletionOctaveStep", dilation_time="CompletionDilationTime",
                 dilation_octaves="CompletionDilationOctaves", bridge_gap="CompletionBridgeGap",
-                tile_band="CompletionTileBand", band="CompletionBand", threshold="CompletionThreshold", pad="CompletionPad",
+                tile_band="CompletionTileBand", band="CompletionBand",
+                threshold="CompletionThreshold", pad="CompletionPad",
                 low_frequency="CompletionLowFrequency", stop_snr="CompletionStopSNR",
                 max_atoms="CompletionMaxAtoms", qs="CompletionQs",
-                frequency_count="CompletionFrequencyCount")
-    #: The mask's time cell, samples: `CompletionSlot` defaults to this over
-    #: the rate.
-    SLOT_SAMPLES = 64
+                frequency_count="CompletionFrequencyCount",
+                max_tile_coverage="CompletionMaxTileCoverage",
+                margin_segments="CompletionMarginSegments",
+                wavelet_margin="CompletionWaveletMargin",
+                slot_samples="CompletionSlotSamples")
+    #: How each value is read.
+    TYPES = dict(method=str, basis=str, packet_cost=str, slot_s=float, octave_step=float,
+                 dilation_time=float, dilation_octaves=float, bridge_gap=float, tile_band=str,
+                 band=float, threshold=float, pad=float, low_frequency=float, stop_snr=float,
+                 max_atoms=int, qs=lambda v: tuple(float(q) for q in v), frequency_count=int,
+                 max_tile_coverage=float, margin_segments=int, wavelet_margin=float,
+                 slot_samples=int)
 
     @classmethod
-    def from_parameters(cls, par, rate):
+    def from_parameters(cls, par, rate, defaults=None):
         """The settings a run asks for, defaults filled in and written back.
 
         :param par: run configuration; it receives every value used.
         :type rate: float
         :param rate: sampling rate of the whitened stream, Hz.
+        :type defaults: dict or None
+        :param defaults: the values of the keys `par` does not set;
+            `DEFAULTS` when None.
         :return: CompletionSettings
         :raises ValueError: on a method, basis or cost that is not known, or
             a width that is negative.
         """
-        def get(name, default):
-            value = getattr(par, cls.KEYS[name], None)
-            return default if value is None else value
+        d = DEFAULTS if defaults is None else defaults
 
-        d = cls()
-        low = getattr(par, "MinFrequency", None)
-        out = cls(method=str(get("method", d.method)), basis=str(get("basis", d.basis)),
-                  packet_cost=str(get("packet_cost", d.packet_cost)),
-                  slot_s=float(get("slot_s", cls.SLOT_SAMPLES / float(rate))),
-                  octave_step=float(get("octave_step", d.octave_step)),
-                  dilation_time=float(get("dilation_time", d.dilation_time)),
-                  dilation_octaves=float(get("dilation_octaves", d.dilation_octaves)),
-                  bridge_gap=float(get("bridge_gap", d.bridge_gap)),
-                  tile_band=str(get("tile_band", d.tile_band)), band=float(get("band", d.band)), threshold=float(get("threshold", d.threshold)),
-                  pad=float(get("pad", d.pad)),
-                  low_frequency=float(get("low_frequency", float(low) if low else 0.0)),
-                  stop_snr=float(get("stop_snr", d.stop_snr)),
-                  max_atoms=int(get("max_atoms", d.max_atoms)),
-                  qs=tuple(float(q) for q in get("qs", d.qs)),
-                  frequency_count=int(get("frequency_count", d.frequency_count)))
+        def get(key):
+            value = getattr(par, key, None)
+            return d.get(key) if value is None else value
+
+        values = {name: get(key) for name, key in cls.KEYS.items()}
+        if values["slot_s"] is None:
+            values["slot_s"] = int(values["slot_samples"]) / float(rate)
+        if values["low_frequency"] is None:
+            low = getattr(par, "MinFrequency", None)
+            values["low_frequency"] = float(low) if low else 0.0
+        out = cls(**{name: cls.TYPES[name](v) for name, v in values.items()})
         out.check(rate)
         for name, key in cls.KEYS.items():
             value = getattr(out, name)
             setattr(par, key, list(value) if isinstance(value, tuple) else value)
         return out
+
+    @classmethod
+    def defaults(cls, rate, **values):
+        """The settings with every key at its default but those given by
+        their field name (`KEYS`), at the stream rate `rate`."""
+        from types import SimpleNamespace
+
+        return cls.from_parameters(SimpleNamespace(**{cls.KEYS[k]: v for k, v in values.items()}), rate)
 
     def check(self, rate=None):
         """Refuse settings the completion cannot run."""
@@ -176,6 +245,10 @@ class CompletionSettings:
                      "pad", "low_frequency", "stop_snr"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{self.KEYS[name]} must not be negative")
+        if not 0.0 <= self.max_tile_coverage <= 1.0:
+            raise ValueError("CompletionMaxTileCoverage must be between 0 and 1")
+        if self.margin_segments < 0 or self.wavelet_margin < 0:
+            raise ValueError("CompletionMarginSegments and CompletionWaveletMargin must not be negative")
         if self.max_atoms < 1 or self.frequency_count < 1:
             raise ValueError("CompletionMaxAtoms and CompletionFrequencyCount must be at least 1")
         if not self.qs or min(self.qs) <= 0:
@@ -406,6 +479,16 @@ class CompletionMask:
         out[ok] = self.cells[s[ok], b[ok].astype(int)]
         return out
 
+    def spanned(self):
+        """The cells from the lowest occupied one to the highest in each time
+        cell: the mask with its holes in frequency filled."""
+        out = self.cells.copy()
+        rows = np.flatnonzero(out.any(axis=1))
+        for s in rows:
+            idx = np.flatnonzero(out[s])
+            out[s, idx[0]:idx[-1] + 1] = True
+        return out
+
     def coverage(self, times, freqs):
         """The fraction of a ridge's points the mask holds, NaN without
         points."""
@@ -450,6 +533,38 @@ def _band_of(row):
     """First and last occupied cell of a mask row."""
     idx = np.flatnonzero(row)
     return int(idx[0]), int(idx[-1])
+
+
+def tile_coverage(tiles, settings, rate):
+    """The event's tile coverage: the fraction of its span's cells that its
+    tiles occupy.
+
+    The tiles are marked on the mask's grid (`CompletionSlot` by
+    `CompletionOctaveStep`, each tile's whole support); the span is that
+    mask with the holes between occupied time cells bridged
+    (`CompletionBridgeGap`) and, in each time cell, the cells from the lowest
+    occupied one to the highest. The number is read from the tiles alone --
+    no dilation, no track, no stream -- so it is the same online and
+    offline, and symmetric in time and in sweep direction. One minus it is
+    the share of the span the completion fills.
+
+    :param tiles: ``(t_lo, t_hi, f_lo, f_hi[, ...])`` of the event's tiles.
+    :type settings: CompletionSettings
+    :type rate: float
+    :param rate: sampling rate of the stream, Hz.
+    :return: float -- in [0, 1]; NaN without tiles.
+    """
+    t_lo, t_hi, f_lo, f_hi = (np.asarray(a, dtype=float).reshape(-1) for a in tiles[:4])
+    if not t_lo.size:
+        return float("nan")
+    mask = CompletionMask.empty(float(t_lo.min()), float(t_hi.max()), max(settings.low_frequency, 1e-3),
+                                0.5 * float(rate), settings.slot_s, settings.octave_step)
+    mask.add_boxes(t_lo, t_hi, f_lo, f_hi)
+    tiles_cells = int(mask.cells.sum())
+    if not tiles_cells:
+        return float("nan")
+    mask.bridge(settings.bridge_gap)
+    return tiles_cells / float(mask.spanned().sum())
 
 
 def build_mask(tiles, settings, rate, track=None, extent=None):
@@ -664,6 +779,10 @@ class CompletedWaveform:
         without one.
     :param atoms: the atoms of "mp".
     :param extra: the best basis's segmentation, when packets.
+    :param tile_coverage: the event's tile coverage (`tile_coverage`).
+    :param completed: True when the waveform is the completion; False when
+        the gate (`CompletionMaxTileCoverage`) returned the sparse
+        reconstruction (`method` "sparse", `n_kept` 0).
     """
 
     t0: float
@@ -680,6 +799,8 @@ class CompletedWaveform:
     sparse_overlap: float = float("nan")
     atoms: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    tile_coverage: float = float("nan")
+    completed: bool = True
 
     @property
     def t_end(self):
@@ -715,10 +836,11 @@ class CompletedWaveform:
         return dict(t0=self.t0, fs=self.fs, basis=self.basis, method=self.method, sigma=self.sigma,
                     n_kept=self.n_kept, n_total=self.n_total, energy=self.energy,
                     coverage=self.coverage, sparse_overlap=self.sparse_overlap,
-                    n_samples=int(self.waveform.size), n_atoms=len(self.atoms))
+                    n_samples=int(self.waveform.size), n_atoms=len(self.atoms),
+                    tile_coverage=self.tile_coverage, completed=self.completed)
 
 
-def energy_ridge(samples, t0, fs, m=64, f_low=0.0, floor=0.05):
+def energy_ridge(samples, t0, fs, m, f_low, floor):
     """A model-free ridge of a waveform: in each segment of its local cosine
     map (``LocalCos<m>``), the energy-weighted log-frequency centroid above
     `f_low`, for the segments holding at least `floor` of the loudest
@@ -742,14 +864,14 @@ def energy_ridge(samples, t0, fs, m=64, f_low=0.0, floor=0.05):
     return times, 2.0 ** lf
 
 
-def hole_fraction(reconstruction, reference, floor=0.0):
+def hole_fraction(reconstruction, reference):
     """The fraction of `reference`'s energy lying where `reconstruction` is
-    at or below `floor` in magnitude: what the holes of a reconstruction
-    leave out of a known waveform on the same grid."""
-    a = np.abs(np.asarray(reconstruction, dtype=float))
+    exactly zero: what the holes of a reconstruction leave out of a known
+    waveform on the same grid."""
+    a = np.asarray(reconstruction, dtype=float)
     b = np.asarray(reference, dtype=float) ** 2
     total = float(b.sum())
-    return float(b[a <= floor].sum() / total) if total > 0 else float("nan")
+    return float(b[a == 0.0].sum() / total) if total > 0 else float("nan")
 
 
 def place(t0, y, grid_t0, size, fs):
@@ -783,19 +905,36 @@ def complete(stream, fs, tiles, settings, track=None, extent=None, reference=Non
     :param reference: ``(times, frequencies)`` of the ridge the coverage is
         measured on (the track, or an injected one); `track` when None.
     :param sparse: ``(GPS of the first sample, samples)`` of the sparse
-        reconstruction (`detector_graph.event_waveform`), for the overlap.
-    :return: CompletedWaveform
+        reconstruction (`detector_graph.event_waveform`), for the overlap
+        and for the gate.
+    :return: CompletedWaveform -- the completion when the event's tile
+        coverage is at or below `settings.max_tile_coverage` (or no `sparse`
+        is given); otherwise `sparse` as it is, with ``completed=False``.
     """
+    covered = tile_coverage(tiles, settings, fs)
     mask = build_mask(tiles, settings, fs, track=track, extent=extent)
     start, end = mask.t0, mask.t_end
+    ridge = reference if reference is not None else track
+    if sparse is not None and np.isfinite(covered) and covered > settings.max_tile_coverage:
+        t0, y = float(sparse[0]), np.asarray(sparse[1], dtype=float).copy()
+        y[~np.isfinite(y)] = 0.0
+        x = _piece(stream, fs, start, end, 0)[1]
+        sigma = max(float(np.median(np.abs(x - np.median(x))) * MAD_TO_SIGMA), 1e-150) if x.any() else float("nan")
+        result = CompletedWaveform(t0=t0, fs=float(fs), waveform=y, mask=mask, basis="sparse", method="sparse",
+                                   sigma=sigma, n_kept=0, n_total=0,
+                                   energy=float(np.sum(y ** 2) / sigma ** 2) if np.isfinite(sigma) else float("nan"),
+                                   sparse_overlap=1.0, tile_coverage=covered, completed=False)
+        if ridge is not None:
+            result.coverage = mask.coverage(ridge[0], ridge[1])
+        return result
     kind = basis_kind(settings.basis)
     if kind == "packets":
-        margin = 4 * packet_segment(settings.basis)
+        margin = settings.margin_segments * packet_segment(settings.basis)
     elif kind == "localcos":
         from wdf.analysis.wavelets import _local_cosine_segment
-        margin = 4 * _local_cosine_segment(settings.basis)
+        margin = settings.margin_segments * _local_cosine_segment(settings.basis)
     else:
-        margin = int(0.5 * fs)
+        margin = int(round(settings.wavelet_margin * fs))
     piece_t0, piece, i0 = _piece(stream, fs, start, end, margin)
     size = int(np.ceil((end - start) * fs))
     atoms, extra = [], {}
@@ -816,8 +955,7 @@ def complete(stream, fs, tiles, settings, track=None, extent=None, reference=Non
     result = CompletedWaveform(t0=start, fs=float(fs), waveform=out, mask=mask, basis=basis,
                                method=settings.method, sigma=float(sigma), n_kept=int(n_kept),
                                n_total=int(n_total), energy=float(np.sum(out ** 2) / max(sigma, 1e-150) ** 2),
-                               atoms=atoms, extra=extra)
-    ridge = reference if reference is not None else track
+                               atoms=atoms, extra=extra, tile_coverage=covered)
     if ridge is not None:
         result.coverage = mask.coverage(ridge[0], ridge[1])
     if sparse is not None:
@@ -863,7 +1001,7 @@ def complete_event(graph, labels, cluster_id, stream, fs, settings, track=None, 
 
 
 # ================================================================ the stream
-def conditioned_stretch(strain, rate_in, start, bandpass, block_s=1.0):
+def conditioned_stretch(strain, rate_in, start, bandpass, block_s):
     """The conditioned stream of a stretch of raw strain, as the online worker
     conditions it: `bandpass` (`BandPassDownSampling`, zero phase) fed one
     block at a time; the first block it emits, which has no real past, is
@@ -900,7 +1038,7 @@ def conditioned_stretch(strain, rate_in, start, bandpass, block_s=1.0):
     return np.concatenate(out), t0, float(bandpass.resampling)
 
 
-def whitened_stretch(strain, rate_in, start, history, bandpass=None, block_s=1.0, held=None,
+def whitened_stretch(strain, rate_in, start, history, bandpass=None, block_s=None, held=None,
                      normalise=False):
     """The zero-phase whitened stream of a stretch of strain, as the online
     worker whitens it: the conditioning (`conditioned_stretch`) when
@@ -919,7 +1057,8 @@ def whitened_stretch(strain, rate_in, start, history, bandpass=None, block_s=1.0
     :param history: the models the run applied.
     :param bandpass: `BandPassDownSampling` to condition with, or None when
         `strain` is already conditioned at the models' rate.
-    :param block_s: the worker's block, s.
+    :param block_s: the worker's block (`len`), s; required with
+        `bandpass`.
     :param held: `hrss._held` (``band``, ``blend``) when `HoldOutsideBand`
         was on, else None.
     :param normalise: divide each sample by its model's sigma (the units the
@@ -930,6 +1069,8 @@ def whitened_stretch(strain, rate_in, start, history, bandpass=None, block_s=1.0
     from scipy.signal import fftconvolve
 
     if bandpass is not None:
+        if block_s is None:
+            raise ValueError("the conditioning needs the worker's block, block_s")
         x, t0, rate = conditioned_stretch(strain, rate_in, start, bandpass, block_s)
     else:
         x, t0, rate = np.asarray(strain, dtype=float), float(start), float(rate_in)

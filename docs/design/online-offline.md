@@ -431,9 +431,21 @@ it, with no detection threshold, in one basis:
   in noise units, down to `CompletionStopSNR` or `CompletionMaxAtoms`, and
   returns their sum.
 
+The completion runs only for an event whose tiles cover its own span
+poorly. `tile_coverage(tiles, settings, rate)` marks the tiles on the mask's
+grid, bridges the holes between occupied time cells
+(`CompletionBridgeGap`), fills each time cell from its lowest occupied cell
+to its highest, and returns the fraction of that span the tiles occupy. It
+reads the tiles alone -- no stream, no track, no truth -- so it is the same
+online and offline, and it is symmetric in time and in sweep direction. When
+it is above `CompletionMaxTileCoverage` and the sparse reconstruction is
+given, `complete` returns the sparse reconstruction unchanged, with
+`completed` False and `method` "sparse"; without a sparse reconstruction the
+completion runs. `CompletionMaxTileCoverage` 1 completes every event.
+
 `complete(stream, fs, tiles, settings, track, reference, sparse)` returns a
 `CompletedWaveform`: the waveform on the stream's sampling in the stream's
-units, NaN-free; the mask; the noise scale; the coefficients kept; the
+units, NaN-free; `completed` and `tile_coverage`; the mask; the noise scale; the coefficients kept; the
 coverage (the fraction of `reference` -- the track, or a known ridge -- the
 mask holds); the overlap with the sparse reconstruction. `strain(taps, band,
 bandpass)` brings it back to strain through `hrss.strain_from_whitened` with
@@ -447,6 +459,13 @@ an injected strain it gives the injection as the search saw it.
 `energy_ridge` gives a model-free ridge of a known waveform for the coverage;
 `hole_fraction` the share of a known waveform's energy where a reconstruction
 is zero.
+
+Every default of the stage is in one place, the `DEFAULTS` dictionary of the
+module, keyed by parameter name; `CompletionSettings.from_parameters(par,
+rate, defaults)` takes a key from the run when it sets it, else from
+`defaults` (`DEFAULTS` when None), and writes every value used back to the
+run. `CompletionSettings.defaults(rate, **values)` builds the settings with
+every key at its default but those given.
 
 Nothing calls the stage by default; it changes no run output.
 
@@ -759,7 +778,7 @@ module reads the two lists as written and recomputes no background.
 | `CompletionMethod` | "mask" | completion: invert every coefficient inside the mask, or "mp" fit sine-Gaussian atoms inside it |
 | `CompletionBasis` | "CosinePackets32" | `CosinePackets<m>`, `LocalCos<M>` or a p4TSA wavelet |
 | `CompletionPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |
-| `CompletionSlot` | 64 samples / rate | the mask's time cell, s |
+| `CompletionSlot` | `CompletionSlotSamples` / rate | the mask's time cell, s |
 | `CompletionOctaveStep` | 0.125 | the mask's frequency cell, octaves |
 | `CompletionTileBand` | "extent" | each tile's whole band, or "centroid" `CompletionBand` octaves around the tiles' centroid per time cell |
 | `CompletionBridgeGap` | 4.0 s | a hole between occupied time cells shorter than this is bridged in log-frequency; 0 bridges nothing |
@@ -768,6 +787,10 @@ module reads the two lists as written and recomputes no background.
 | `CompletionDilationOctaves` | 0.5 | ... and by this in frequency, on each side |
 | `CompletionThreshold` | 1.0 | soft threshold on the kept coefficients, in the piece's noise scale; 0 for none |
 | `CompletionPad` | 0.5 s | the waveform before the first tile and after the last |
+| `CompletionMaxTileCoverage` | 0.95 | the completion runs when the event's tile coverage is at or below this; above, the sparse reconstruction is returned; 1 completes every event |
+| `CompletionSlotSamples` | 64 | `CompletionSlot` when not set, in samples at the stream's rate |
+| `CompletionMarginSegments` | 4 | segments of a cosine-packet or local cosine basis transformed beyond the mask on each side |
+| `CompletionWaveletMargin` | 0.5 s | the same margin for a p4TSA wavelet |
 | `CompletionLowFrequency` | `MinFrequency` | the mask's floor, Hz |
 | `CompletionStopSNR`, `CompletionMaxAtoms` | 4.0, 200 | "mp": the pursuit stops below this SNR, or after this many atoms |
 | `CompletionQs`, `CompletionFrequencyCount` | (1, 2, 4, 8, 16), 40 | "mp": the atoms' quality factors and frequencies (log-spaced over the mask's band) |
