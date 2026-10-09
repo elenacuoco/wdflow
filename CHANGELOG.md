@@ -3,7 +3,7 @@
 Versions follow [semantic versioning](https://semver.org). A release records
 what the software does differently, not how it came to.
 
-## Unreleased
+## 1.4.0 --- 2026-10-09
 
 ### Added
 
