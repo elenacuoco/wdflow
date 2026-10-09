@@ -44,11 +44,6 @@ ALLOWED_VALUES = {0, 1, 2, -1, 0.5, -0.5}
 FLOAT_GUARDS = {1e-300, 1e-30, 1e-12, 1e-9}
 #: Files whose numbers are constants of nature, units and formulas.
 EXEMPT = {"wdf/config/constants.py"}
-#: Files left out for now, with the reason.
-PENDING = {
-    "wdf/analysis/waveform_completion.py":
-        "being changed on this branch by another task; its values move with it",
-}
 #: Keyword arguments whose values are presentation.
 STYLE_KEYWORDS = {"figsize", "dpi", "fontsize", "alpha", "lw", "linewidth", "linewidths", "s",
                   "height", "zorder", "markersize", "ms", "pad", "labelpad", "ncol", "width"}
@@ -134,7 +129,7 @@ def literal_violations(path):
 def test_no_analysis_value_is_written_in_the_code():
     found = []
     for rel, path in modules():
-        if rel in EXEMPT or rel in PENDING:
+        if rel in EXEMPT:
             continue
         found += [f"{rel}:{v}" for v in literal_violations(path)]
     assert not found, ("numbers written in the code; move them to wdf/config/defaults.toml "
@@ -159,8 +154,6 @@ def test_no_fallback_is_written_in_the_code():
     belongs to the defaults file (`wdf.config.defaults.parameter`)."""
     found = []
     for rel, path in modules():
-        if rel in PENDING:
-            continue
         for node in ast.walk(ast.parse(open(path).read())):
             if _run_key_read(node) and len(node.args) == 3 and _fallback(node.args[2]):
                 found.append(f"{rel}:{node.lineno}: {node.args[1].value} = {node.args[2].value!r}")
