@@ -38,9 +38,25 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence,
 import numpy as np
 import pandas as pd
 
+from wdf.config.constants import (CHIRP_MASS_PRODUCT_EXPONENT, CHIRP_MASS_SUM_EXPONENT,
+                                  SCIPY_PADLEN_PER_TAP)
+from wdf.config.defaults import defaults
 from wdf.mock import waveforms
 from wdf.mock.noise import (DEFAULT_PSD, analytic_psd, coloured_noise,
                             white_noise, white_psd)
+
+_MOCK = defaults("mock")
+_D = defaults("mock.dataset")
+_BBH = defaults("mock.dataset.cbc.bbh")
+_BHNS = defaults("mock.dataset.cbc.bhns")
+_BNS = defaults("mock.dataset.cbc.bns")
+_POPULATION = defaults("mock.dataset.chirp_mass_population")
+_GAUSSIAN = defaults("mock.dataset.glitches.gaussian")
+_SINE_GAUSSIAN = defaults("mock.dataset.glitches.sine_gaussian")
+_BLIP = defaults("mock.dataset.glitches.blip")
+_CHIRPLIKE = defaults("mock.dataset.glitches.chirplike")
+_SCATTERED = defaults("mock.dataset.glitches.scattered_light")
+_TRACK = defaults("mock.waveforms.cbc_track")
 
 
 GROUND_TRUTH_COLUMNS = [
@@ -100,7 +116,7 @@ GROUND_TRUTH_COLUMNS = [
 PER_DETECTOR_PREFIXES = ("gps_", "gps_start_", "gps_end_", "snr_")
 
 
-def truth_columns(detectors=("H1", "L1")):
+def truth_columns(detectors=_MOCK["detectors"]):
     """The truth table's columns for a given network.
 
     :data:`GROUND_TRUTH_COLUMNS` names the two LIGO detectors, which is the
@@ -132,8 +148,8 @@ def _sensitivity(relative_sensitivity, ifo):
 
 def optimal_snr(
     strain,
-    sample_rate=2048,
-    low_frequency_cutoff=5.0,
+    sample_rate=_MOCK["sample_rate"],
+    low_frequency_cutoff=_MOCK["low_frequency_cutoff"],
     high_frequency_cutoff=None,
     psd_name=DEFAULT_PSD,
     psd=None,
@@ -208,7 +224,7 @@ def optimal_snr(
     return value if np.isfinite(value) else 0.0
 
 
-def project_cbc(hp, hc, ra, dec, polarization, gps, detectors=("H1", "L1")):
+def project_cbc(hp, hc, ra, dec, polarization, gps, detectors=_MOCK["detectors"]):
     """Project plus and cross polarisations onto the detector network.
 
     Each detector sees `F+ hp + Fx hc`, with its own antenna response evaluated
@@ -258,7 +274,8 @@ def project_cbc(hp, hc, ra, dec, polarization, gps, detectors=("H1", "L1")):
 # `waveforms.CBC_CLASSES`. It is a property of the set being generated and not
 # of the search: an efficiency averaged over classes says as much about this
 # mixture as about the pipeline, so a set states the mixture it was drawn with.
-DEFAULT_CBC_MIX = (0.50, 0.28, 0.22)
+# ``[mock.dataset] cbc_mix``; each class's ranges are ``[mock.dataset.cbc.<class>]``.
+DEFAULT_CBC_MIX = _D["cbc_mix"]
 
 
 def _draw_cbc(rng, snr_range, cbc_mix=DEFAULT_CBC_MIX):
@@ -281,20 +298,20 @@ def _draw_cbc(rng, snr_range, cbc_mix=DEFAULT_CBC_MIX):
     subclass = str(rng.choice(waveforms.CBC_CLASSES, p=mix / mix.sum()))
 
     if subclass == "bbh":
-        mass1 = rng.uniform(15.0, 50.0)
-        mass2 = rng.uniform(10.0, 40.0)
-        f_lower = 20.0
-        approximant = "IMRPhenomD"
+        mass1 = rng.uniform(*_BBH["mass1"])
+        mass2 = rng.uniform(*_BBH["mass2"])
+        f_lower = _BBH["f_lower"]
+        approximant = _BBH["approximant"]
     elif subclass == "bhns":
-        mass1 = rng.uniform(6.0, 20.0)
-        mass2 = rng.uniform(1.2, 2.0)
-        f_lower = 25.0
-        approximant = "TaylorF2"
+        mass1 = rng.uniform(*_BHNS["mass1"])
+        mass2 = rng.uniform(*_BHNS["mass2"])
+        f_lower = _BHNS["f_lower"]
+        approximant = _BHNS["approximant"]
     else:
-        mass1 = rng.uniform(1.2, 2.0)
-        mass2 = rng.uniform(1.2, 2.0)
-        f_lower = 25.0
-        approximant = "TaylorF2"
+        mass1 = rng.uniform(*_BNS["mass1"])
+        mass2 = rng.uniform(*_BNS["mass2"])
+        f_lower = _BNS["f_lower"]
+        approximant = _BNS["approximant"]
 
     mass1, mass2 = max(mass1, mass2), min(mass1, mass2)
 
@@ -304,8 +321,8 @@ def _draw_cbc(rng, snr_range, cbc_mix=DEFAULT_CBC_MIX):
         "approximant": approximant,
         "mass1": float(mass1),
         "mass2": float(mass2),
-        "spin1z": float(rng.uniform(-0.5, 0.5)) if subclass == "bbh" else 0.0,
-        "spin2z": float(rng.uniform(-0.5, 0.5)) if subclass == "bbh" else 0.0,
+        "spin1z": float(rng.uniform(*_BBH["spin"])) if subclass == "bbh" else 0.0,
+        "spin2z": float(rng.uniform(*_BBH["spin"])) if subclass == "bbh" else 0.0,
         "inclination": float(np.arccos(rng.uniform(-1.0, 1.0))),
         "ra": float(rng.uniform(0.0, 2.0 * np.pi)),
         "dec": float(np.arcsin(rng.uniform(-1.0, 1.0))),
@@ -350,13 +367,8 @@ def _draw_snr(rng, snr_range, snr_core=None):
 # the systems whose tracks are long and low (a few solar masses, tens of
 # seconds from 20 Hz) to those that are short and end low (tens, a fraction of
 # a second), with the mass ratio and spins of the binary-black-hole class.
-DEFAULT_CHIRP_MASS_POPULATION = {
-    "chirp_mass": (5.0, 30.0),
-    "mass_ratio": (1.0, 4.0),
-    "spin": (-0.5, 0.5),
-    "f_lower": 20.0,
-    "approximant": "IMRPhenomD",
-}
+# ``[mock.dataset.chirp_mass_population]``.
+DEFAULT_CHIRP_MASS_POPULATION = dict(_POPULATION)
 
 
 def component_masses(chirp_mass, mass_ratio):
@@ -373,14 +385,14 @@ def component_masses(chirp_mass, mass_ratio):
     q = float(mass_ratio)
     if q < 1.0 or float(chirp_mass) <= 0.0:
         raise ValueError("mass_ratio must be at least 1 and chirp_mass positive")
-    mass2 = float(chirp_mass) * (1.0 + q) ** 0.2 / q ** 0.6
+    mass2 = float(chirp_mass) * (1.0 + q) ** CHIRP_MASS_SUM_EXPONENT / q ** CHIRP_MASS_PRODUCT_EXPONENT
     return q * mass2, mass2
 
 
 def chirp_mass_of(mass1, mass2):
     """Chirp mass of two component masses, in their units."""
     mass1, mass2 = float(mass1), float(mass2)
-    return (mass1 * mass2) ** 0.6 / (mass1 + mass2) ** 0.2
+    return (mass1 * mass2) ** CHIRP_MASS_PRODUCT_EXPONENT / (mass1 + mass2) ** CHIRP_MASS_SUM_EXPONENT
 
 
 def _draw_cbc_by_chirp_mass(rng, snr_range, population, snr_core=None):
@@ -392,7 +404,9 @@ def _draw_cbc_by_chirp_mass(rng, snr_range, population, snr_core=None):
     each factor of chirp mass, and so each factor of track length, gets the
     same share of injections, and the long light systems are not a minority.
     The mass ratio is uniform over its range. Sky, polarisation and
-    inclination are drawn as for every compact binary here.
+    inclination are drawn as for every compact binary here. A secondary
+    lighter than ``[mock.dataset] neutron_star_max_mass`` labels the binary
+    ``bhns``, otherwise ``bbh``.
 
     :param rng: the generator the draw comes from.
     :param snr_range: the network signal-to-noise ratio range.
@@ -409,7 +423,7 @@ def _draw_cbc_by_chirp_mass(rng, snr_range, population, snr_core=None):
     chirp_mass = float(np.exp(rng.uniform(np.log(low), np.log(high))))
     mass_ratio = float(rng.uniform(*settings["mass_ratio"]))
     mass1, mass2 = component_masses(chirp_mass, mass_ratio)
-    subclass = "bbh" if mass2 >= 3.0 else "bhns"
+    subclass = "bbh" if mass2 >= _D["neutron_star_max_mass"] else "bhns"
     return {
         "category": "cbc",
         "subclass": subclass,
@@ -504,7 +518,10 @@ def _polarisations(spec, sample_rate):
 
 
 def _draw_glitch(rng, snr_range, detectors):
-    """Draw parameters for one single-detector glitch injection."""
+    """Draw parameters for one single-detector glitch injection.
+
+    Each class's ranges are ``[mock.dataset.glitches.<class>]``.
+    """
     subclass = str(rng.choice(waveforms.GLITCH_CLASSES))
     params = {
         "category": "glitch",
@@ -514,21 +531,21 @@ def _draw_glitch(rng, snr_range, detectors):
     }
 
     if subclass == "gaussian":
-        params["sigma_t"] = float(rng.uniform(0.002, 0.020))
+        params["sigma_t"] = float(rng.uniform(*_GAUSSIAN["sigma_t"]))
     elif subclass == "sine_gaussian":
-        params["f0"] = float(rng.uniform(60.0, 600.0))
-        params["q"] = float(rng.uniform(5.0, 30.0))
+        params["f0"] = float(rng.uniform(*_SINE_GAUSSIAN["f0"]))
+        params["q"] = float(rng.uniform(*_SINE_GAUSSIAN["q"]))
     elif subclass == "blip":
-        params["f0"] = float(rng.uniform(80.0, 500.0))
-        params["q"] = float(rng.uniform(2.0, 5.0))
+        params["f0"] = float(rng.uniform(*_BLIP["f0"]))
+        params["q"] = float(rng.uniform(*_BLIP["q"]))
     elif subclass == "chirplike":
-        params["f_start"] = float(rng.uniform(25.0, 80.0))
-        params["f_end"] = float(rng.uniform(150.0, 700.0))
-        params["chirp_duration"] = float(rng.uniform(0.2, 1.5))
+        params["f_start"] = float(rng.uniform(*_CHIRPLIKE["f_start"]))
+        params["f_end"] = float(rng.uniform(*_CHIRPLIKE["f_end"]))
+        params["chirp_duration"] = float(rng.uniform(*_CHIRPLIKE["duration"]))
     elif subclass == "scattered_light":
-        params["f_peak"] = float(rng.uniform(20.0, 60.0))
-        params["arch_period"] = float(rng.uniform(0.5, 2.0))
-        params["n_arches"] = int(rng.integers(2, 6))
+        params["f_peak"] = float(rng.uniform(*_SCATTERED["f_peak"]))
+        params["arch_period"] = float(rng.uniform(*_SCATTERED["arch_period"]))
+        params["n_arches"] = int(rng.integers(*_SCATTERED["n_arches"]))
     else:
         raise ValueError(f"Unsupported glitch subclass: {subclass}")
 
@@ -653,7 +670,7 @@ def _detector_share(spec, gps, detectors, relative_sensitivity=None):
 
 
 def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
-                            attempts=500, relative_sensitivity=None):
+                            attempts=_D["floor_attempts"], relative_sensitivity=None):
     """Redraw sky and orientation until every detector receives `floor`.
 
     The population this produces is the one every detector sees: sources whose
@@ -703,7 +720,7 @@ def _enforce_detector_floor(rng, spec, gps, detectors, snr_range, floor,
 
 
 def _enforce_detector_ranges(rng, spec, gps, detectors, ranges,
-                             attempts=2000, relative_sensitivity=None):
+                             attempts=_D["range_attempts"], relative_sensitivity=None):
     """Redraw sky and orientation until named detectors can each fall in range.
 
     One source is seen by every detector through its own antenna response, so
@@ -777,19 +794,19 @@ def _edge_pads(edge_pad):
 
 
 def draw_injections(
-    n_cbc=250,
-    n_glitch=750,
-    n_ccsn=0,
+    n_cbc=_D["n_cbc"],
+    n_glitch=_D["n_glitch"],
+    n_ccsn=_D["n_ccsn"],
     ccsn_catalogue=None,
-    duration=28800.0,
+    duration=_D["duration"],
     start_gps=0.0,
-    edge_pad=500.0,
-    snr_range=(4.0, 50.0),
-    seed=0,
-    sample_rate=2048,
-    detectors=("H1", "L1"),
-    minimum_gap=1.0,
-    detector_delay_pad=0.02,
+    edge_pad=_D["edge_pad"],
+    snr_range=_D["snr_range"],
+    seed=_D["seed"],
+    sample_rate=_MOCK["sample_rate"],
+    detectors=_MOCK["detectors"],
+    minimum_gap=_D["minimum_gap"],
+    detector_delay_pad=_D["detector_delay_pad"],
     strict=True,
     cbc_mix=DEFAULT_CBC_MIX,
     min_detector_snr=None,
@@ -837,6 +854,8 @@ def draw_injections(
     over those that do (:func:`_enforce_detector_ranges`). ``snr_range`` and
     ``snr_core`` then no longer set the loudness of those injections. It
     excludes ``min_detector_snr``.
+
+    Defaults: ``[mock.dataset]`` and ``[mock]`` of wdf/config/defaults.toml.
     """
     if detector_snr_range is not None:
         if min_detector_snr is not None:
@@ -973,11 +992,11 @@ def draw_injections(
 
 def band_limit(
     strain,
-    sample_rate=2048,
-    low_frequency_cutoff=5.0,
+    sample_rate=_MOCK["sample_rate"],
+    low_frequency_cutoff=_MOCK["low_frequency_cutoff"],
     high_frequency_cutoff=None,
-    order=8,
-    edge_fraction=0.05,
+    order=_D["band_limit_order"],
+    edge_fraction=_D["band_limit_edge_fraction"],
 ):
     """Apply a zero-phase band limit to a generated glitch.
 
@@ -988,7 +1007,8 @@ def band_limit(
     begins or ends on a step, and a step is wideband --- whitening then gives
     the injection an edge it does not have. The ends are therefore brought to
     zero over `edge_fraction` of the series, and the signal-to-noise that
-    removes is the part the step was carrying.
+    removes is the part the step was carrying. Defaults: ``[mock]`` and
+    ``[mock.dataset] band_limit_*``.
 
     :param strain: the generated pulse, one detector's worth.
     :type sample_rate: float
@@ -1043,7 +1063,7 @@ def band_limit(
         btype = "lowpass"
 
     sos = butter(order, wn, btype=btype, fs=sample_rate, output="sos")
-    default_pad = 3 * (2 * len(sos) + 1)
+    default_pad = SCIPY_PADLEN_PER_TAP * (2 * len(sos) + 1)
     padlen = min(default_pad, x.size - 1)
     limited = sosfiltfilt(sos, x, padlen=max(padlen, 0))
     return _to_zero_at_the_ends(limited, edge_fraction)
@@ -1297,7 +1317,7 @@ def _write_frames(
     channel_suffix,
     outdir,
     tag,
-    frame_length=1024.0,
+    frame_length=_MOCK["frame_length"],
 ):
     """Write consecutive GWF frames and an FFL index for one detector."""
     data = np.asarray(data, dtype=float).reshape(-1)
@@ -1310,7 +1330,7 @@ def _write_frames(
     per_frame_float = frame_length * sample_rate
     per_frame = int(round(per_frame_float))
     if per_frame <= 0 or not np.isclose(
-        per_frame, per_frame_float, rtol=0.0, atol=1e-8
+        per_frame, per_frame_float, rtol=0.0, atol=_MOCK["integer_tolerance"]
     ):
         raise ValueError("frame_length * sample_rate must be a positive integer")
 
@@ -1345,34 +1365,34 @@ def _write_frames(
 
 def generate_dataset(
     outdir,
-    duration=28800.0,
-    start_gps=1400000000.0,
-    sample_rate=2048,
-    n_cbc=250,
-    n_glitch=750,
-    n_ccsn=0,
+    duration=_D["duration"],
+    start_gps=_D["start_gps"],
+    sample_rate=_MOCK["sample_rate"],
+    n_cbc=_D["n_cbc"],
+    n_glitch=_D["n_glitch"],
+    n_ccsn=_D["n_ccsn"],
     ccsn_catalogue=None,
-    snr_range=(4.0, 50.0),
-    seed=0,
-    detectors=("H1", "L1"),
-    edge_pad=500.0,
-    low_frequency_cutoff=5.0,
+    snr_range=_D["snr_range"],
+    seed=_D["seed"],
+    detectors=_MOCK["detectors"],
+    edge_pad=_D["edge_pad"],
+    low_frequency_cutoff=_MOCK["low_frequency_cutoff"],
     high_frequency_cutoff=None,
     analysis_sample_rate=None,
     psd_name=DEFAULT_PSD,
     channel_suffix="MOCK-STRAIN",
-    write_background=True,
-    background_transients=False,
-    frame_length=1024.0,
-    minimum_injection_gap=1.0,
+    write_background=_D["write_background"],
+    background_transients=_D["background_transients"],
+    frame_length=_MOCK["frame_length"],
+    minimum_injection_gap=_D["minimum_gap"],
     strict=True,
     cbc_mix=DEFAULT_CBC_MIX,
     min_detector_snr=None,
-    noise="coloured",
+    noise=_D["noise"],
     relative_sensitivity=None,
     cbc_population=None,
     snr_core=None,
-    track_points=64,
+    track_points=_TRACK["n_points"],
     detector_snr_range=None,
 ):
     """Generate and write a complete mock foreground/background data set.
@@ -1421,6 +1441,10 @@ def generate_dataset(
     loudness by the optimal signal-to-noise ratio the named detectors receive
     instead of by the network's; see :func:`draw_injections`.
 
+    Defaults: ``[mock]``, ``[mock.dataset]`` and ``[mock.waveforms.cbc_track]
+    n_points`` of wdf/config/defaults.toml. Detector ``i``'s noise is seeded
+    with ``seed + [mock] noise_seed_stride * (i + 1)``.
+
     :return: pandas.DataFrame -- the foreground truth table. The background's,
         when one is written, is on disk beside it.
     """
@@ -1463,7 +1487,7 @@ def generate_dataset(
 
     nsamples_float = duration * sample_rate
     nsamples = int(round(nsamples_float))
-    if not np.isclose(nsamples, nsamples_float, rtol=0.0, atol=1e-8):
+    if not np.isclose(nsamples, nsamples_float, rtol=0.0, atol=_MOCK["integer_tolerance"]):
         raise ValueError("duration * sample_rate must be an integer")
 
     os.makedirs(outdir, exist_ok=True)
@@ -1496,7 +1520,7 @@ def generate_dataset(
     # measurement interpolates from.
     psd = None
     if noise == "white":
-        delta_f = 1.0 / 16.0
+        delta_f = _MOCK["white_psd_delta_f"]
         flat = white_psd(int(0.5 * sample_rate / delta_f) + 1, delta_f,
                          sample_rate)
         psd = {ifo: flat for ifo in detectors}
@@ -1522,14 +1546,14 @@ def generate_dataset(
                 series = white_noise(
                     start_gps,
                     start_gps + duration,
-                    seed=seed + 1000 * (index + 1),
+                    seed=seed + _MOCK["noise_seed_stride"] * (index + 1),
                     sample_rate=sample_rate,
                 )
             else:
                 series = coloured_noise(
                     start_gps,
                     start_gps + duration,
-                    seed=seed + 1000 * (index + 1),
+                    seed=seed + _MOCK["noise_seed_stride"] * (index + 1),
                     sample_rate=sample_rate,
                     low_frequency_cutoff=f_low,
                     psd_name=psd_name,

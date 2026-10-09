@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import numpy as np
 
-DEFAULT_PSD = "aLIGOZeroDetHighPower"
+from wdf.config.defaults import defaults
+
+_MOCK = defaults("mock")
+_NOISE = defaults("mock.noise")
+
+DEFAULT_PSD = _MOCK["psd_name"]
 
 
 def analytic_psd(length, delta_f, low_frequency_cutoff, psd_name=DEFAULT_PSD):
@@ -32,13 +37,14 @@ def analytic_psd(length, delta_f, low_frequency_cutoff, psd_name=DEFAULT_PSD):
     return from_string(psd_name, length, delta_f, low_frequency_cutoff)
 
 
-def coloured_noise(start_time, end_time, seed=0, sample_rate=2048,
-                   low_frequency_cutoff=5.0, psd_name=DEFAULT_PSD,
-                   filter_duration=128):
+def coloured_noise(start_time, end_time, seed=0, sample_rate=_MOCK["sample_rate"],
+                   low_frequency_cutoff=_MOCK["low_frequency_cutoff"], psd_name=DEFAULT_PSD,
+                   filter_duration=_NOISE["filter_duration"]):
     """Gaussian noise coloured by an analytic PSD, reproducible from `seed`.
 
     Generation is continuous across the whole span, so there are no
-    discontinuities that a transient search would flag.
+    discontinuities that a transient search would flag. Defaults: ``[mock]``
+    and ``[mock.noise]`` of wdf/config/defaults.toml.
 
     :type start_time: float
     :param start_time: GPS time of the first sample.
@@ -89,7 +95,7 @@ def white_psd(length, delta_f, sample_rate):
                            delta_f=float(delta_f))
 
 
-def white_noise(start_time, end_time, seed=0, sample_rate=2048):
+def white_noise(start_time, end_time, seed=0, sample_rate=_MOCK["sample_rate"]):
     """Unit-variance white Gaussian noise, reproducible from `seed`.
 
     Independent samples of a standard normal, which is what a perfectly

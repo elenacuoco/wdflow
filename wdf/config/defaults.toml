@@ -503,3 +503,165 @@ minimum = 5  # [count] fewest blocks with a usable scale for local_noise_scale t
 
 [submission]
 missing_value = -999.0  # [-] file-format sentinel written for a submission column the pipeline does not provide (fixed by the challenge format)
+
+# ============================================================================
+# Mock data generator (wdf/mock). Edit these tables, or pass the arguments, to
+# generate a different mock.
+
+[mock]
+sample_rate = 2048  # [Hz] rate mock series are generated and written at
+low_frequency_cutoff = 5.0  # [Hz] low edge of coloured-noise generation and of the band injection SNRs are counted in
+psd_name = "aLIGOZeroDetHighPower"  # [name] analytic pycbc PSD of coloured noise and of SNRs without a measured spectrum
+white_psd_delta_f = 0.0625  # [Hz] frequency step of the flat PSD white-noise SNRs are measured against (1/16 Hz)
+detectors = ["H1", "L1"]  # [name] detector network of a mock set
+frame_length = 1024.0  # [s] length of each written GWF frame
+noise_seed_stride = 1000  # [count] detector i's noise seed is seed + stride * (i + 1)
+integer_tolerance = 1e-8  # [samples] round-off allowed when duration * rate or frame_length * rate must be integers
+
+[mock.noise]
+filter_duration = 128  # [s] length of the colouring filter of coloured noise
+
+[mock.waveforms.cbc]
+distance = 100.0  # [Mpc] luminosity distance of a generated compact binary (scale is discarded)
+inclination = 0.0  # [rad] inclination of a generated compact binary
+f_lower = 20.0  # [Hz] starting frequency of a generated compact binary
+approximant = "IMRPhenomD"  # [name] pycbc time-domain approximant of a generated compact binary
+
+[mock.waveforms.cbc_track]
+n_points = 64  # [count] points of a compact binary's time-frequency truth track
+amplitude_floor = 0.1  # [-] fraction of the peak amplitude at which the track ends after the peak
+onset_fraction = 1e-3  # [-] fraction of the peak amplitude at which the track begins
+min_frequency = 1e-3  # [Hz] floor of the track's first frequency for its logarithmic grid
+
+[mock.waveforms.gaussian]
+sigma_t = 0.005  # [s] width of the Gaussian pulse
+n_sigma = 6.0  # [-] half-length of the generated pulse, in widths
+
+[mock.waveforms.sine_gaussian]
+f0 = 150.0  # [Hz] central frequency of the sine-Gaussian
+q = 12.0  # [-] quality factor of the sine-Gaussian
+n_tau = 4.0  # [-] half-length of the generated burst, in decay times
+
+[mock.waveforms.blip]
+f0 = 250.0  # [Hz] central frequency of the blip
+q = 3.0  # [-] quality factor of the blip
+asymmetry = 3.0  # [-] ratio of decay to rise time of the blip
+n_tau = 6.0  # [-] half-length of the generated blip, in decay times
+
+[mock.waveforms.chirplike]
+f_start = 40.0  # [Hz] frequency at the start of the chirp-like sweep
+f_end = 400.0  # [Hz] frequency at the end of the chirp-like sweep
+duration = 0.5  # [s] duration of the chirp-like sweep
+envelope_width = 0.25  # [-] standard deviation of the Gaussian envelope, as a fraction of the duration
+
+[mock.waveforms.scattered_light]
+f_peak = 35.0  # [Hz] highest instantaneous frequency of a scattered-light arch
+arch_period = 1.0  # [s] duration of one scattered-light arch
+n_arches = 4  # [count] consecutive scattered-light arches
+
+[mock.waveforms.ccsn]
+high_pass_hz = 10.0  # [Hz] edge of the zero-phase high pass removing the supernova memory
+taper_seconds = 0.02  # [s] cosine taper bringing the end of a supernova waveform to zero
+anti_alias_order = 8  # [-] Butterworth order of the anti-alias low pass on the fine grid
+anti_alias_fraction_of_rate = 0.45  # [-] anti-alias low-pass edge as a fraction of the target rate
+high_pass_order = 4  # [-] Butterworth order of the memory high pass
+
+[mock.dataset]
+n_cbc = 250  # [count] compact binaries drawn
+n_glitch = 750  # [count] single-detector glitches drawn
+n_ccsn = 0  # [count] core-collapse supernovae drawn from a catalogue
+duration = 28800.0  # [s] length of a generated set
+start_gps = 1400000000.0  # [s] GPS time of the first sample of a generated set
+edge_pad = 500.0  # [s] span kept free of injections at each end
+snr_range = [4.0, 50.0]  # [-] network optimal SNR range drawn uniformly
+seed = 0  # [-] seed of the injection draw and of the noise
+minimum_gap = 1.0  # [s] least clear stretch between consecutive injection supports
+detector_delay_pad = 0.02  # [s] margin reserved on both sides of an injection support for arrival-time delays
+cbc_mix = [0.50, 0.28, 0.22]  # [-] probability of bbh, bhns, bns in a class-mixture draw
+floor_attempts = 500  # [count] sky redraws allowed to give every detector the min_detector_snr floor
+range_attempts = 2000  # [count] sky redraws allowed to put the named detectors in detector_snr_range
+noise = "coloured"  # [name] noise of a generated set: coloured (psd_name) or white (unit variance)
+write_background = true  # [bool] also write the noise-only background frames
+background_transients = false  # [bool] also write the glitches into the background frames
+band_limit_order = 8  # [-] Butterworth order of the band limit applied to a glitch
+band_limit_edge_fraction = 0.05  # [-] share of a glitch series each end is tapered to zero over
+neutron_star_max_mass = 3.0  # [Msun] secondary mass below which a chirp-mass draw is labelled bhns, else bbh
+
+[mock.dataset.cbc.bbh]
+mass1 = [15.0, 50.0]  # [Msun] uniform range of the first drawn mass of a binary black hole
+mass2 = [10.0, 40.0]  # [Msun] uniform range of the second drawn mass of a binary black hole
+spin = [-0.5, 0.5]  # [-] uniform range of each aligned spin of a binary black hole
+f_lower = 20.0  # [Hz] waveform starting frequency of a binary black hole
+approximant = "IMRPhenomD"  # [name] approximant of a binary black hole
+
+[mock.dataset.cbc.bhns]
+mass1 = [6.0, 20.0]  # [Msun] uniform range of the black-hole mass of a black hole-neutron star binary
+mass2 = [1.2, 2.0]  # [Msun] uniform range of the neutron-star mass of a black hole-neutron star binary
+f_lower = 25.0  # [Hz] waveform starting frequency of a black hole-neutron star binary
+approximant = "TaylorF2"  # [name] approximant of a black hole-neutron star binary (non-spinning)
+
+[mock.dataset.cbc.bns]
+mass1 = [1.2, 2.0]  # [Msun] uniform range of the first mass of a binary neutron star
+mass2 = [1.2, 2.0]  # [Msun] uniform range of the second mass of a binary neutron star
+f_lower = 25.0  # [Hz] waveform starting frequency of a binary neutron star
+approximant = "TaylorF2"  # [name] approximant of a binary neutron star (non-spinning)
+
+[mock.dataset.chirp_mass_population]
+chirp_mass = [5.0, 30.0]  # [Msun] detector-frame chirp-mass range, drawn uniform in its logarithm
+mass_ratio = [1.0, 4.0]  # [-] mass-ratio m1/m2 range, drawn uniformly
+spin = [-0.5, 0.5]  # [-] uniform range of each aligned spin
+f_lower = 20.0  # [Hz] waveform starting frequency
+approximant = "IMRPhenomD"  # [name] waveform approximant
+
+[mock.dataset.glitches.gaussian]
+sigma_t = [0.002, 0.020]  # [s] uniform range of the Gaussian pulse width
+
+[mock.dataset.glitches.sine_gaussian]
+f0 = [60.0, 600.0]  # [Hz] uniform range of the sine-Gaussian central frequency
+q = [5.0, 30.0]  # [-] uniform range of the sine-Gaussian quality factor
+
+[mock.dataset.glitches.blip]
+f0 = [80.0, 500.0]  # [Hz] uniform range of the blip central frequency
+q = [2.0, 5.0]  # [-] uniform range of the blip quality factor
+
+[mock.dataset.glitches.chirplike]
+f_start = [25.0, 80.0]  # [Hz] uniform range of the chirp-like start frequency
+f_end = [150.0, 700.0]  # [Hz] uniform range of the chirp-like end frequency
+duration = [0.2, 1.5]  # [s] uniform range of the chirp-like duration
+
+[mock.dataset.glitches.scattered_light]
+f_peak = [20.0, 60.0]  # [Hz] uniform range of the scattered-light arch peak frequency
+arch_period = [0.5, 2.0]  # [s] uniform range of the scattered-light arch duration
+n_arches = [2, 6]  # [count] range of the number of arches, low inclusive, high exclusive
+
+[mock.real_data]
+n_cbc = 60  # [count] compact binaries injected into recorded strain
+n_glitch = 60  # [count] glitches injected into recorded strain
+snr_range = [6.0, 60.0]  # [-] network optimal SNR range of injections into recorded strain
+minimum_gap = 400.0  # [s] least clear stretch between injections into recorded strain
+edge_pad = 400.0  # [s] span kept free of injections at each end of recorded strain
+low_frequency_cutoff = 20.0  # [Hz] low edge of the band injection SNRs are counted in on recorded strain
+psd_segment_s = 8.0  # [s] Welch averaging segment of the measured spectrum of recorded strain
+
+[mock.validation]
+bands = [[8.0, 16.0], [16.0, 32.0], [32.0, 64.0], [64.0, 128.0], [128.0, 256.0], [256.0, 512.0], [512.0, 1000.0]]  # [Hz] bands the noise of a white set is checked in
+spectrum_resolution = 0.0625  # [Hz] frequency resolution of the spectrum check (1/16 Hz)
+chunk_s = 256.0  # [s] chunk length the ideal band filter of the Gaussianity check is applied over
+tail_threshold_sigma = 3.0  # [-] deviations beyond which a sample counts in the Gaussianity tail
+tail_probability = 0.0013498980316301  # [-] one-sided Gaussian probability beyond tail_threshold_sigma; change with it
+max_lag_s = 0.01  # [s] half-width of the lag search of the matched-filter check
+
+[mock.benchmark]
+duration = 21600.0  # [s] length of the benchmark set
+start_gps = 1400000000.0  # [s] GPS time of the benchmark's first sample
+n_cbc = 300  # [count] compact binaries of the benchmark
+n_glitch = 0  # [count] glitches of the benchmark
+snr_range = [6.0, 20.0]  # [-] network optimal SNR range of the benchmark
+snr_core = [7.0, 12.0, 0.6]  # [-] (low, high, share): share of draws uniform in the core [low, high]
+seed = 20260927  # [-] seed of the benchmark's injections and noise
+detectors = ["H1", "L1", "V1"]  # [name] detector network of the benchmark
+edge_pad = 500.0  # [s] span kept free of injections at each end of the benchmark
+v1_relative_sensitivity = 0.32  # [-] Virgo amplitude sensitivity relative to the LIGO detectors
+minimum_injection_gap = 20.0  # [s] least clear stretch between benchmark injections
+worker_band_low = 12.0  # [Hz] low edge of the band the worker passes, for the recorded band loss
+worker_band_high_fraction = 0.9  # [fraction of Nyquist] high edge of the worker band, of the searched stream's Nyquist
