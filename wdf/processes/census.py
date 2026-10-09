@@ -18,14 +18,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wdf.config.constants import MAD_GAUSSIAN  # noqa: F401 (re-exported)
+from wdf.config.defaults import defaults
 from wdf.filtering import sosfiltfilt
 
-#: Median absolute deviation of a unit Gaussian: the robust standard deviation
-#: is the median absolute value divided by it.
-MAD_GAUSSIAN = 0.6745
+#: The defaults of the census: table ``[census]`` of wdf/config/defaults.toml.
+_CENSUS = defaults("census")
 
-#: Default order of the Butterworth filters that split the stream into octaves.
-DEFAULT_OCTAVE_FILTER_ORDER = 8
+#: Default order of the Butterworth filters that split the stream into octaves
+#: (`[census] GlitchOctaveOrder`).
+DEFAULT_OCTAVE_FILTER_ORDER = _CENSUS["GlitchOctaveOrder"]
 
 
 def octave_bands(rate, low):

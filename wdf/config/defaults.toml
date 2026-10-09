@@ -12,3 +12,64 @@
 # "<unset>" means not set (None): the code derives the value as the comment
 # states. Values tied to the sampling rate are in s, Hz or fractions of the
 # rate or of the Nyquist frequency.
+
+# ============================================================================
+# Signal conditioning: band-pass and decimation, zero-phase whitening, glitch
+# subtraction (M4) and the census of transients.
+
+[bandpass]
+BandPassFilter = "cheby2"  # [name] family of the band-pass: "cheby2" (Chebyshev type II band-pass) or "butterworth" (high-pass cascaded with a low-pass)
+BandPassPhase = "zero"  # [name] how the band-pass is applied: "zero" (forward and backward, one block of latency) or "causal" (forward only)
+FilterOrder = 10  # [count] order of the Chebyshev type II band-pass
+HighPassOrder = 4  # [count] order of the Butterworth high-pass ("butterworth" family)
+LowPassCorner = "<unset>"  # [Hz] corner of the Butterworth low-pass; unset: LowPassCornerFraction of the decimated Nyquist frequency
+LowPassCornerFraction = 0.87890625  # [fraction of Nyquist] corner of the Butterworth low-pass over the decimated Nyquist frequency (900 Hz at 2048 Hz)
+LowPassOrder = "<unset>"  # [count] order of the Butterworth low-pass; unset: the smallest order meeting AliasAttenuationDB
+AliasAttenuationDB = 50.0  # [dB] attenuation the Butterworth cascade must reach, in the response the data receive, from the lowest input frequency that folds onto the corner
+max_lowpass_order = 64  # [count] highest Butterworth low-pass order the alias requirement may ask for
+cheby2_cutoff_fraction = 0.9  # [fraction of Nyquist] upper edge of the Chebyshev type II band-pass over the decimated Nyquist frequency
+stopband_attenuation_db = 60.0  # [dB] stop-band attenuation of the Chebyshev type II band-pass, reached at its band edges
+settling_floor = 1e-12  # [-] fraction of the impulse response's peak below which the band-pass has settled (padlen)
+settling_limit_s = 8.0  # [s] longest impulse response searched for the settling length
+alias_response_points = 4097  # [count] frequencies (numerical setting) on which the response is read from the alias frequency to the input Nyquist
+passband_level_db = -3.0  # [dB] level of the response the data receive that defines the passband edges
+passband_resolution_hz = 0.0009765625  # [Hz] spacing of the frequencies the passband edges are read on (1/1024 Hz)
+
+[whitening.zero_phase]
+sqrt_order = 256  # [count] floor of the order of the square-root polynomial (ZeroPhaseWhitening); the model's own order is used when larger
+sqrt_grid = 32768  # [samples] FFT length (numerical setting) on which the square-root target is sampled and the spectrum interpolated
+band_blend_hz = 1.0  # [Hz] width of the raised cosine joining the held modulus to |A| inside each passband edge
+response_floor = 1e-8  # [-] fraction of the impulse response's peak below which the magnitude filter's tail is spent (its support)
+response_grid = 8388608  # [samples] FFT length (numerical setting) on which |A| is sampled to obtain the magnitude filter's impulse response
+response_support_divisor = 4  # [-] the measured support is refused when it reaches the response grid over this (numerical setting against the period folding the tail)
+response_taper = 0.1  # [-] fraction of the kept support over which the magnitude filter's two ends are Tukey-tapered
+truncation_s = 4.0  # [s] length of the truncated whitening filter (TruncatedWhitening), read half ahead; gwpy's fduration
+truncation_min_taps = 4  # [count] fewest taps a truncated filter may hold
+resolution_grid_factor = 4  # [-] FFT length of spectrum_at_resolution over the segment length (numerical setting; exact from 2)
+spectrum_segment_s = 4.0  # [s] segment length of the Welch estimates of the spectral whitenings and of the whitened level
+spectrum_average = "median"  # [name] how the Welch periodograms are combined, "median" or "mean"
+level_edge_divisor = 4  # [-] the whitened level of ZeroPhaseWhitening.from_spectrum drops min(order, length / this) samples at each end
+
+[glitch_subtraction]
+GlitchQs = [1.0, 2.0, 4.0, 8.0, 16.0]  # [-] quality factors of the sine-Gaussian bank
+GlitchTopFraction = 0.83984375  # [fraction of Nyquist] top frequency of the bank (860 Hz at 2048 Hz)
+GlitchFrequencyCount = 40  # [count] frequencies of the bank, log-spaced from LowFrequencyCut to its top
+GlitchAtomCutTau = 5.0  # [-] an atom is cut at this many tau on each side
+GlitchTrigger = 13.64  # [-] smallest census peak, in robust standard deviations, that seeds a fit
+GlitchFlag = 6.0  # [-] level, in robust standard deviations, a sample must exceed to belong to a transient
+GlitchMergeGap = 0.25  # [s] largest gap inside one transient
+GlitchCensusLow = "<unset>"  # [Hz] lowest octave of the census; unset: MinFrequency when set, else LowFrequencyCut
+GlitchExtentLow = "<unset>"  # [Hz] lowest octave a transient's extent is read from; unset: extent_low_factor times GlitchCensusLow
+extent_low_factor = 4.0  # [-] GlitchExtentLow over the census's lowest frequency when GlitchExtentLow is unset
+GlitchSeedPad = 0.1  # [s] added to half a transient's extent to give the half-width of the atom centres
+GlitchStopSNR = 6.0  # [-] the pursuit stops when the best atom's whitened SNR is below this
+GlitchMaxAtoms = 100  # [count] most atoms fitted to one seed
+GlitchProtectCoincident = true  # [bool] leave seeds coincident in two or more detectors unsubtracted
+GlitchCoincidenceJitter = 0.01  # [s] added to the light travel time between two detectors within which their seeds are coincident
+
+[census]
+GlitchOctaveOrder = 8  # [count] order of the Butterworth filters that split the whitened stream into octaves
+
+[census.causal]
+GlitchCensusMemory = 64.0  # [s] past of each stream on which the online census measures its robust standard deviation
+GlitchCensusMinimum = 8.0  # [s] past needed before the online census starts

@@ -6,7 +6,7 @@ same levels, read from the past only. Each block of the whitened stream is
 split into the broadband stream and its octaves from `GlitchCensusLow`
 (`octave_bands`) by causal Butterworth filters of order `GlitchOctaveOrder`
 (`octave_filter` run forward, its state carried). Each stream is divided by
-its robust standard deviation, ``median |s| / 0.6745``, measured on the
+its robust standard deviation, ``median |s| / MAD_GAUSSIAN``, measured on the
 `GlitchCensusMemory` seconds of that stream strictly before the block; until
 `GlitchCensusMinimum` seconds are held there is no census. A sample's level
 is the largest of these ratios; samples above `GlitchFlag` closer than
@@ -32,13 +32,22 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import sosfilt, sosfilt_zi
 
+from wdf.config.defaults import defaults
 from wdf.processes.census import (DEFAULT_OCTAVE_FILTER_ORDER, MAD_GAUSSIAN, octave_bands,
                                   octave_filter)
 
-#: Default seconds of past each stream's robust sigma is measured on.
-DEFAULT_CENSUS_MEMORY_S = 64.0
-#: Default seconds of past needed before the census starts.
-DEFAULT_CENSUS_MINIMUM_S = 8.0
+#: The defaults of the online census: table ``[census.causal]`` of
+#: wdf/config/defaults.toml; the others are those of the offline census
+#: (``[glitch_subtraction]``, ``[census]``).
+_CAUSAL = defaults("census.causal")
+#: The offline census's table, for the keys the two share.
+_GS = defaults("glitch_subtraction")
+
+#: Default seconds of past each stream's robust sigma is measured on
+#: (`GlitchCensusMemory`).
+DEFAULT_CENSUS_MEMORY_S = _CAUSAL["GlitchCensusMemory"]
+#: Default seconds of past needed before the census starts (`GlitchCensusMinimum`).
+DEFAULT_CENSUS_MINIMUM_S = _CAUSAL["GlitchCensusMinimum"]
 #: The glitch labels the online worker can apply (`GlitchLabel`).
 GLITCH_LABELS = ("census", "bases")
 
@@ -55,7 +64,7 @@ class CensusSettings:
     :param low: lowest octave, Hz (`GlitchCensusLow`, default `MinFrequency`,
         else `LowFrequencyCut`).
     :param extent_low: lowest octave of the extent, Hz (`GlitchExtentLow`,
-        default four times `low`).
+        default `[glitch_subtraction] extent_low_factor` times `low`).
     :param pad: added on each side of a transient's extent, s
         (`GlitchSeedPad`).
     :param order: octave filter order (`GlitchOctaveOrder`).
@@ -90,12 +99,15 @@ class CensusSettings:
             value = getattr(par, key, None)
             return default if value is None else value
 
-        low = float(get("GlitchCensusLow", getattr(par, "MinFrequency", None)
-                        or low_frequency_cut(par)))
+        low = get("GlitchCensusLow", _GS["GlitchCensusLow"])
+        low = float(getattr(par, "MinFrequency", None) or low_frequency_cut(par) if low is None
+                    else low)
+        extent_low = get("GlitchExtentLow", _GS["GlitchExtentLow"])
         out = cls(trigger=float(get("GlitchTrigger", gs.DEFAULT_TRIGGER)),
                   flag=float(get("GlitchFlag", gs.DEFAULT_FLAG)),
                   merge_s=float(get("GlitchMergeGap", gs.DEFAULT_MERGE_S)), low=low,
-                  extent_low=float(get("GlitchExtentLow", gs.DEFAULT_EXTENT_LOW_FACTOR * low)),
+                  extent_low=float(gs.DEFAULT_EXTENT_LOW_FACTOR * low if extent_low is None
+                                   else extent_low),
                   pad=float(get("GlitchSeedPad", gs.DEFAULT_SEED_PAD_S)),
                   order=int(get("GlitchOctaveOrder", DEFAULT_OCTAVE_FILTER_ORDER)),
                   memory_s=float(get("GlitchCensusMemory", DEFAULT_CENSUS_MEMORY_S)),

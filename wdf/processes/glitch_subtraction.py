@@ -19,8 +19,7 @@ The algorithm (greedy matching pursuit, "M4"):
    cut at ``|t| <= ceil(cut_tau tau fs) / fs``, for every quality factor of
    `GlitchQs` and every frequency of `bank_frequencies`: `GlitchFrequencyCount`
    frequencies log-spaced from `LowFrequencyCut` to `GlitchTopFraction` of the
-   Nyquist frequency (40, from 8 to 860 Hz at 2048 Hz in the 3 Oct runs), so
-   that the bank follows the rate. Its whitened image is ``h * g`` with ``h`` the
+   Nyquist frequency, so that the bank follows the rate. Its whitened image is ``h * g`` with ``h`` the
    whitening's zero-phase taps divided by its scale ``sigma``
    (`MagnitudeWhitening.taps` and `.sigma`), so that the whitened noise has
    unit variance.
@@ -32,8 +31,7 @@ The algorithm (greedy matching pursuit, "M4"):
 3. The pursuit. The atom with the largest SNR over the bank and over the
    centres allowed (within ``half_width`` of the seed) is subtracted from the
    residual; this repeats until the best SNR is below `stop_snr`
-   (`DEFAULT_STOP_SNR`, 6) or `max_atoms` (`DEFAULT_MAX_ATOMS`, 100) atoms have
-   been taken.
+   (`GlitchStopSNR`) or `max_atoms` (`GlitchMaxAtoms`) atoms have been taken.
 
 The projections ``<r, h * g_j>`` equal ``<h * r, g_j>`` because the taps are
 symmetric, and the residual is kept as the conditioned stream minus the model,
@@ -46,19 +44,21 @@ Where to fit (`glitch_seeds`). The census reads the whitened stream: its level
 is the largest ratio of the stream to its robust standard deviation, broadband
 and in each octave from `GlitchCensusLow` (the search's `MinFrequency`) up
 (`wdf.processes.gating.transients`). A transient whose peak reaches the
-trigger (`DEFAULT_TRIGGER`, 13.64, the gate's threshold) seeds a fit. Its
+trigger (`GlitchTrigger`, the gate's threshold) seeds a fit. Its
 **extent** is taken from the broadband stream and the octaves from
-`GlitchExtentLow` (four times the census's lowest frequency) only: the 16-32 Hz octave carries the
+`GlitchExtentLow` (by default `extent_low_factor` times the census's lowest frequency)
+only: the 16-32 Hz octave carries the
 whitening's own memory (2.7 s with the 16 s truncated filter) and would size
 the fit by the filter rather than the glitch. The seed is the time of the
 largest of those levels, and atoms may be centred within
-``extent / 2 + DEFAULT_SEED_PAD_S`` of it.
+``extent / 2 + GlitchSeedPad`` of it.
 
 Protection. A seed found in two or more detectors within their light travel
 time plus `GlitchCoincidenceJitter` may be a gravitational wave and is not
 subtracted (`protect_coincident`, `GlitchProtectCoincident`, on by default).
 
-Every choice is a run parameter read by `M4Settings.from_parameters`.
+Every choice is a run parameter read by `M4Settings.from_parameters`, whose
+defaults are table ``[glitch_subtraction]`` of wdf/config/defaults.toml.
 
 Public API: `M4Settings`, `bank_frequencies`, `Atom`, `SineGaussianBank`,
 `matching_pursuit`, `census_levels`, `glitch_seeds`, `protect_coincident`,
@@ -77,38 +77,46 @@ import numpy as np
 from scipy.signal import fftconvolve
 
 from wdf.analysis.detectors import light_travel_time
+from wdf.config.defaults import defaults
 from wdf.processes.census import (DEFAULT_OCTAVE_FILTER_ORDER, band_stream, octave_bands,
                                   robust_sigma, transients)
 
-#: Quality factors of the bank.
-DEFAULT_QS = (1.0, 2.0, 4.0, 8.0, 16.0)
-#: Top frequency of the bank as a fraction of the stream's Nyquist frequency:
-#: 860 Hz at 2048 Hz, the bank of the 3 Oct runs.
-DEFAULT_TOP_FRACTION = 860.0 / 1024.0
+#: The defaults of the M4 stage: table ``[glitch_subtraction]`` of
+#: wdf/config/defaults.toml. The names below are their aliases.
+_GS = defaults("glitch_subtraction")
+
+#: Quality factors of the bank (`GlitchQs`).
+DEFAULT_QS = _GS["GlitchQs"]
+#: Top frequency of the bank as a fraction of the stream's Nyquist frequency
+#: (`GlitchTopFraction`).
+DEFAULT_TOP_FRACTION = _GS["GlitchTopFraction"]
 #: Number of frequencies of the bank, log-spaced from its bottom (the run's
-#: `LowFrequencyCut`) to its top.
-DEFAULT_FREQUENCY_COUNT = 40
-#: The pursuit stops when the best atom's whitened SNR is below this.
-DEFAULT_STOP_SNR = 6.0
-#: ... or when this many atoms have been fitted to one seed.
-DEFAULT_MAX_ATOMS = 100
-#: Smallest census peak, in robust standard deviations, that seeds a fit.
-DEFAULT_TRIGGER = 13.64
+#: `LowFrequencyCut`) to its top (`GlitchFrequencyCount`).
+DEFAULT_FREQUENCY_COUNT = _GS["GlitchFrequencyCount"]
+#: The pursuit stops when the best atom's whitened SNR is below this
+#: (`GlitchStopSNR`).
+DEFAULT_STOP_SNR = _GS["GlitchStopSNR"]
+#: ... or when this many atoms have been fitted to one seed (`GlitchMaxAtoms`).
+DEFAULT_MAX_ATOMS = _GS["GlitchMaxAtoms"]
+#: Smallest census peak, in robust standard deviations, that seeds a fit
+#: (`GlitchTrigger`).
+DEFAULT_TRIGGER = _GS["GlitchTrigger"]
 #: Level, robust standard deviations, a sample must exceed to belong to a
-#: transient (the census's flag).
-DEFAULT_FLAG = 6.0
-#: Largest gap inside one transient, s.
-DEFAULT_MERGE_S = 0.25
-#: Seconds added to half the extent to give the half-width of the centres.
-DEFAULT_SEED_PAD_S = 0.1
+#: transient (the census's flag, `GlitchFlag`).
+DEFAULT_FLAG = _GS["GlitchFlag"]
+#: Largest gap inside one transient, s (`GlitchMergeGap`).
+DEFAULT_MERGE_S = _GS["GlitchMergeGap"]
+#: Seconds added to half the extent to give the half-width of the centres
+#: (`GlitchSeedPad`).
+DEFAULT_SEED_PAD_S = _GS["GlitchSeedPad"]
 #: The lowest octave a transient's extent is read from, as a multiple of the
-#: census's lowest frequency: 64 Hz over a census from 16 Hz.
-DEFAULT_EXTENT_LOW_FACTOR = 4.0
-#: An atom is cut at this many ``tau`` on each side.
-DEFAULT_ATOM_CUT_TAU = 5.0
+#: census's lowest frequency, when `GlitchExtentLow` is unset.
+DEFAULT_EXTENT_LOW_FACTOR = _GS["extent_low_factor"]
+#: An atom is cut at this many ``tau`` on each side (`GlitchAtomCutTau`).
+DEFAULT_ATOM_CUT_TAU = _GS["GlitchAtomCutTau"]
 #: Seconds added to the light travel time between two detectors within which
-#: their seeds are coincident.
-DEFAULT_COINCIDENCE_JITTER_S = 0.01
+#: their seeds are coincident (`GlitchCoincidenceJitter`).
+DEFAULT_COINCIDENCE_JITTER_S = _GS["GlitchCoincidenceJitter"]
 
 
 def bank_frequencies(rate, low, top_fraction=DEFAULT_TOP_FRACTION,
@@ -204,7 +212,10 @@ class M4Settings:
             return default if value is None else value
 
         low = low_frequency_cut(par)
-        census_low = float(get("GlitchCensusLow", getattr(par, "MinFrequency", None) or low))
+        census_low = get("GlitchCensusLow", _GS["GlitchCensusLow"])
+        census_low = float(getattr(par, "MinFrequency", None) or low if census_low is None
+                           else census_low)
+        extent_low = get("GlitchExtentLow", _GS["GlitchExtentLow"])
         out = cls(
             qs=tuple(float(q) for q in get("GlitchQs", DEFAULT_QS)),
             low=low,
@@ -215,12 +226,13 @@ class M4Settings:
             flag=float(get("GlitchFlag", DEFAULT_FLAG)),
             merge_s=float(get("GlitchMergeGap", DEFAULT_MERGE_S)),
             census_low=census_low,
-            extent_low=float(get("GlitchExtentLow", DEFAULT_EXTENT_LOW_FACTOR * census_low)),
+            extent_low=float(DEFAULT_EXTENT_LOW_FACTOR * census_low if extent_low is None
+                             else extent_low),
             pad=float(get("GlitchSeedPad", DEFAULT_SEED_PAD_S)),
             stop_snr=float(get("GlitchStopSNR", DEFAULT_STOP_SNR)),
             max_atoms=int(get("GlitchMaxAtoms", DEFAULT_MAX_ATOMS)),
             octave_order=int(get("GlitchOctaveOrder", DEFAULT_OCTAVE_FILTER_ORDER)),
-            protect_coincident=bool(get("GlitchProtectCoincident", True)),
+            protect_coincident=bool(get("GlitchProtectCoincident", _GS["GlitchProtectCoincident"])),
             jitter_s=float(get("GlitchCoincidenceJitter", DEFAULT_COINCIDENCE_JITTER_S)))
         for field, key in cls.KEYS.items():
             value = getattr(out, field)

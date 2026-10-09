@@ -20,18 +20,22 @@ from scipy.signal import butter, cheby2, sosfilt, sosfilt_zi, sosfreqz
 
 from wdf.filtering import sosfiltfilt
 from wdf.config.Parameters import low_frequency_cut
+from wdf.config.constants import DB_AMPLITUDE
+from wdf.config.defaults import defaults
+
+#: The defaults of this stage: table ``[bandpass]`` of wdf/config/defaults.toml.
+_BP = defaults("bandpass")
 
 #: Default low-pass corner of the Butterworth, as a fraction of the decimated
-#: Nyquist frequency: 900 Hz at a resampling of 2048 Hz.
-DEFAULT_LOWPASS_CORNER_FRACTION = 0.87890625
+#: Nyquist frequency (`[bandpass] LowPassCornerFraction`).
+DEFAULT_LOWPASS_CORNER_FRACTION = _BP["LowPassCornerFraction"]
 #: Default attenuation the Butterworth low-pass must reach, in the response the
 #: data receive, at the lowest input frequency that folds onto the corner
-#: (resampling - corner): 50 dB, which order 8 at 900 Hz meets from 4096 Hz
-#: (53 dB) and which needs order 12 from 16384 Hz. The strain's own need,
-#: measured on the raw GWOSC data, is 40 dB there.
-DEFAULT_ALIAS_ATTENUATION_DB = 50.0
-#: Highest low-pass order the alias requirement may ask for.
-MAX_LOWPASS_ORDER = 64
+#: (resampling - corner) (`[bandpass] AliasAttenuationDB`).
+DEFAULT_ALIAS_ATTENUATION_DB = _BP["AliasAttenuationDB"]
+#: Highest low-pass order the alias requirement may ask for
+#: (`[bandpass] max_lowpass_order`).
+MAX_LOWPASS_ORDER = _BP["max_lowpass_order"]
 #: The two ways the band-pass is applied: "zero", forward and backward over a
 #: block with its real past and future (`sosfiltfilt`, offline, one block of
 #: latency, response ``|H|^2``); "causal", forward only with its state carried
@@ -53,7 +57,7 @@ def SV_to_array(seqView):
     return y
 
 
-def settling_length(sos, sampling, floor=1e-12, limit_s=8.0):
+def settling_length(sos, sampling, floor=_BP["settling_floor"], limit_s=_BP["settling_limit_s"]):
     """How many samples the filter needs before its response has decayed.
 
     Measured from the impulse response rather than assumed from the order: a
@@ -132,7 +136,7 @@ class BandPassDownSampling(object):
     """
 
     def __init__(self, Parameters, order=None, low_freq_hp=None, padlen=None,
-                 estimation=False, stopband_attenuation_db=60.0):
+                 estimation=False, stopband_attenuation_db=_BP["stopband_attenuation_db"]):
         """
         The constructor
 
@@ -140,10 +144,12 @@ class BandPassDownSampling(object):
         :param Parameters: The dictionary containing list of parameters
         :type order: int
         :order : the filter order; if None (the default), taken from
-            `Parameters.FilterOrder`, falling back to 10 if that is unset. Pass a
-            number to override the configured value.
+            `Parameters.FilterOrder`, falling back to `[bandpass] FilterOrder`
+            of wdf/config/defaults.toml if that is unset. Pass a number to
+            override the configured value.
         :type stopband_attenuation_db: float
-        :stopband_attenuation_db: attenuation reached at the band edges, in dB.
+        :stopband_attenuation_db: attenuation reached at the band edges, in dB
+            (default: `[bandpass] stopband_attenuation_db`).
             This is what suppresses aliasing: everything above the decimated
             Nyquist folds back into the analysed band, so the attenuation
             reached before it is the only thing keeping it out.
@@ -167,17 +173,18 @@ class BandPassDownSampling(object):
             logging.error("Resampling factor not defined")
 
         self.nyquist_frequency = 0.5 * self.sampling
-        self.cutoff_frequency = 0.90 * (self.nyquist_frequency / self.ResamplingFactor)
+        self.cutoff_frequency = _BP["cheby2_cutoff_fraction"] * (self.nyquist_frequency
+                                                                 / self.ResamplingFactor)
          
         self.low_freq_hp = (low_frequency_cut(Parameters) if low_freq_hp is None
                             else float(low_freq_hp))
 
         if order is None:
             order = getattr(Parameters, "FilterOrder", None)
-        self.order = 10 if order is None else int(order)
+        self.order = _BP["FilterOrder"] if order is None else int(order)
         self.stopband_attenuation_db = float(stopband_attenuation_db)
-        self.family = str(getattr(Parameters, "BandPassFilter", None) or "cheby2")
-        self.phase = str(getattr(Parameters, "BandPassPhase", None) or "zero").lower()
+        self.family = str(getattr(Parameters, "BandPassFilter", None) or _BP["BandPassFilter"])
+        self.phase = str(getattr(Parameters, "BandPassPhase", None) or _BP["BandPassPhase"]).lower()
         if self.phase not in BAND_PASS_PHASES:
             raise ValueError(f"BandPassPhase {self.phase!r}: use one of {BAND_PASS_PHASES}")
 
@@ -200,8 +207,9 @@ class BandPassDownSampling(object):
             # response settles in a third of the time. Aliasing is kept out by
             # the low-pass's roll-off above the decimated Nyquist, which the
             # low-pass order and corner must leave deep enough there.
-            self.highpass_order = int(getattr(Parameters, "HighPassOrder", None) or 4)
-            # 900 Hz at 2048 Hz: an order 8 there passes the data to 865 Hz at
+            self.highpass_order = int(getattr(Parameters, "HighPassOrder", None)
+                                      or _BP["HighPassOrder"])
+            # The default corner, 900 Hz at 2048 Hz: an order 8 there passes the data to 865 Hz at
             # -3 dB, is 53 dB down from 1148 Hz, the lowest input frequency that
             # folds below 900 Hz, and 125 dB at the third violin harmonics
             # (1450-1510 Hz, up to 200 times the floor in the strain): both
@@ -209,7 +217,7 @@ class BandPassDownSampling(object):
             # nothing in band, because the full-band whitening undoes the
             # band-pass there; a lower order or a higher corner lets the
             # folded power through the top of the band.
-            corner = getattr(Parameters, "LowPassCorner", None)
+            corner = getattr(Parameters, "LowPassCorner", _BP["LowPassCorner"])
             fraction = getattr(Parameters, "LowPassCornerFraction", None)
             self.corner_fraction = (DEFAULT_LOWPASS_CORNER_FRACTION if fraction is None
                                     else float(fraction))
@@ -228,7 +236,7 @@ class BandPassDownSampling(object):
             Parameters.AliasAttenuationDB = self.alias_requirement_db
             highpass = butter(self.highpass_order, self.low_freq_hp, btype='highpass',
                               fs=self.sampling, output='sos')
-            given = getattr(Parameters, "LowPassOrder", None)
+            given = getattr(Parameters, "LowPassOrder", _BP["LowPassOrder"])
             if given is None:
                 self.lowpass_order = self._order_for_alias(highpass)
             else:
@@ -411,7 +419,7 @@ class BandPassDownSampling(object):
         _, response = sosfreqz(self.sos, worN=np.atleast_1d(np.asarray(freq, dtype=float)),
                                fs=self.sampling)
         power = 2.0 if self.phase == "zero" else 1.0
-        return 20.0 * np.log10(np.abs(response) ** power + 1e-300)
+        return DB_AMPLITUDE * np.log10(np.abs(response) ** power + 1e-300)
 
     @property
     def alias_frequency(self):
@@ -426,7 +434,8 @@ class BandPassDownSampling(object):
 
         :return: float -- minus the largest gain over that range, dB.
         """
-        freq = np.linspace(self.alias_frequency, 0.5 * self.sampling, 4097)[:-1]
+        freq = np.linspace(self.alias_frequency, 0.5 * self.sampling,
+                           _BP["alias_response_points"])[:-1]
         return float(-self.response_db(freq).max())
 
     def _order_for_alias(self, highpass):
@@ -444,7 +453,8 @@ class BandPassDownSampling(object):
             f"no low-pass order up to {MAX_LOWPASS_ORDER} at {self.cutoff_frequency:.1f} Hz "
             f"reaches {self.alias_requirement_db:.1f} dB at {self.alias_frequency:.1f} Hz")
 
-    def passband(self, level_db=-3.0, resolution_hz=1.0 / 1024.0):
+    def passband(self, level_db=_BP["passband_level_db"],
+                 resolution_hz=_BP["passband_resolution_hz"]):
         """The band where the conditioning passes the data, read off its design.
 
         The response is the one the data receive (`response_db`): ``|H|^2``
