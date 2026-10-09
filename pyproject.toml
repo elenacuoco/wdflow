@@ -37,7 +37,7 @@ classifiers = [
 [project.optional-dependencies]
 # `wdf.processes`/`wdf.observers` need p4TSA's compiled core, `py4tsa`;
 # `wdf.analysis` needs none of it, so it is an extra rather than a dependency.
-pipeline = ["py4tsa>=3.2", "coloredlogs"]
+pipeline = ["py4tsa>=3.4.0,<4", "coloredlogs"]
 gnn = ["torch>=2.1", "torch_geometric>=2.5"]
 data = ["gwpy>=3.0"]
 dev = ["pytest>=7"]

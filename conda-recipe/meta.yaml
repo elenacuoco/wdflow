@@ -21,7 +21,7 @@ requirements:
 
   run:
     - python >=3.10
-    - py4tsa >=3.2
+    - py4tsa >=3.4.0,<4
     - coloredlogs
     - numpy
     - scipy
@@ -31,6 +31,7 @@ requirements:
     - pyarrow
     - h5py
     - threadpoolctl
+    - tomli
 
 test:
   imports:

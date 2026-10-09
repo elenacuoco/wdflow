@@ -183,7 +183,7 @@ pip install -e ".[all]"
 |-------|----------|------------|
 | `gnn` | `torch >= 2.1`, `torch_geometric >= 2.5` | `wdf.analysis.gnn` — the learned cross-detector coincidence |
 | `data` | `gwpy >= 3.0` | fetching public strain, e.g. from GWOSC |
-| `pipeline` | `py4tsa >= 3.2`, `coloredlogs` | `wdf.processes`, `wdf.observers` — trigger generation, and any wavelet transform |
+| `pipeline` | `py4tsa >= 3.4.0, < 4`, `coloredlogs` | `wdf.processes`, `wdf.observers` — trigger generation, and any wavelet transform |
 | `mock` | `pycbc` | `wdf.mock` — generating the simulated data sets: CBC injections, glitch morphologies, catalogue waveforms |
 | `tutorials` | `jupyter`, `nbclient`, `ipykernel` | running `tutorials/` |
 | `docs` | `sphinx >= 7`, `sphinx-rtd-theme >= 2`, `myst-nb >= 1` | building the documentation |
