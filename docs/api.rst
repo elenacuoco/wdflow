@@ -331,10 +331,22 @@ wdf.analysis.hrss
 .. automodule:: wdf.analysis.hrss
    :members:
 
+wdf.analysis.waveform_completion
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.waveform_completion
+   :members:
+
 wdf.analysis.alerts
 ~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.alerts
+   :members:
+
+wdf.analysis.combine
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.combine
    :members:
 
 wdf.analysis.pair_screen
