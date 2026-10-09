@@ -603,7 +603,17 @@ It admits a pair when:
    needs the cycles and either the fraction or, when `TrackMinCommonDuration`
    is positive, the absolute time, so that two tracks sharing a stated length
    of signal pair even when one detector's ridge wandered onto noise over the
-   rest of its track and the shared part is less than half of the shorter;
+   rest of its track and the shared part is less than half of the shorter.
+   The agreement is read on the slots of one track whose centres fall within
+   the other track's first-to-last centres, widened by `TrackSlotTolerance`
+   slots (default 0: the exact boundary, the other track's f(t) interpolated;
+   0.5: half a slot either side, the other track's f(t) read at its nearest
+   slot). The two detectors' slot grids coincide at zero lag and not under a
+   time slide of an arbitrary displacement, and with the exact boundary an
+   aligned pair keeps its boundary slots where a misaligned one loses them:
+   the slides then admit fewer pairs than the zero lag does (about 2.5 times
+   fewer on the mock) and the background is underestimated; 0.5 reads both
+   alike;
 2. the lag is physical: `|track_lag_s|` is at most the light travel time plus
    `TrackTimingJitter`. `TrackLagSearch` is the half-width of the lag search
    in seconds (0.1 by default) or "physical", the light travel time plus the

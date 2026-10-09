@@ -116,6 +116,15 @@ class TrackCoincidenceSettings:
         sharing a stated length of signal pair even when one of them was
         prolonged by noise and the shared part is less than half of the
         shorter.
+    :param slot_tolerance: fraction of a slot by which a slot centre of one
+        track may lie outside the other track's first-to-last slot centres
+        and still be compared (`TrackSlotTolerance`, default 0: none). The
+        two detectors' slot grids coincide at zero lag (the same analysis
+        grid) and not under a time slide of an arbitrary displacement; with 0
+        the comparison reads an aligned pair more generously than a
+        misaligned one (the boundary slots), so the slides underestimate the
+        background; 0.5 reads both alike, the frequency of the other track
+        then taken at its nearest slot.
     :param lag_search_s: half-width of the coherence's lag search, s
         (`TrackLagSearch`); at least the light travel time plus the jitter, or
         "physical": the light travel time plus the jitter itself, so that the
@@ -140,6 +149,7 @@ class TrackCoincidenceSettings:
     min_common_cycles: float = 2.0
     min_common_s: float = 0.0
     common_rule: str = "all"
+    slot_tolerance: float = 0.0
     lag_search_s: object = 0.1
     coherence_min: float = 0.0
     percentile: float = 99.0
@@ -151,7 +161,7 @@ class TrackCoincidenceSettings:
                 min_common_fraction="TrackMinCommonFraction",
                 min_common_cycles="TrackMinCommonCycles",
                 min_common_s="TrackMinCommonDuration", common_rule="TrackCommonRule",
-                lag_search_s="TrackLagSearch",
+                slot_tolerance="TrackSlotTolerance", lag_search_s="TrackLagSearch",
                 coherence_min="TrackCoherenceMin", percentile="TrackCoherencePercentile",
                 calibration_slides="TrackCalibrationSlides",
                 calibration_minimum="TrackCalibrationMinimum")
@@ -189,6 +199,8 @@ class TrackCoincidenceSettings:
             setattr(par, key, getattr(out, name))
         if not 0 < out.percentile < 100:
             raise ValueError(f"TrackCoherencePercentile {out.percentile}: between 0 and 100")
+        if not 0.0 <= out.slot_tolerance <= 1.0:
+            raise ValueError(f"TrackSlotTolerance {out.slot_tolerance}: a fraction of a slot, 0 to 1")
         return out
 
     def window(self, a, b):
@@ -266,7 +278,7 @@ def waveform_coherence(first, second, fs, max_lag_s):
 
 def track_compatibility(left, right, displacement_left, displacement_right, window_s,
                         tolerance, min_common_s=0.0, min_common_fraction=0.0,
-                        min_common_cycles=0.0, common_rule="all"):
+                        min_common_cycles=0.0, common_rule="all", slot_tolerance=0.0):
     """How two tracks agree in time and in f(t).
 
     :param left: an event row with `track_t_start`, `track_t_end`,
@@ -284,6 +296,12 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     :param common_rule: "all" (every minimum) or "duration-or-fraction" (the
         cycles, and the fraction or -- when `min_common_s` is positive -- the
         absolute time), see `TrackCoincidenceSettings`.
+    :param slot_tolerance: fraction of the left track's slot by which a left
+        slot centre may lie outside the right track's centre range and still
+        count (0: none, the boundary read exactly; the right track's f(t) is
+        interpolated); with a positive value the right track's frequency is
+        read at its nearest slot centre, so that the comparison does not
+        depend on how the two slot grids are aligned.
     :return: dict -- `track_time_overlap` (the shared span over the shorter
         track), `track_f_distance` (median ``|d log2 f|`` over it, octaves; the
         smallest over the shifts -window, 0, +window), `track_f_overlap` (the
@@ -309,17 +327,26 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     f1 = np.log2(np.asarray(left["track_f"], dtype=float))
     t2 = np.asarray(right["track_times"], dtype=float) + displacement_right
     f2 = np.log2(np.asarray(right["track_f"], dtype=float))
+    slot = float(np.median(np.diff(t1))) if t1.size > 1 else float(e1 - s1)
+    pad = float(slot_tolerance) * slot
     best = None
     for shift in (-window_s, 0.0, window_s):
-        here = (t1 >= t2[0] + shift) & (t1 <= t2[-1] + shift)
+        here = (t1 >= t2[0] + shift - pad) & (t1 <= t2[-1] + shift + pad)
         if not here.any():
             continue
-        d = np.abs(f1[here] - np.interp(t1[here] - shift, t2, f2))
+        if pad > 0:
+            nearest = np.clip(np.searchsorted(t2, t1[here] - shift), 1, t2.size - 1) if t2.size > 1 else \
+                np.zeros(int(here.sum()), int)
+            if t2.size > 1:
+                left_closer = np.abs(t1[here] - shift - t2[nearest - 1]) <= np.abs(t1[here] - shift - t2[nearest])
+                nearest = np.where(left_closer, nearest - 1, nearest)
+            d = np.abs(f1[here] - f2[nearest])
+        else:
+            d = np.abs(f1[here] - np.interp(t1[here] - shift, t2, f2))
         if best is None or np.median(d) < np.median(best):
             best, best_f = d, f1[here]
     if best is None:
         return out
-    slot = float(np.median(np.diff(t1))) if t1.size > 1 else float(e1 - s1)
     out["track_f_distance"] = float(np.median(best))
     out["track_f_overlap"] = float(np.mean(best <= tolerance))
     agree = best <= tolerance
@@ -449,7 +476,7 @@ class TrackCoincidenceFinder:
         window = st.window(ifo_a, ifo_b)
         out = track_compatibility(row_a, row_b, da, db, window, st.frequency_tolerance,
                                   st.min_common_s, st.min_common_fraction,
-                                  st.min_common_cycles, st.common_rule)
+                                  st.min_common_cycles, st.common_rule, st.slot_tolerance)
         wa = self.waveforms.get(ifo_a, {}).get(ca)
         wb = self.waveforms.get(ifo_b, {}).get(cb)
         if wa is None or wb is None:

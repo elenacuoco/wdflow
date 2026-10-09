@@ -54,6 +54,16 @@ positive, that absolute time, so that two tracks sharing a stated length of
 signal pair when one detector's ridge wandered onto noise over the rest of
 its track. `track_compatibility` takes `common_rule`.
 
+`TrackSlotTolerance` (default 0, nothing changes): the fraction of a slot
+by which a slot centre of one track may lie outside the other track's
+first-to-last slot centres and still be compared, the other track's f(t)
+then read at its nearest slot instead of interpolated. With the exact
+boundary the comparison depends on how the two slot grids are aligned: the
+same at zero lag, not under a time slide of an arbitrary displacement, so
+the slides admit about 2.5 times fewer pairs than the zero lag on the mock
+and the track background is underestimated; 0.5 reads an aligned and a
+misaligned pair alike. `track_compatibility` takes `slot_tolerance`.
+
 `TrackLagSearch` also takes "physical" (default 0.1 s, nothing changes): the
 lag search's half-width is the light travel time plus `TrackTimingJitter`,
 so the coherence lag is the best physical one and admission (b) always

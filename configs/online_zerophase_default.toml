@@ -133,6 +133,7 @@ TrackFrequencyTolerance = 0.5   # track path: largest |d log2 f| between two com
 TrackMinCommonFraction = 0.5    # track path, admission (a): least fraction of the SHORTER track over which the two f(t) agree within TrackFrequencyTolerance
 TrackMinCommonCycles = 2.0      # track path, admission (a): least cycles at the tracks' frequency over that time (coherence needs cycles: 50 ms at 40 Hz, 10 ms at 200 Hz)
 TrackMinCommonDuration = 0.0    # track path, admission (a): optional absolute floor on that time, s (0 = none)
+TrackSlotTolerance = 0.0        # track path, admission (a): fraction of a slot by which a slot centre may lie outside the other track's centre range and still be compared (0 = exact boundary, the comparison then depends on the two slot grids' alignment: zero lag aligned, time slides not; 0.5 reads both alike)
 TrackCommonRule = "all"         # track path, admission (a): "all" = fraction, cycles and duration minima all hold; "duration-or-fraction" = the cycles, and the fraction or the absolute duration (when TrackMinCommonDuration > 0)
 TrackLagSearch = 0.1            # track path: half-width of the coherence's lag search, s, or "physical" (= light travel time + TrackTimingJitter); admission (b) needs |lag| <= light travel time + TrackTimingJitter
 TrackCoherenceMin = "none"      # track path, admission (c): "none" = no coherence cut, the coherence ranks (track_statistic) and the FAR decides; a number = least |Gamma|; "calibrate" = TrackCoherencePercentile of |Gamma| on the run's time-slid pairs

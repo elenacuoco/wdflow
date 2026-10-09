@@ -437,3 +437,35 @@ def test_a_physical_lag_search_keeps_the_lag_inside_the_window():
     assert abs(row["track_lag_s"]) <= st.window("H1", "L1") + 0.5 / FS
     assert row["track_lag_physical"] == 1.0
     assert row["dt_s"] == pytest.approx(-0.005, abs=1e-3)
+
+
+def test_the_slot_tolerance_makes_the_comparison_independent_of_the_grid_alignment():
+    """Two 6-slot tracks of the same f(t). On the same slot grid every left slot
+    centre lies inside the right track's centre range and 6 slots agree. With
+    the right track's grid displaced by 0.3 slot (what a time slide of an
+    arbitrary displacement does) the exact boundary (tolerance 0) loses a slot;
+    with TrackSlotTolerance 0.5 both read 6 slots, so a slid pair and a zero-lag
+    pair are compared alike."""
+    from wdf.analysis.track_coincidence import track_compatibility
+
+    slot = 1 / 32.0
+    f = np.r_[40.0, 45.0, 50.0, 60.0, 75.0, 100.0]
+    left = _rows(100.0, 6, f, slot)
+    aligned = _rows(100.0, 6, f, slot)
+    offset = _rows(100.0 + 0.3 * slot, 6, f, slot)
+    a0 = track_compatibility(left, aligned, 0.0, 0.0, 0.0135, 0.5, 0.0, 0.5, 2.0)
+    o0 = track_compatibility(left, offset, 0.0, 0.0, 0.0135, 0.5, 0.0, 0.5, 2.0)
+    assert a0["track_common_s"] == pytest.approx(6 * slot)
+    assert o0["track_common_s"] == pytest.approx(5 * slot)
+    a5 = track_compatibility(left, aligned, 0.0, 0.0, 0.0135, 0.5, 0.0, 0.5, 2.0, slot_tolerance=0.5)
+    o5 = track_compatibility(left, offset, 0.0, 0.0, 0.0135, 0.5, 0.0, 0.5, 2.0, slot_tolerance=0.5)
+    assert a5["track_common_s"] == pytest.approx(6 * slot) and o5["track_common_s"] == pytest.approx(6 * slot)
+    assert a5["track_f_distance"] == 0.0 and o5["track_f_distance"] == 0.0     # the nearest slot, not an interpolation
+    assert a5["track_compatible"] == 1.0 and o5["track_compatible"] == 1.0
+
+
+def test_the_slot_tolerance_is_read_from_the_parameters():
+    assert TrackCoincidenceSettings.from_parameters(SimpleNamespace()).slot_tolerance == 0.0
+    assert TrackCoincidenceSettings.from_parameters(SimpleNamespace(TrackSlotTolerance=0.5)).slot_tolerance == 0.5
+    with pytest.raises(ValueError, match="TrackSlotTolerance"):
+        TrackCoincidenceSettings.from_parameters(SimpleNamespace(TrackSlotTolerance=2))
