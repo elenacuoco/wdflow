@@ -460,11 +460,11 @@ an injected strain it gives the injection as the search saw it.
 `hole_fraction` the share of a known waveform's energy where a reconstruction
 is zero.
 
-Every default of the stage is in one place, the `DEFAULTS` dictionary of the
-module, keyed by parameter name; `CompletionSettings.from_parameters(par,
-rate, defaults)` takes a key from the run when it sets it, else from
-`defaults` (`DEFAULTS` when None), and writes every value used back to the
-run. `CompletionSettings.defaults(rate, **values)` builds the settings with
+Every default of the stage is in the table `[waveform_completion]` of
+`wdf/config/defaults.toml` (the module's `DEFAULTS`, keyed by parameter
+name); `CompletionSettings.from_parameters(par, rate, defaults)` takes a key
+from the run when it sets it, else from `defaults` (`DEFAULTS` when None),
+and writes every value used back to the run. `CompletionSettings.defaults(rate, **values)` builds the settings with
 every key at its default but those given.
 
 Nothing calls the stage by default; it changes no run output.

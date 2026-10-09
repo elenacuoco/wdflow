@@ -48,46 +48,26 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 from wdf.analysis.wavelets import LOCAL_COSINE
+from wdf.config.constants import MAD_TO_SIGMA
+from wdf.config.defaults import defaults
 
 COSINE_PACKETS = "CosinePackets"
 METHODS = ("mask", "mp")
 TILE_BANDS = ("extent", "centroid")
 PACKET_COSTS = ("l1", "entropy", "wdfUniversal", "wdfBlock")
-#: Robust scale: the median absolute deviation of a Gaussian over its sigma.
-MAD_TO_SIGMA = 1.0 / 0.6745
+#: Table ``[waveform_completion]`` of ``wdf/config/defaults.toml``.
+_WC = defaults("waveform_completion")
+#: Smallest frequency a log2 is taken of, Hz: a floor against log(0).
+_LOG_FLOOR_HZ = _WC["log_floor_hz"]
 
 
 # ================================================================ defaults
-#: DEFAULTS OF THE COMPLETION -- the only place they are written. Every
-#: analysis value of this module is read from the run parameters, and a key
-#: the run does not set takes its value here. To be moved into the shipped
-#: defaults configuration when there is one.
-#:
-#: "CompletionSlot" None: `CompletionSlotSamples` over the stream's rate.
-#: "CompletionLowFrequency" None: the run's `MinFrequency` (0 without one).
-DEFAULTS = {
-    "CompletionMethod": "mask",
-    "CompletionBasis": "CosinePackets32",
-    "CompletionPacketCost": "entropy",
-    "CompletionSlot": None,
-    "CompletionSlotSamples": 64,
-    "CompletionOctaveStep": 0.125,
-    "CompletionDilationTime": 0.1,
-    "CompletionDilationOctaves": 0.5,
-    "CompletionBridgeGap": 4.0,
-    "CompletionTileBand": "extent",
-    "CompletionBand": 0.5,
-    "CompletionThreshold": 1.0,
-    "CompletionPad": 0.5,
-    "CompletionLowFrequency": None,
-    "CompletionStopSNR": 4.0,
-    "CompletionMaxAtoms": 200,
-    "CompletionQs": [1.0, 2.0, 4.0, 8.0, 16.0],
-    "CompletionFrequencyCount": 40,
-    "CompletionMaxTileCoverage": 0.95,
-    "CompletionMarginSegments": 4,
-    "CompletionWaveletMargin": 0.5,
-}
+#: The defaults of the completion: table ``[waveform_completion]`` of
+#: ``wdf/config/defaults.toml``, keyed by parameter name. A key the run does
+#: not set takes its value here. "CompletionSlot" unset: `CompletionSlotSamples`
+#: over the stream's rate; "CompletionLowFrequency" unset: the run's
+#: `MinFrequency` (0 without one).
+DEFAULTS = {k: v for k, v in _WC.items() if k[0].isupper()}
 
 
 # ================================================================ settings
@@ -315,7 +295,7 @@ class CompletionMask:
     @classmethod
     def empty(cls, t_start, t_end, f_low, f_high, slot_s, octave_step):
         """An empty mask over ``[t_start, t_end)`` and ``[f_low, f_high]``."""
-        f_low = max(float(f_low), 1e-3)
+        f_low = max(float(f_low), _LOG_FLOOR_HZ)
         n_bins = max(int(np.ceil((np.log2(f_high) - np.log2(f_low)) / octave_step)), 1)
         log_edges = np.log2(f_low) + np.arange(n_bins + 1) * float(octave_step)
         n_slots = max(int(np.ceil((t_end - t_start) / slot_s)), 1)
@@ -351,8 +331,8 @@ class CompletionMask:
     def bin_range(self, f_lo, f_hi):
         """Cells ``[a, b)`` meeting ``[f_lo, f_hi)``; empty when none."""
         step = self.log_edges[1] - self.log_edges[0]
-        lo = np.log2(max(float(f_lo), 1e-3))
-        hi = np.log2(max(float(f_hi), 1e-3))
+        lo = np.log2(max(float(f_lo), _LOG_FLOOR_HZ))
+        hi = np.log2(max(float(f_hi), _LOG_FLOOR_HZ))
         a = int(np.floor((lo - self.log_edges[0]) / step + 1e-9))
         b = int(np.ceil((hi - self.log_edges[0]) / step - 1e-9))
         return max(a, 0), min(max(b, a + 1), self.n_bins)
@@ -381,7 +361,7 @@ class CompletionMask:
             s0, s1 = self.slot_range(a, b)
             if s1 <= s0 or not (d > 0 and e > 0):
                 continue
-            centre = 0.5 * (np.log2(max(c, 1e-3)) + np.log2(d))
+            centre = 0.5 * (np.log2(max(c, _LOG_FLOOR_HZ)) + np.log2(d))
             w = e / (s1 - s0)
             weight[s0:s1] += w
             moment[s0:s1] += w * centre
@@ -505,8 +485,8 @@ class CompletionMask:
         s0 = np.clip(np.floor((t_lo - self.t0) / self.slot_s + 1e-9), 0, self.n_slots).astype(int)
         s1 = np.clip(np.ceil((t_hi - self.t0) / self.slot_s - 1e-9), 0, self.n_slots).astype(int)
         with np.errstate(divide="ignore", invalid="ignore"):
-            lo = np.log2(np.maximum(f_lo, 1e-3))
-            hi = np.log2(np.maximum(f_hi, 1e-3))
+            lo = np.log2(np.maximum(f_lo, _LOG_FLOOR_HZ))
+            hi = np.log2(np.maximum(f_hi, _LOG_FLOOR_HZ))
         b0 = np.clip(np.floor((lo - self.log_edges[0]) / step + 1e-9), 0, self.n_bins).astype(int)
         b1 = np.clip(np.ceil((hi - self.log_edges[0]) / step - 1e-9), 0, self.n_bins).astype(int)
         table = np.zeros((self.n_slots + 1, self.n_bins + 1), dtype=np.int64)
@@ -557,7 +537,7 @@ def tile_coverage(tiles, settings, rate):
     t_lo, t_hi, f_lo, f_hi = (np.asarray(a, dtype=float).reshape(-1) for a in tiles[:4])
     if not t_lo.size:
         return float("nan")
-    mask = CompletionMask.empty(float(t_lo.min()), float(t_hi.max()), max(settings.low_frequency, 1e-3),
+    mask = CompletionMask.empty(float(t_lo.min()), float(t_hi.max()), max(settings.low_frequency, _LOG_FLOOR_HZ),
                                 0.5 * float(rate), settings.slot_s, settings.octave_step)
     mask.add_boxes(t_lo, t_hi, f_lo, f_hi)
     tiles_cells = int(mask.cells.sum())
@@ -596,7 +576,7 @@ def build_mask(tiles, settings, rate, track=None, extent=None):
         extent = (float(all_t.min()), float(all_t.max()))
     start = float(extent[0]) - settings.pad
     end = float(extent[1]) + settings.pad
-    mask = CompletionMask.empty(start, end, max(settings.low_frequency, 1e-3), 0.5 * float(rate),
+    mask = CompletionMask.empty(start, end, max(settings.low_frequency, _LOG_FLOOR_HZ), 0.5 * float(rate),
                                 settings.slot_s, settings.octave_step)
     if settings.tile_band == "centroid" and len(tiles) > 4:
         mask.add_centroids(t_lo, t_hi, f_lo, f_hi, np.asarray(tiles[4], dtype=float).reshape(-1),
@@ -718,7 +698,7 @@ def masked_pursuit(samples, start, fs, mask, settings, sigma=None):
     if sigma is None:
         sigma = max(float(np.median(np.abs(x - np.median(x))) * MAD_TO_SIGMA), 1e-300)
     top = min(mask.f_high, 0.5 * fs * (1 - 1e-9))
-    low = max(mask.f_low, 1e-3)
+    low = max(mask.f_low, _LOG_FLOOR_HZ)
     freqs = np.geomspace(low, top, settings.frequency_count, endpoint=False)[1:] if settings.frequency_count > 1 \
         else np.array([np.sqrt(low * top)])
     bank = SineGaussianBank(np.array([1.0]), 1.0, fs, freqs, qs=settings.qs)
@@ -919,10 +899,10 @@ def complete(stream, fs, tiles, settings, track=None, extent=None, reference=Non
         t0, y = float(sparse[0]), np.asarray(sparse[1], dtype=float).copy()
         y[~np.isfinite(y)] = 0.0
         x = _piece(stream, fs, start, end, 0)[1]
-        sigma = max(float(np.median(np.abs(x - np.median(x))) * MAD_TO_SIGMA), 1e-150) if x.any() else float("nan")
+        sigma = max(float(np.median(np.abs(x - np.median(x))) * MAD_TO_SIGMA), 1e-300) if x.any() else float("nan")
         result = CompletedWaveform(t0=t0, fs=float(fs), waveform=y, mask=mask, basis="sparse", method="sparse",
                                    sigma=sigma, n_kept=0, n_total=0,
-                                   energy=float(np.sum(y ** 2) / sigma ** 2) if np.isfinite(sigma) else float("nan"),
+                                   energy=float(np.sum(y ** 2) / sigma ** 2) if np.isfinite(sigma) and sigma ** 2 > 0 else float("nan"),
                                    sparse_overlap=1.0, tile_coverage=covered, completed=False)
         if ridge is not None:
             result.coverage = mask.coverage(ridge[0], ridge[1])
@@ -954,7 +934,7 @@ def complete(stream, fs, tiles, settings, track=None, extent=None, reference=Non
     out[~np.isfinite(out)] = 0.0
     result = CompletedWaveform(t0=start, fs=float(fs), waveform=out, mask=mask, basis=basis,
                                method=settings.method, sigma=float(sigma), n_kept=int(n_kept),
-                               n_total=int(n_total), energy=float(np.sum(out ** 2) / max(sigma, 1e-150) ** 2),
+                               n_total=int(n_total), energy=float(np.sum(out ** 2) / sigma ** 2) if sigma ** 2 > 0 else float("nan"),
                                atoms=atoms, extra=extra, tile_coverage=covered)
     if ridge is not None:
         result.coverage = mask.coverage(ridge[0], ridge[1])

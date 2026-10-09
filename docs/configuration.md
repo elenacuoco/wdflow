@@ -1060,3 +1060,30 @@ default of a library argument or setting of the module the table is named after.
 | `minimum_injection_gap` | `20.0` | s | least clear stretch between benchmark injections |
 | `worker_band_low` | `12.0` | Hz | low edge of the band the worker passes, for the recorded band loss |
 | `worker_band_high_fraction` | `0.9` | fraction of Nyquist | high edge of the worker band, of the searched stream's Nyquist |
+
+### `[waveform_completion]`
+
+| Key | Default | Unit | Meaning |
+|---|---|---|---|
+| `CompletionMethod` | `"mask"` | name | completion: "mask" inverts every coefficient inside the mask, "mp" fits sine-Gaussian atoms inside it |
+| `CompletionBasis` | `"CosinePackets32"` | name | basis of the completion: CosinePackets<m> best basis, LocalCos<M> or a p4TSA wavelet |
+| `CompletionPacketCost` | `"entropy"` | name | cost of the cosine-packet best basis (l1, entropy, wdfUniversal, wdfBlock) |
+| `CompletionSlot` | unset | s | time cell of the mask; unset: CompletionSlotSamples at the stream's rate |
+| `CompletionSlotSamples` | `64` | samples | time cell of the mask when CompletionSlot is unset |
+| `CompletionOctaveStep` | `0.125` | octaves | frequency cell of the mask |
+| `CompletionDilationTime` | `0.1` | s | growth of the mask on each side in time |
+| `CompletionDilationOctaves` | `0.5` | octaves | growth of the mask on each side in frequency |
+| `CompletionBridgeGap` | `4.0` | s | longest hole between occupied time cells bridged in log-frequency; 0 bridges nothing |
+| `CompletionTileBand` | `"extent"` | name | tiles in the mask: "extent" (their whole band) or "centroid" (CompletionBand around the centroid per time cell) |
+| `CompletionBand` | `0.5` | octaves | half-width around a track's ridge, and around the tiles' centroid with "centroid" |
+| `CompletionThreshold` | `1.0` | noise scale | soft threshold on the coefficients kept inside the mask; 0 keeps them as they are |
+| `CompletionPad` | `0.5` | s | the completed waveform extends this much before the first tile and after the last |
+| `CompletionLowFrequency` | unset | Hz | floor of the mask; unset: MinFrequency |
+| `CompletionStopSNR` | `4.0` | - | "mp": the pursuit stops when the best atom's SNR is below it |
+| `CompletionMaxAtoms` | `200` | count | "mp": most atoms fitted |
+| `CompletionQs` | `[1.0, 2.0, 4.0, 8.0, 16.0]` | - | "mp": quality factors of the atoms |
+| `CompletionFrequencyCount` | `40` | count | "mp": atom frequencies, log-spaced over the mask's band |
+| `CompletionMaxTileCoverage` | `0.95` | fraction | the completion runs when the event's tile coverage is at or below it; above, the sparse reconstruction is returned; 1 completes every event |
+| `CompletionMarginSegments` | `4` | count | segments of a cosine-packet or local cosine basis transformed beyond the mask on each side |
+| `CompletionWaveletMargin` | `0.5` | s | the same margin for a p4TSA wavelet |
+| `log_floor_hz` | `0.001` | Hz | smallest frequency a logarithm is taken of in the mask's geometry (a floor against log(0)) |

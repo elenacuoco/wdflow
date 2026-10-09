@@ -241,7 +241,8 @@ leaves at zero. The completion runs only for an event whose tile coverage
 filled in frequency -- that the tiles occupy, read from the tiles alone) is
 at or below `CompletionMaxTileCoverage` (default 0.95); above it the sparse
 reconstruction is returned unchanged, flagged `completed` False. Every
-default of the stage is in the module's `DEFAULTS` dictionary; the settings
+default of the stage is in `[waveform_completion]` of
+`wdf/config/defaults.toml`; the settings
 (`CompletionSettings.from_parameters`) are written back to the run
 parameters. Nothing calls the stage by default: no run output changes.
 
