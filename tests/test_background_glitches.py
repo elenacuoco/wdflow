@@ -72,7 +72,14 @@ def test_background_carries_its_own_transients(tmp_path):
 
 def test_the_foreground_does_not_inherit_them(tmp_path):
     """The noise is redrawn rather than held twice, so the foreground frames
-    must be bit-for-bit what they are without transients in the background."""
+    must be what they are without transients in the background.
+
+    The comparison allows a difference of 1e-9 of the frame's peak: the same
+    seed does not give the same samples bit for bit in two calls, because
+    pycbc's FFTW plans and numpy's vectorised loops depend on the memory
+    alignment of the arrays, which changes the last bits (1e-14 of the
+    noise). A transient written into the foreground would differ by the
+    order of the noise itself."""
     plain = tmp_path / "plain"
     glitchy = tmp_path / "glitchy"
     generate_dataset(plain, **COMMON)
@@ -86,12 +93,17 @@ def test_the_foreground_does_not_inherit_them(tmp_path):
                                           f"{ifo}:MOCK-STRAIN"))
 
     for name in frames_of(plain, "FOREGROUND"):
-        assert np.array_equal(samples(plain, name), samples(glitchy, name))
+        expected = samples(plain, name)
+        np.testing.assert_allclose(samples(glitchy, name), expected, rtol=0,
+                                   atol=1e-9 * np.max(np.abs(expected)))
 
     # And the background differs from it somewhere, since a transient was
     # written into it and into nothing else.
-    assert any(not np.array_equal(samples(plain, name), samples(glitchy, name))
-               for name in frames_of(plain, "BACKGROUND"))
+    def apart(name):
+        a, b = samples(plain, name), samples(glitchy, name)
+        return np.max(np.abs(a - b)) > 1e-3 * np.max(np.abs(a))
+
+    assert any(apart(name) for name in frames_of(plain, "BACKGROUND"))
 
 
 def test_asking_for_none_writes_the_stationary_background(tmp_path):
