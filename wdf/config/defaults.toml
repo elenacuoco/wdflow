@@ -1,0 +1,14 @@
+# The analysis defaults of wdf: every value an analysis takes when neither its
+# caller nor the run configuration gives one. Read by wdf.config.defaults;
+# the configuration reference (docs/configuration.md) is generated from it.
+#
+# Tables are named after the module or stage that reads them. A CamelCase key
+# is the default of the run-configuration key of the same name; a lower-case
+# key is the default of a library argument or setting.
+#
+# Every key ends with a comment "# [unit] meaning". Units: s, Hz, samples,
+# octaves, dB, "fraction of Nyquist", "-" (dimensionless), "count", "name"
+# (a choice among names), "path".
+# "<unset>" means not set (None): the code derives the value as the comment
+# states. Values tied to the sampling rate are in s, Hz or fractions of the
+# rate or of the Nyquist frequency.
