@@ -13,6 +13,7 @@ dependencies = [
   'pyarrow',
   'h5py',
   'threadpoolctl',
+  'tomli>=1.1; python_version < "3.11"',
 ]
 description = "WDF (Wavelet Detection Filter): real-time trigger generation for transient signals, with the downstream analysis that turns triggers into candidate events"
 readme = "README.md"
