@@ -19,6 +19,7 @@ tutorials/05_the_paper_path_and_the_track_path
 :hidden:
 
 api
+configuration
 design/online-offline
 design/sparse-coefficients
 design/windows-and-graphs
