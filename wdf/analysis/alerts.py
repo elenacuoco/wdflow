@@ -528,9 +528,9 @@ def alert_table(candidates, events=None, par=None, settings=None, livetime_s=Non
     :param livetime_s: accidental livetime, seconds, when the table carries
         counts and no rate.
     :param statistic: the ranking column (``detection_statistic``); default
-        ``gnn_logit`` when present, else ``network_rank_statistic``,
-        ``track_statistic`` or ``network_morphology``, whichever the table
-        holds first.
+        ``network_rank_statistic`` when present (the penalised column the
+        rate was measured on), else ``gnn_logit``, ``track_statistic`` or
+        ``network_morphology``, whichever the table holds first.
     :param fs: the stream's sampling rate, Hz, for the "sample" timing floor;
         read from the events' ``fs`` when they carry it.
     :param provenance_fields: `provenance` output, else `provenance(par)`.
@@ -544,7 +544,7 @@ def alert_table(candidates, events=None, par=None, settings=None, livetime_s=Non
         values = pd.to_numeric(table["fs"], errors="coerce").dropna()
         fs = float(values.iloc[0]) if len(values) else None
     if statistic is None:
-        for name in ("gnn_logit", "network_rank_statistic", "track_statistic",
+        for name in ("network_rank_statistic", "gnn_logit", "track_statistic",
                      "network_morphology", "network_enwdf"):
             if name in candidates:
                 statistic = name

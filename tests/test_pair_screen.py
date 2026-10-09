@@ -14,7 +14,8 @@ sys.path.insert(0, FIXTURES)
 import make_paper_path_snapshot as snap  # noqa: E402
 
 from wdf.analysis.network_driver import run_network  # noqa: E402
-from wdf.analysis.pair_screen import PairScreenSettings, lag_factor, lag_windows  # noqa: E402
+from wdf.analysis.pair_screen import (PairScreenSettings, ScreenedFinder, apply_penalty,  # noqa: E402
+                                      lag_factor, lag_windows)
 from wdf.analysis.detectors import light_travel_time  # noqa: E402
 from wdf.analysis.robust_events import CoincidenceConfig  # noqa: E402
 from wdf.config.Parameters import Parameters  # noqa: E402
@@ -175,3 +176,72 @@ def test_a_pair_reports_its_coincidence_window():
     travel = light_travel_time("H1", "L1")
     assert travel < row["network_lag_window_s"] <= 2.5 * travel + 1e-12
     assert str(row["network_lag_window_rule"]).startswith("coincidence")
+
+
+# ================================================================ penalty space
+def test_a_penalty_multiplies_a_statistic_and_lowers_a_logit():
+    factor = np.array([1.0, 0.5, 0.1, 0.0])
+    np.testing.assert_allclose(apply_penalty([2.0, 2.0, 2.0, 2.0], factor, "multiply"), [2.0, 1.0, 0.2, 0.0])
+    logit = np.array([-2.0, -2.0, 1.5, 1.5])
+    out = apply_penalty(logit, factor, "log-odds")
+    assert out[0] == -2.0 and np.isneginf(out[3])
+    assert np.all(out[1:3] < logit[1:3])
+    np.testing.assert_allclose(out[1:3], logit[1:3] + np.log(factor[1:3]))
+    with pytest.raises(ValueError):
+        apply_penalty(logit, factor, "add")
+
+
+def test_the_penalty_space_follows_the_score():
+    auto = PairScreenSettings()
+    assert auto.space(signed=False) == "multiply" and auto.space(signed=True) == "log-odds"
+    with pytest.raises(ValueError, match="signed logit"):
+        PairScreenSettings(penalty_space="multiply").space(signed=True)
+    assert PairScreenSettings(penalty_space="log-odds").space(signed=False) == "log-odds"
+    with pytest.raises(ValueError, match="NetworkPenaltySpace"):
+        PairScreenSettings.from_parameters(Parameters(NetworkPenaltySpace="product"))
+    par = Parameters()
+    assert PairScreenSettings.from_parameters(par).penalty_space == "auto"
+    assert par.NetworkPenaltySpace == "auto"
+
+
+class _Pairs:
+    """A finder that returns fixed pairs, each with a GNN logit."""
+
+    config = None
+
+    def __init__(self, table):
+        self.table = table
+
+    def find(self, events_by_ifo):
+        return self.table.copy()
+
+
+def _glitch_screen(logits, signed, space="auto"):
+    """Two events per detector; H1's first overlaps a census transient that
+    L1 lacks, so every pair holding it is a single-detector glitch."""
+    events = {ifo: pd.DataFrame(dict(cluster_id=[0, 1], gpsPeak=[100.0 + d, 200.0 + d],
+                                     gpsStart=[99.9 + d, 199.9 + d], duration=[0.2, 0.2]))
+              for ifo, d in (("H1", 0.0), ("L1", 0.005))}
+    table = pd.DataFrame(dict(node_i=[0, 1], node_j=[2, 3], gnn_logit=logits,
+                              network_morphology=np.abs(logits)))
+    census = {"H1": pd.DataFrame(dict(first=[99.95], last=[100.05])),
+              "L1": pd.DataFrame(dict(first=[400.0], last=[400.1]))}
+    settings = PairScreenSettings(glitch_veto="penalty", glitch_factor=0.1, penalty_space=space)
+    column = "gnn_logit" if signed else "network_morphology"
+    finder = ScreenedFinder(_Pairs(table), events, {}, 2048.0, settings, column, census=census,
+                            signed=signed)
+    return finder.find(events)
+
+
+def test_a_glitch_penalty_lowers_a_negative_gnn_logit():
+    out = _glitch_screen([-2.0, -1.0], signed=True)
+    assert list(out["glitch_single_ifo"]) == [True, False]
+    assert out["network_rank_statistic"].iloc[0] == pytest.approx(-2.0 + np.log(0.1))
+    assert out["network_rank_statistic"].iloc[0] < out["network_rank_statistic"].iloc[1] == -1.0
+
+
+def test_a_glitch_penalty_on_a_statistic_is_unchanged():
+    out = _glitch_screen([-2.0, -1.0], signed=False)
+    assert out["network_rank_statistic"].tolist() == pytest.approx([0.2, 1.0])
+    with pytest.raises(ValueError, match="signed logit"):
+        _glitch_screen([-2.0, -1.0], signed=True, space="multiply")

@@ -458,7 +458,7 @@ is the pair's light travel time plus `NetworkLagTolerance`.
 
 - "cut" keeps a pair only when `|network_lag_s|` is within the window. A pair
   whose lag cannot be measured within the search is dropped.
-- "penalty" keeps every pair and multiplies the ranking column by
+- "penalty" keeps every pair and penalises the ranking column by
   `network_lag_factor = 1 / (1 + (max(0, |lag| - window) / scale)^2)`, the
   scale being the pair's own window (`NetworkLagScale` "window", the default)
   or `NetworkLagScale` seconds,
@@ -478,8 +478,22 @@ either event is a glitch. `NetworkGlitchVeto` sets its use:
 
 - "none" (the default) only reports it;
 - "veto" drops the pair;
-- "penalty" multiplies the ranking column by `NetworkGlitchFactor` (0.1)
-  into `network_rank_statistic`.
+- "penalty" penalises the ranking column by the factor `NetworkGlitchFactor`
+  (0.1) into `network_rank_statistic`.
+
+The two factors multiply. `NetworkPenaltySpace` sets how their product
+acts on the ranking column (`wdf.analysis.pair_screen.apply_penalty`):
+
+- "multiply": the column times the factor. For the classic statistics,
+  which are never negative.
+- "log-odds": the column plus the logarithm of the factor, so the odds of a
+  logit are multiplied by the factor; a factor 0 gives -inf. For the GNN's
+  `gnn_logit`, which is signed: a product would raise a negative logit.
+- "auto" (the default): "log-odds" with `Scorer = "gnn"`, "multiply"
+  otherwise. "multiply" with `Scorer = "gnn"` is refused.
+
+The alert's `detection_statistic` is `network_rank_statistic` whenever a
+penalty applies, the column the false-alarm rate is measured on.
 
 Online, the decision needs the other detector's census at the same latency as
 its triggers: run the network stage once both detectors' outputs reach the
@@ -731,6 +745,7 @@ module reads the two lists as written and recomputes no background.
 | `NetworkGlitchVeto` | "none" | wavegram path: "none", "veto" or "penalty" on `glitch_single_ifo` |
 | `NetworkGlitchTolerance` | 0.01 s | added to the light travel time for coincident transients |
 | `NetworkGlitchFactor` | 0.1 | rank factor of a single-detector glitch |
+| `NetworkPenaltySpace` | "auto" | how a penalty acts on the ranking column: "multiply", "log-odds" (logit + log factor), or "auto" (log-odds with the GNN) |
 | `CompletionMethod` | "mask" | completion: invert every coefficient inside the mask, or "mp" fit sine-Gaussian atoms inside it |
 | `CompletionBasis` | "CosinePackets32" | `CosinePackets<m>`, `LocalCos<M>` or a p4TSA wavelet |
 | `CompletionPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |

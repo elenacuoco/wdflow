@@ -79,10 +79,10 @@ def test_the_driver_reproduces_the_catalogue_paper_path():
                                       frozen(f"paper_path_events_{ifo}.parquet"), check_exact=True)
     assert set(vars(par)) - {"NetworkLagCut", "NetworkLagWindow", "NetworkLagTolerance", "NetworkLagScale",
                              "NetworkLagSearch", "NetworkGlitchVeto", "NetworkGlitchTolerance",
-                             "NetworkGlitchFactor"} == set()
+                             "NetworkGlitchFactor", "NetworkPenaltySpace"} == set()
     assert {"NetworkLagCut", "NetworkLagWindow", "NetworkLagTolerance", "NetworkLagScale",
                               "NetworkLagSearch", "NetworkGlitchVeto", "NetworkGlitchTolerance",
-                              "NetworkGlitchFactor"} <= set(vars(par))
+                              "NetworkGlitchFactor", "NetworkPenaltySpace"} <= set(vars(par))
     assert par.NetworkLagCut == "none" and par.NetworkGlitchVeto == "none"
 
 

@@ -438,7 +438,7 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         if screen.active or census is not None:
             fs = float(pd.to_numeric(next(iter(triggers.values()))["fs"]).iloc[0])
             finder = ScreenedFinder(finder, events, _reconstructions(graphs, labels), fs, screen,
-                                    rank_column, census=census)
+                                    rank_column, census=census, signed=scorer is not None)
             if screen.penalised:
                 rank_column = RANK_STATISTIC
         candidates = finder.find(events)

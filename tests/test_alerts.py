@@ -203,3 +203,12 @@ def test_run_network_writes_the_csv_only_when_asked(tmp_path):
     assert len(table) == int((plain.candidates.far_hz <= 1.0).sum()) > 0
     assert table.run.iloc[0] == "snap" and np.isfinite(table.central_freq).all()
     assert np.isfinite(table.EnWDF_H1).all() and table.data_start.notna().all()
+
+
+def test_the_statistic_is_the_penalised_column_the_rate_was_measured_on():
+    c = _candidates().assign(gnn_logit=np.linspace(2.0, -3.0, 6))
+    assert alert_table(c, par=Parameters(), fs=2048.0).detection_statistic_name.iloc[0] == "gnn_logit"
+    penalised = c.assign(network_rank_statistic=c.gnn_logit + np.log(0.5))
+    a = alert_table(penalised, par=Parameters(), fs=2048.0)
+    assert a.detection_statistic_name.iloc[0] == "network_rank_statistic"
+    assert a.detection_statistic.iloc[0] == pytest.approx(2.0 + np.log(0.5))

@@ -23,8 +23,9 @@ slide alike, it measures:
   detector of the pair has NO census transient within the light travel time
   plus `NetworkGlitchTolerance` (0.01 s) of it. Transients coincident in the
   two detectors are not glitches. ``glitch_single_ifo`` is true when either
-  event is one. "veto" drops those pairs; "penalty" multiplies the ranking
-  column by `NetworkGlitchFactor` (0.1) for them; "none" (the default) only
+  event is one. "veto" drops those pairs; "penalty" penalises the ranking
+  column by the factor `NetworkGlitchFactor` (0.1) for them (see
+  `NetworkPenaltySpace` below); "none" (the default) only
   reports the columns. Online, the decision reads the other detector's
   census at the same latency as its triggers: run it once both detectors'
   outputs reach the same data time.
@@ -51,8 +52,17 @@ own window when `NetworkLagScale` is "window" (the default) or that number of
 seconds,
 
 1 within the window, decreasing with the excess, the same for either sign,
-0 when the lag cannot be measured, multiplies the ranking column into
+0 when the lag cannot be measured, penalises the ranking column into
 ``network_rank_statistic``, which the pairs are then ranked on.
+
+How a factor penalises the ranking column is set by `NetworkPenaltySpace`.
+"multiply" multiplies the column by the factor; it is meant for the
+classic statistics, which are never negative. "log-odds" adds the
+logarithm of the factor, which multiplies the odds of a logit by the factor
+(a factor 0 gives -inf); it is meant for the GNN's signed ``gnn_logit``,
+where a product would raise a negative score. "auto" (the default) takes
+"log-odds" when the pairs are ranked on the GNN's logit and "multiply"
+otherwise.
 
 A time slide moves an event's times; the screen reads each event's
 displacement from its `gpsPeak` against the unslid events and moves its
@@ -82,6 +92,8 @@ SPREAD_COLUMN = "tSpread"
 GLITCH_VETOES = ("none", "veto", "penalty")
 #: The column the pairs are ranked on when a penalty applies.
 RANK_STATISTIC = "network_rank_statistic"
+#: How a penalty factor acts on the ranking column (`NetworkPenaltySpace`).
+PENALTY_SPACES = ("auto", "multiply", "log-odds")
 
 
 @dataclass
@@ -106,6 +118,10 @@ class PairScreenSettings:
         travel time for two transients to be coincident (default 0.01).
     :param glitch_factor: `NetworkGlitchFactor`, the rank factor of a
         single-detector glitch with "penalty" (default 0.1).
+    :param penalty_space: `NetworkPenaltySpace`, one of `PENALTY_SPACES`
+        (default "auto"): how a factor penalises the ranking column, see
+        `apply_penalty`; "auto" is "log-odds" for a signed logit and
+        "multiply" for a non-negative statistic.
     """
 
     lag_cut: str = "none"
@@ -116,12 +132,13 @@ class PairScreenSettings:
     glitch_veto: str = "none"
     glitch_tolerance: float = 0.01
     glitch_factor: float = 0.1
+    penalty_space: str = "auto"
 
     KEYS = dict(lag_cut="NetworkLagCut", lag_window="NetworkLagWindow", lag_tolerance="NetworkLagTolerance",
                 lag_scale="NetworkLagScale", lag_search="NetworkLagSearch",
                 glitch_veto="NetworkGlitchVeto", glitch_tolerance="NetworkGlitchTolerance",
-                glitch_factor="NetworkGlitchFactor")
-    WORDS = ("lag_cut", "lag_window", "glitch_veto")
+                glitch_factor="NetworkGlitchFactor", penalty_space="NetworkPenaltySpace")
+    WORDS = ("lag_cut", "lag_window", "glitch_veto", "penalty_space")
 
     @classmethod
     def from_parameters(cls, par):
@@ -143,6 +160,8 @@ class PairScreenSettings:
             raise ValueError(f"NetworkLagCut {out.lag_cut!r}: use one of {LAG_CUTS}")
         if out.glitch_veto not in GLITCH_VETOES:
             raise ValueError(f"NetworkGlitchVeto {out.glitch_veto!r}: use one of {GLITCH_VETOES}")
+        if out.penalty_space not in PENALTY_SPACES:
+            raise ValueError(f"NetworkPenaltySpace {out.penalty_space!r}: use one of {PENALTY_SPACES}")
         if not 0 <= out.glitch_factor <= 1:
             raise ValueError("NetworkGlitchFactor must lie in [0, 1]")
         if out.lag_window not in LAG_WINDOWS:
@@ -159,8 +178,45 @@ class PairScreenSettings:
 
     @property
     def penalised(self):
-        """Whether the ranking column is multiplied by a factor."""
+        """Whether a factor penalises the ranking column."""
         return self.lag_cut == "penalty" or self.glitch_veto == "penalty"
+
+    def space(self, signed):
+        """The `NetworkPenaltySpace` in use for a ranking column.
+
+        :param signed: whether the column is a signed logit (the GNN's
+            ``gnn_logit``) rather than a non-negative statistic.
+        :return: "multiply" or "log-odds".
+        :raises ValueError: "multiply" on a signed logit, whose negative
+            values a factor below 1 would raise.
+        """
+        if self.penalty_space == "auto":
+            return "log-odds" if signed else "multiply"
+        if self.penalty_space == "multiply" and signed:
+            raise ValueError("NetworkPenaltySpace 'multiply' on a signed logit raises its negative values: "
+                             "use 'log-odds' or 'auto'")
+        return self.penalty_space
+
+
+def apply_penalty(score, factor, space):
+    """A ranking column penalised by factors in [0, 1].
+
+    :param score: the ranking column (array).
+    :param factor: the factors (array or scalar), 1 for no penalty.
+    :param space: "multiply" -- ``score * factor``, for a non-negative
+        statistic; "log-odds" -- ``score + log(factor)``, for a logit: the odds
+        are multiplied by the factor, and a factor 0 gives -inf.
+    :return: numpy.ndarray
+    :raises ValueError: on an unknown space.
+    """
+    score = np.asarray(score, dtype=float)
+    factor = np.asarray(factor, dtype=float)
+    if space == "multiply":
+        return score * factor
+    if space == "log-odds":
+        with np.errstate(divide="ignore"):
+            return score + np.log(factor)
+    raise ValueError(f"penalty space {space!r}: use 'multiply' or 'log-odds'")
 
 
 def census_extents(census):
@@ -255,11 +311,16 @@ class ScreenedFinder:
     :param rank_column: the column `network_rank_statistic` multiplies.
     :param census: ``{ifo: census table}`` or None; with it the glitch
         columns are reported.
+    :param signed: whether `rank_column` is a signed logit (the GNN's
+        ``gnn_logit``); it selects the penalty's space with
+        `NetworkPenaltySpace` "auto".
     """
 
-    def __init__(self, finder, events, reconstruction, fs, settings, rank_column, census=None):
+    def __init__(self, finder, events, reconstruction, fs, settings, rank_column, census=None,
+                 signed=False):
         if settings.glitch_veto != "none" and census is None:
             raise ValueError("NetworkGlitchVeto needs the detectors' census of transients")
+        self.penalty_space = settings.space(signed)
         self.census = None if census is None else {i: census_extents(c) for i, c in census.items()}
         self.finder = finder
         inner = getattr(finder, "finder", None)
@@ -361,7 +422,8 @@ class ScreenedFinder:
             elif self.settings.glitch_veto == "penalty":
                 factor = factor * np.where(flagged, self.settings.glitch_factor, 1.0)
         if self.settings.penalised:
-            out[RANK_STATISTIC] = out[self.rank_column].to_numpy(float) * factor
+            out[RANK_STATISTIC] = apply_penalty(out[self.rank_column].to_numpy(float), factor,
+                                                self.penalty_space)
         out = out[keep].reset_index(drop=True)
         if "candidate_id" in out:
             out["candidate_id"] = np.arange(len(out))
