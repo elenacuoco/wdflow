@@ -8,6 +8,10 @@ so far) and its latency, the time between the end of the data it describes and
 that emission; altering the input after a time t changes no output emitted at
 or before t.
 
+The defaults of the keys below are the `[worker.online]`,
+`[worker.online.causal]` and `[worker.online.zerophase]` tables of
+wdf/config/defaults.toml.
+
 The chain, block by block of `len` seconds:
 
 1. **Band-pass and decimation, causal:** `BandPassDownSampling` with
@@ -21,25 +25,23 @@ The chain, block by block of `len` seconds:
    settling; it is fitted again every `ARRefitInterval` seconds from the past
    only, and a new filter takes over after a warm-up on the last `ARWarmup`
    samples (default `ARorder`), which sets its state exactly. The stretch
-   is chosen from the past by a quality rule (`ARFitQuality`, on by
-   default): of `ARFitCandidates` stretches `ARFitStep` seconds apart, the
+   is chosen from the past by a quality rule (`ARFitQuality`): of `ARFitCandidates` stretches `ARFitStep` seconds apart, the
    most recent whose whitened samples hold no census transient reaching
    `GlitchTrigger` and, for a refit, whose power in each octave from
    `GlitchCensusLow` through the current model stays within
-   `ARFitLevelRatio` of white (`ARFitLevelCheck`, on by default); a refit
+   `ARFitLevelRatio` of white (`ARFitLevelCheck`); a refit
    with none keeps the current model, the first fit takes the candidate of
-   smallest census peak. With `ARFitOwnLevelCheck` (off by default) every
+   smallest census peak. With `ARFitOwnLevelCheck` every
    candidate, first fit and sub-stretches included, must also keep each
    octave's power through its OWN model within `ARFitOwnLevelRatio`
    (default `ARFitLevelRatio`) of white, which rejects a model whose scale
    or shape does not whiten the stretch it was fitted on; the first fit
    then falls back on the least loud candidate that passes this check, if
-   any. With `ARFitSubStretch` "latest" or "longest"
-   (default "none") a fit whose candidates fail and hold census transients
+   any. With `ARFitSubStretch` "latest" or "longest" a fit whose candidates fail and hold census transients
    is taken instead on the contiguous stretch between the transients (each
    padded by `ARFitExcludePad`, default `GlitchSeedPad`), the most recent or
-   the longest, at least `ARFitMinimumLearn` seconds (default half of
-   `learn`), fitted on those samples alone (nothing zeroed or tapered) and
+   the longest, at least `ARFitMinimumLearn` seconds (default
+   `ARFitMinimumLearnFraction` of `learn`), fitted on those samples alone (nothing zeroed or tapered) and
    judged by the same rule; its `fit_start` and `fit_end` are written with
    the candidate it was cut from and the seconds left out. Every model
    applied is written, with its switch time and fit stretch, to
@@ -54,7 +56,7 @@ The chain, block by block of `len` seconds:
    `MinFrequency`, `ThresholdRule`, `BlockLength`, `BlockLambda` and
    `BlockRemainder` from the parameters. **No glitch subtraction and no
    gating:** the online search finds glitches too. Each trigger is labelled
-   and kept: with `GlitchLabel` "census" (the default) "glitch" when its
+   and kept: with `GlitchLabel` "census" "glitch" when its
    window meets a transient of the causal census of the whitened stream
    (`wdf.processes.causal_census.CausalCensus`, written as
    ``GlitchCensusOnline``), with "bases" when the basis it won is one of
@@ -68,7 +70,7 @@ The chain, block by block of `len` seconds:
    running best score of every slot.
 
 Outputs go to ``<outdir>/<run>/<itf>/<channel>_<gpsStart>/``, every file
-named with `SearchName` (default "online"): the triggers (Parquet), their
+named with `SearchName`: the triggers (Parquet), their
 labels and latencies, the ridge candidates, the running best, the model refits,
 and the parameters used.
 
@@ -116,35 +118,41 @@ import math
 from wdf.analysis.io import parameters_file_name, search_suffix
 from wdf.config.Parameters import (Parameters, check_bases, low_frequency_cut, reconstruction_mode,
                                    window_schedule)
+from wdf.config.defaults import defaults, parameter
 from wdf.observers.observer import Observer
 
-#: Basis names whose triggers are labelled "glitch" when none are given: the
+_ON = defaults("worker.online")
+_CAUSAL = defaults("worker.online.causal")
+_ZEROPHASE = defaults("worker.online.zerophase")
+
+#: Basis names whose triggers are labelled "glitch" when none are given
+#: (`[worker.online] GlitchLabelBases` of wdf/config/defaults.toml): the
 #: shortest mothers, which win broadband transients and hardly any window of a
 #: chirp.
-DEFAULT_GLITCH_LABEL_BASES = ("Haar", "DaubC4")
-#: Default `SearchName` of the online search.
-DEFAULT_SEARCH_NAME = "online"
+DEFAULT_GLITCH_LABEL_BASES = _ON["GlitchLabelBases"]
+#: Default `SearchName` of the online search (`[worker.online.causal]`).
+DEFAULT_SEARCH_NAME = _CAUSAL["SearchName"]
 #: Default seconds of band-pass settling read before the fit stretch.
-DEFAULT_FIT_CONTEXT_S = 20.0
+DEFAULT_FIT_CONTEXT_S = _ON["ARFitContext"]
 #: The whitenings the online worker runs (`WhiteningMode`): "causal", the
 #: prediction-error filter, no read-ahead; "zerophase", the offline zero-phase
 #: whitening, with a fixed read-ahead `Latency_s`.
 WHITENING_MODES = ("causal", "zerophase")
 #: Default stretches of the past a fit may be taken on (`ARFitCandidates`).
-DEFAULT_FIT_CANDIDATES = 3
+DEFAULT_FIT_CANDIDATES = _ON["ARFitCandidates"]
 #: Default spacing of those stretches, as a fraction of `learn` (`ARFitStep`).
-DEFAULT_FIT_STEP_FRACTION = 0.5
+DEFAULT_FIT_STEP_FRACTION = _ON["ARFitStepFraction"]
 #: Default largest octave power, through the current model, over white
 #: (and smallest, its inverse) of a refit's stretch (`ARFitLevelRatio`).
-DEFAULT_FIT_LEVEL_RATIO = 4.0
+DEFAULT_FIT_LEVEL_RATIO = _ON["ARFitLevelRatio"]
 #: What a fit takes from candidates that hold census transients
 #: (`ARFitSubStretch`): "none", nothing; "latest", the most recent contiguous
 #: stretch between them; "longest", the longest.
 FIT_SUBSTRETCH_RULES = ("none", "latest", "longest")
 #: Default shortest sub-stretch, as a fraction of `learn` (`ARFitMinimumLearn`).
-DEFAULT_FIT_MINIMUM_FRACTION = 0.5
-#: Default `SearchName` in the "zerophase" mode.
-DEFAULT_ZEROPHASE_SEARCH_NAME = "online_zerophase"
+DEFAULT_FIT_MINIMUM_FRACTION = _ON["ARFitMinimumLearnFraction"]
+#: Default `SearchName` in the "zerophase" mode (`[worker.online.zerophase]`).
+DEFAULT_ZEROPHASE_SEARCH_NAME = _ZEROPHASE["SearchName"]
 #: Zero-phase filters the "zerophase" mode runs: those of fixed support, so
 #: that the latency is fixed.
 ONLINE_ZERO_PHASE_FILTERS = ("truncated",)
@@ -201,7 +209,7 @@ class FrameSource:
 
         from wdf.processes.BandPassDownSampling import SV_to_array
 
-        if self._reader is None or self._next is None or abs(self._next - start) > 1e-6:
+        if self._reader is None or self._next is None or abs(self._next - start) > _ON["frame_contiguity_tolerance_s"]:
             self._reader = FrameIChannel(self.file, self.channel, float(seconds), float(start))
         elif self._length != seconds:
             self._reader.SetDataLength(float(seconds))
@@ -469,12 +477,13 @@ class wdfUnitOnline:
         self.par.copy(parameters)
         par = self.par
         par.resampling = par.sampling / par.ResamplingFactor
-        mode = str(getattr(par, "WhiteningMode", None) or "causal").lower()
+        mode = str(getattr(par, "WhiteningMode", None) or _ON["WhiteningMode"]).lower()
         if mode not in WHITENING_MODES:
             raise ValueError(f"WhiteningMode {mode!r}: use one of {WHITENING_MODES}")
         self.mode = mode
         phase = str(getattr(par, "BandPassPhase", None)
-                    or ("causal" if mode == "causal" else "zero")).lower()
+                    or (_CAUSAL["BandPassPhase"] if mode == "causal"
+                        else _ZEROPHASE["BandPassPhase"])).lower()
         if mode == "causal" and phase != "causal":
             raise ValueError(f"the online worker runs the causal band-pass; BandPassPhase is {phase!r}")
         par.BandPassPhase = phase
@@ -485,46 +494,46 @@ class wdfUnitOnline:
         self.schedule = window_schedule(par)
         check_bases(par, self.schedule)
         par.Ncoeff = max(w for w, _ in self.schedule)
-        par.Ridge = bool(getattr(par, "Ridge", True))
+        par.Ridge = bool(getattr(par, "Ridge", _ON["Ridge"]))
         par.GlitchLabelBases = list(getattr(par, "GlitchLabelBases", None) or DEFAULT_GLITCH_LABEL_BASES)
         from wdf.processes.causal_census import GLITCH_LABELS, CensusSettings
 
-        label = str(getattr(par, "GlitchLabel", None) or GLITCH_LABELS[0]).lower()
+        label = str(getattr(par, "GlitchLabel", None) or _ON["GlitchLabel"]).lower()
         if label not in GLITCH_LABELS:
             raise ValueError(f"GlitchLabel {label!r}: use one of {GLITCH_LABELS}")
         par.GlitchLabel = label
         self.census_settings = CensusSettings.from_parameters(par) if label == "census" else None
         self._census = None
-        par.ARFitGap = float(getattr(par, "ARFitGap", None) or 0.0)
+        par.ARFitGap = float(getattr(par, "ARFitGap", None) or _ON["ARFitGap"])
         par.ARFitContext = float(getattr(par, "ARFitContext", None) or DEFAULT_FIT_CONTEXT_S)
-        par.ARRefitInterval = float(getattr(par, "ARRefitInterval", None) or 0.0)
-        warm = getattr(par, "ARWarmup", None)
+        par.ARRefitInterval = float(getattr(par, "ARRefitInterval", None) or _ON["ARRefitInterval"])
+        warm = getattr(par, "ARWarmup", _ON["ARWarmup"])
         par.ARWarmup = int(par.ARorder if warm is None else warm)
-        par.ARFitQuality = bool(getattr(par, "ARFitQuality", True))
+        par.ARFitQuality = bool(getattr(par, "ARFitQuality", _ON["ARFitQuality"]))
         par.ARFitCandidates = int(getattr(par, "ARFitCandidates", None) or DEFAULT_FIT_CANDIDATES)
-        step = getattr(par, "ARFitStep", None)
+        step = getattr(par, "ARFitStep", _ON["ARFitStep"])
         par.ARFitStep = float(DEFAULT_FIT_STEP_FRACTION * par.learn if step is None else step)
         par.ARFitLevelRatio = float(getattr(par, "ARFitLevelRatio", None) or DEFAULT_FIT_LEVEL_RATIO)
         if par.ARFitCandidates < 1 or par.ARFitStep < 0 or par.ARFitLevelRatio <= 1:
             raise ValueError("ARFitCandidates must be at least 1, ARFitStep not negative and "
                              "ARFitLevelRatio above 1")
         check = getattr(par, "ARFitLevelCheck", None)
-        par.ARFitLevelCheck = bool(True if check is None else check)
-        par.ARFitOwnLevelCheck = bool(getattr(par, "ARFitOwnLevelCheck", None) or False)
-        own = getattr(par, "ARFitOwnLevelRatio", None)
+        par.ARFitLevelCheck = bool(_ON["ARFitLevelCheck"] if check is None else check)
+        par.ARFitOwnLevelCheck = bool(getattr(par, "ARFitOwnLevelCheck", None) or _ON["ARFitOwnLevelCheck"])
+        own = getattr(par, "ARFitOwnLevelRatio", _ON["ARFitOwnLevelRatio"])
         par.ARFitOwnLevelRatio = float(par.ARFitLevelRatio if own is None else own)
         if par.ARFitOwnLevelRatio <= 1:
             raise ValueError("ARFitOwnLevelRatio must be above 1")
-        rule = str(getattr(par, "ARFitSubStretch", None) or FIT_SUBSTRETCH_RULES[0]).lower()
+        rule = str(getattr(par, "ARFitSubStretch", None) or _ON["ARFitSubStretch"]).lower()
         if rule not in FIT_SUBSTRETCH_RULES:
             raise ValueError(f"ARFitSubStretch {rule!r}: use one of {FIT_SUBSTRETCH_RULES}")
         par.ARFitSubStretch = rule
         from wdf.processes.causal_census import CensusSettings as _Census
 
         self._fit_census = _Census.from_parameters(par)
-        pad = getattr(par, "ARFitExcludePad", None)
+        pad = getattr(par, "ARFitExcludePad", _ON["ARFitExcludePad"])
         par.ARFitExcludePad = float(self._fit_census.pad if pad is None else pad)
-        shortest = getattr(par, "ARFitMinimumLearn", None)
+        shortest = getattr(par, "ARFitMinimumLearn", _ON["ARFitMinimumLearn"])
         par.ARFitMinimumLearn = float(DEFAULT_FIT_MINIMUM_FRACTION * par.learn if shortest is None
                                       else shortest)
         if par.ARFitExcludePad < 0:
@@ -602,14 +611,14 @@ class wdfUnitOnline:
         par.WhiteningMode = self.mode
         if par.BandPassPhase not in BAND_PASS_PHASES:
             raise ValueError(f"BandPassPhase {par.BandPassPhase!r}: use one of {BAND_PASS_PHASES}")
-        name = str(getattr(par, "ZeroPhaseFilter", None) or "truncated").lower()
+        name = str(getattr(par, "ZeroPhaseFilter", None) or _ZEROPHASE["ZeroPhaseFilter"]).lower()
         if name not in ONLINE_ZERO_PHASE_FILTERS:
             raise ValueError(f"WhiteningMode 'zerophase' runs a filter of fixed support, so of "
                              f"fixed latency: ZeroPhaseFilter {name!r}, use one of "
                              f"{ONLINE_ZERO_PHASE_FILTERS}")
         par.ZeroPhaseFilter = name
-        par.ZeroPhaseDuration = float(getattr(par, "ZeroPhaseDuration", None) or DEFAULT_TRUNCATION_S)
-        par.HoldOutsideBand = bool(getattr(par, "HoldOutsideBand", False))
+        par.ZeroPhaseDuration = float(parameter(par, "ZeroPhaseDuration", "worker") or DEFAULT_TRUNCATION_S)
+        par.HoldOutsideBand = bool(getattr(par, "HoldOutsideBand", _ZEROPHASE["HoldOutsideBand"]))
         rate = float(par.resampling)
         support = int(round(0.5 * par.ZeroPhaseDuration * rate))
         par.ZeroPhaseLatency = support
@@ -730,7 +739,7 @@ class wdfUnitOnline:
         """`ARModelsFrom`: the other run's model history, checked against this
         run's model order, whitening and rate."""
         par = self.par
-        path = str(getattr(par, "ARModelsFrom", None) or "")
+        path = str(getattr(par, "ARModelsFrom", None) or _ON["ARModelsFrom"])
         par.ARModelsFrom = path
         if not path:
             return None
@@ -773,7 +782,7 @@ class wdfUnitOnline:
         reaching `GlitchTrigger`) and, against the current model, its power
         in each octave from `GlitchCensusLow` over that of white noise,
         within ``[1 / ARFitLevelRatio, ARFitLevelRatio]`` (with
-        `ARFitLevelCheck`, the default; the levels are recorded either way).
+        `ARFitLevelCheck`; the levels are recorded either way).
         An empty whitened stretch (shorter than the filter) fails.
 
         :param seeds_out: a list the census seeds (`glitch_seeds`) are
@@ -982,7 +991,7 @@ class wdfUnitOnline:
         filter; None for a refit with no stretch passing the rule, which
         keeps the current model.
 
-        With `ARFitQuality` (default True) each candidate is whitened, by the
+        With `ARFitQuality` each candidate is whitened, by the
         current model for a refit and by its own for the first fit, and must
         hold no census transient reaching `GlitchTrigger`; a refit's candidate
         must also keep each octave's power, through the current model, within
@@ -993,7 +1002,7 @@ class wdfUnitOnline:
         of smallest census peak among those that pass the own-level check,
         or among all when none does.
 
-        With `ARFitSubStretch` "latest" or "longest" (default "none") a refit
+        With `ARFitSubStretch` "latest" or "longest" a refit
         whose full candidates all fail then tries, in the candidates that
         hold census transients, the contiguous stretch between them
         (`_gaps`, at least `ARFitMinimumLearn` long), fitted on those samples

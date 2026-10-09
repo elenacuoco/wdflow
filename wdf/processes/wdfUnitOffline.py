@@ -17,7 +17,7 @@ afford, each switched and set by the parameters, nothing hard-coded:
   `GlitchCoincidenceJitter` is protected and left in the data
   (`GlitchProtectCoincident`, on by default). The fit stretch of the noise
   model goes through the same census and is cleaned and fitted again
-  (`GlitchCleanFitStretch`, default True);
+  (`GlitchCleanFitStretch`, default `[worker.offline] GlitchCleanFitStretch`);
 - **the ridge over the segment** (`Ridge`, `wdf.analysis.ridge_tracking`):
   the whitened stream's cell map, a centred background, and `offline_ridge`
   with its backward and forward extension; the map can be taken in the
@@ -39,12 +39,14 @@ import time
 import numpy as np
 
 from wdf.analysis.io import search_suffix
+from wdf.config.defaults import defaults
 from wdf.processes import glitch_subtraction as gs
 from wdf.processes.BandPassDownSampling import BandPassDownSampling, read_conditioned
 from wdf.processes.wdfUnitDSWorker import DEFAULT_ZERO_PHASE_FILTER, wdfUnitDSWorker
 from wdf.processes.zero_phase_whitening import (DEFAULT_RESPONSE_FLOOR, DEFAULT_TRUNCATION_S,
                                                 MagnitudeWhitening, TruncatedWhitening)
 
+_OFF = defaults("worker.offline")
 
 #: `GlitchProtection` of a run with `GlitchProtectCoincident` on but no other
 #: detector's census: nothing can be protected.
@@ -66,12 +68,13 @@ class wdfUnitOffline(wdfUnitDSWorker):
 
     def __init__(self, parameters):
         wdfUnitDSWorker.__init__(self, parameters)
-        phase = str(getattr(self.par, "BandPassPhase", None) or "zero").lower()
+        phase = str(getattr(self.par, "BandPassPhase", None) or _OFF["BandPassPhase"]).lower()
         if phase != "zero":
             raise ValueError(f"the offline worker runs the zero-phase band-pass; BandPassPhase is {phase!r}")
         self.par.BandPassPhase = phase
-        self.par.GlitchSubtraction = bool(getattr(self.par, "GlitchSubtraction", False))
-        self.par.Ridge = bool(getattr(self.par, "Ridge", False))
+        self.par.GlitchSubtraction = bool(getattr(self.par, "GlitchSubtraction",
+                                                  _OFF["GlitchSubtraction"]))
+        self.par.Ridge = bool(getattr(self.par, "Ridge", _OFF["Ridge"]))
         search_suffix(self.par)
         self._glitches = None
         self._settings = gs.M4Settings.from_parameters(self.par) if self.par.GlitchSubtraction else None
@@ -116,8 +119,7 @@ class wdfUnitOffline(wdfUnitDSWorker):
         zero_phase = str(getattr(self.par, "ZeroPhaseFilter", DEFAULT_ZERO_PHASE_FILTER)).lower()
         n = int(self.par.resampling)
         if zero_phase == "truncated":
-            return TruncatedWhitening(ar, n, 0, duration=float(getattr(self.par, "ZeroPhaseDuration",
-                                                                       DEFAULT_TRUNCATION_S)),
+            return TruncatedWhitening(ar, n, 0, duration=self._truncation_s(),
                                       sampling=self.par.resampling)
         if zero_phase == "magnitude":
             return MagnitudeWhitening(ar, n, 0, floor=float(getattr(self.par, "ZeroPhaseResponseFloor",
@@ -128,7 +130,8 @@ class wdfUnitOffline(wdfUnitDSWorker):
         """With M4, the fit stretch's census through the model just fitted; a
         stretch holding a seed is cleaned and the model fitted again, once.
         With `GlitchRejectFitStretch` a seed left after that refuses it."""
-        if not (self.par.GlitchSubtraction and bool(getattr(self.par, "GlitchCleanFitStretch", True))):
+        if not (self.par.GlitchSubtraction
+                and bool(getattr(self.par, "GlitchCleanFitStretch", _OFF["GlitchCleanFitStretch"]))):
             return
         from wdf.structures.array2SeqView import array2SeqView
 
@@ -155,7 +158,8 @@ class wdfUnitOffline(wdfUnitDSWorker):
         whiten.ParametersEstimate(view.SV)
         again = model_of(whiten)
         self.par.FitStretchSeedsAfter = len(again.seeds)
-        if again.seeds and bool(getattr(self.par, "GlitchRejectFitStretch", False)):
+        if again.seeds and bool(getattr(self.par, "GlitchRejectFitStretch",
+                                        _OFF["GlitchRejectFitStretch"])):
             raise ValueError(f"the fit stretch from {start} still holds {len(again.seeds)} transients "
                              "after M4; move AREstimationOffset")
 
@@ -303,7 +307,7 @@ class wdfUnitOffline(wdfUnitDSWorker):
         Z = background_z(X, settings)
         found, used = offline_ridge(Z, origin, settings, X)
         self.par.RidgeDriftUsed, self.par.RidgeXDropUsed = used.drift, used.xdrop
-        top = int(getattr(self.par, "RidgeWaveforms", 10))
+        top = int(getattr(self.par, "RidgeWaveforms", _OFF["RidgeWaveforms"]))
         self.par.RidgeWaveforms = top
         alpha = settings.alphas[0] if settings.alphas else 0.0
         starts = self._whitened_start + offsets / rate
@@ -361,7 +365,7 @@ def _aligned(maps):
     Zs, Xs = [], []
     for origin, s, Z, X in maps:
         offset = (first - origin) / slot
-        if abs(s - slot) > 1e-12 or abs(offset - round(offset)) > 1e-6:
+        if abs(s - slot) > 1e-12 or abs(offset - round(offset)) > _OFF["slot_grid_tolerance"]:
             raise ValueError("the detectors' cell maps are not on one slot grid")
         a = int(round(offset))
         n = int(round((last - first) / slot))

@@ -45,14 +45,20 @@ from wdf.processes.zero_phase_whitening import (
     TruncatedWhitening,
     ZeroPhaseWhitening,
 )
+from wdf.config.defaults import defaults, parameter
 
-DEFAULT_AR_ESTIMATION_OFFSET_S = 50.0
+_W = defaults("worker")
+
+#: Seconds into the segment the fit stretch starts (`[worker]
+#: AREstimationOffset` of wdf/config/defaults.toml).
+DEFAULT_AR_ESTIMATION_OFFSET_S = _W["AREstimationOffset"]
 #: Seconds of real data read on each side of the fit stretch and dropped after
 #: the band-pass, so that the model is fitted on samples the filter reached
 #: settled. It must be at least the band-pass's settling length, which is
-#: checked; the default is several settling lengths of the default filter.
-DEFAULT_AR_FIT_CONTEXT_S = 20.0
-#: The whitening filters the worker can run: "root", the default, is
+#: checked; the default (`[worker] ARFitContext`) is several settling lengths
+#: of the default filter.
+DEFAULT_AR_FIT_CONTEXT_S = _W["ARFitContext"]
+#: The whitening filters the worker can run: "root" is
 #: `ZeroPhaseWhitening`, the fitted square root run forward and backward;
 #: "magnitude" is `MagnitudeWhitening`, the response ``|A|`` itself; "causal" is
 #: `CausalWhitening`, the fitted lattice filter run forward only, at zero
@@ -61,10 +67,11 @@ DEFAULT_AR_FIT_CONTEXT_S = 20.0
 #: to `Parameters.ZeroPhaseDuration` seconds, gwpy's whitening with the Burg
 #: model's ASD.
 ZERO_PHASE_FILTERS = ("root", "magnitude", "causal", "truncated")
-DEFAULT_ZERO_PHASE_FILTER = "root"
+#: The filter of a run that does not name one (`[worker] ZeroPhaseFilter`).
+DEFAULT_ZERO_PHASE_FILTER = _W["ZeroPhaseFilter"]
 #: Level of the band-pass's ``|H|^2`` that defines the passband the whitening
-#: whitens (`BandPassDownSampling.passband`), dB.
-DEFAULT_PASSBAND_LEVEL_DB = -3.0
+#: whitens (`BandPassDownSampling.passband`), dB (`[worker] PassbandLevel`).
+DEFAULT_PASSBAND_LEVEL_DB = _W["PassbandLevel"]
 import logging
 import os
 
@@ -115,6 +122,12 @@ class wdfUnitDSWorker(object):
         self.par.resampling=parameters.sampling/parameters.ResamplingFactor
         self.par.len=parameters.len
            
+    def _truncation_s(self):
+        """`ZeroPhaseDuration`, s: the run's, else `[whitening.zero_phase]
+        truncation_s` of the defaults file."""
+        duration = parameter(self.par, "ZeroPhaseDuration", "worker")
+        return float(DEFAULT_TRUNCATION_S if duration is None else duration)
+
     def _learn_stretch(self, gpsStart, gpsEnd):
         """The conditioned stretch a noise model is fitted on.
 
@@ -237,8 +250,7 @@ class wdfUnitDSWorker(object):
                               DEFAULT_RESPONSE_FLOOR))
         self.par.ZeroPhaseResponseFloor = floor
         if zero_phase == "truncated":
-            duration = float(getattr(self.par, "ZeroPhaseDuration",
-                                     DEFAULT_TRUNCATION_S))
+            duration = self._truncation_s()
             self.par.ZeroPhaseDuration = duration
 
         # Coefficients of the square-root model the "root" filter runs in
@@ -246,7 +258,7 @@ class wdfUnitDSWorker(object):
         # Unset means the model's own order: a lower one costs accuracy
         # twice over, since the response is the square of the filter's
         # magnitude.
-        sqrt_order = getattr(self.par, "SqrtWhiteningOrder", None)
+        sqrt_order = getattr(self.par, "SqrtWhiteningOrder", _W["SqrtWhiteningOrder"])
         sqrt_order = (max(DEFAULT_SQRT_ORDER, self.par.ARorder)
                       if sqrt_order is None else int(sqrt_order))
         self.par.SqrtWhiteningOrder = sqrt_order
@@ -254,7 +266,7 @@ class wdfUnitDSWorker(object):
                        for j in range(self.par.ARorder + 1)])
 
         # Which fit the whitening filter comes from. "burg" is the
-        # historical path and the default: the autoregressive model above,
+        # autoregressive model above,
         # then its square root. "spectrum" fits the same filter straight to
         # the measured spectrum of the same stretch, which is one fit
         # instead of two and weighs its error in decibels across the band
@@ -263,7 +275,7 @@ class wdfUnitDSWorker(object):
         # strain it leaves the whitened spectrum a factor 2.9 low below
         # 32 Hz. The autoregressive model is estimated and saved either
         # way, so a run can be read back and compared against the other.
-        model = str(getattr(self.par, "WhiteningModel", "burg")).lower()
+        model = str(getattr(self.par, "WhiteningModel", _W["WhiteningModel"])).lower()
         if model not in ("burg", "spectrum"):
             raise ValueError(
                 f"WhiteningModel is {model!r}; expected 'burg' or 'spectrum'")
@@ -290,9 +302,8 @@ class wdfUnitDSWorker(object):
         # band -- a gain up to 1e6 on nothing -- which the whitening must
         # not undo: the stop band belongs to the band-pass alone. Held, the
         # target is |A| inside the band-pass's own passband and its edge
-        # values outside it. False keeps the full band, and is the default
-        # until the search is calibrated on a stream white in band only.
-        hold = bool(getattr(self.par, "HoldOutsideBand", False))
+        # values outside it. False keeps the full band.
+        hold = bool(getattr(self.par, "HoldOutsideBand", _W["HoldOutsideBand"]))
         self.par.HoldOutsideBand = hold
         if hold:
             level = float(getattr(self.par, "PassbandLevel",
@@ -497,13 +508,13 @@ class wdfUnitDSWorker(object):
         seconds of real data on each side that the band-pass settles over and
         that are then dropped (default `DEFAULT_AR_FIT_CONTEXT_S`); the frames
         must hold that context. With `Parameters.HoldOutsideBand` (default
-        False) the whitening whitens only the passband of the band-pass, read off
-        its design at `Parameters.PassbandLevel` dB (default -3) and recorded
+        `[worker] HoldOutsideBand`) the whitening whitens only the passband of the band-pass, read off
+        its design at `Parameters.PassbandLevel` dB (default
+        `DEFAULT_PASSBAND_LEVEL_DB`) and recorded
         as `Passband`: the model's ``|A|`` inside, held at its edge values
         outside with a raised cosine of `Parameters.BandEdgeBlend` Hz (default
-        1), so that the stop band exists in the band-pass alone; the search
-        then thresholds on the whitened stream's own scale. False, the
-        default, is ``|A|`` over the full band: held, the stream is white in
+        `DEFAULT_BAND_BLEND_HZ`), so that the stop band exists in the band-pass alone; the search
+        then thresholds on the whitened stream's own scale. False is ``|A|`` over the full band: held, the stream is white in
         the passband only, and the search reads the noise scale of each
         window as the median absolute coefficient over every level
         (`WaveletThreshold`, p4TSA), which is right on a stream white to
@@ -548,7 +559,7 @@ class wdfUnitDSWorker(object):
             data = SV()
             data_ds = SV()
             dataw = SV()
-            for i in range(100):
+            for i in range(_W["frame_retries"]):
                 try:
                     streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)
                     streaming.GetData(data)
@@ -571,14 +582,18 @@ class wdfUnitDSWorker(object):
             # DoubleWhitening::GetData in p4TSA); the "magnitude" filter reads
             # its support of it. It is a FIXED size, decoupled from par.len
             # (an I/O batching/perf knob), mirroring BandPassDownSampling's
-            # own padlen convention. Default: 20 seconds of resampled-rate
-            # data or the filter's latency, whichever is longer, so that the
+            # own padlen convention. Default: `[worker] WhiteningExtraSeconds`
+            # of resampled-rate data or the filter's latency, whichever is
+            # longer, so that the
             # future a sample depends on is always read rather than assumed.
             # Set parameters.WhiteningExtraSize explicitly to override; the
             # filter refuses a positive value below its latency. 0 makes the
             # lookahead scale with par.len instead (legacy behavior).
-            extra_size = int(getattr(self.par, "WhiteningExtraSize",
-                                     max(20 * self.par.resampling, whitening.latency)))
+            extra_size = getattr(self.par, "WhiteningExtraSize", _W["WhiteningExtraSize"])
+            if extra_size is None:
+                extra_size = max(_W["WhiteningExtraSeconds"] * self.par.resampling,
+                                 whitening.latency)
+            extra_size = int(extra_size)
             self.par.WhiteningExtraSize = extra_size
 
             # The chain reads ahead of what it emits, and the segment has to end

@@ -16,6 +16,7 @@ from py4tsa.tsa import WDF2Classify, EventFullFeatured
 from wdf.observers.observable import Observable
 from wdf.config import Parameters
 from wdf.config.Parameters import threshold_rule
+from wdf.config.defaults import parameter
 
 
 def use_bases(classify, bases):
@@ -160,8 +161,8 @@ class wdf(Observable):
 
         :type wth: py4tsa.WaveletThreshold
         :param wavThresh: the rule for the coefficients of a window; None (the default) reads it
-            from `WdfParams.ThresholdRule` (`wdf.config.Parameters.threshold_rule`, "block" when
-            unset): `block`, contiguous coefficients of one level judged together (Cai 1999), or
+            from `WdfParams.ThresholdRule` (`wdf.config.Parameters.threshold_rule`, `[run]
+            ThresholdRule` when unset): `block`, contiguous coefficients of one level judged together (Cai 1999), or
             `dohonojohnston`, the universal threshold on each coefficient alone, which the method
             paper's runs used. The rule in force is written back to `ThresholdRule`.
 
@@ -196,10 +197,10 @@ class wdf(Observable):
             wTh,
         )
         length, lam = use_block(self.wdf2classify, getattr(self.parameters, "BlockLength", None),
-                                getattr(self.parameters, "BlockLambda", None))
+                                parameter(self.parameters, "BlockLambda", "search"))
         if length is not None:
             self.parameters.BlockLength, self.parameters.BlockLambda = length, lam
-        given = getattr(self.parameters, "Bases", None)
+        given = parameter(self.parameters, "Bases", "search")
         bases = given if given is not None else getattr(self.parameters, "bases", None)
         if bases is not None:
             use_bases(self.wdf2classify, bases)
@@ -209,10 +210,10 @@ class wdf(Observable):
             self.parameters.bases = None
         if given is not None:
             self.parameters.Bases = self.parameters.bases
-        remainder = getattr(self.parameters, "BlockRemainder", None)
+        remainder = parameter(self.parameters, "BlockRemainder", "search")
         if remainder is not None:
             self.parameters.BlockRemainder = use_block_remainder(self.wdf2classify, remainder)
-        f_min = getattr(self.parameters, "MinFrequency", None)
+        f_min = parameter(self.parameters, "MinFrequency", "search")
         if f_min:
             self.parameters.MinFrequency = use_min_frequency(
                 self.wdf2classify, f_min, getattr(self.parameters, "resampling", None) or 0.0)

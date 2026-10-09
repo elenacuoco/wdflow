@@ -1,4 +1,5 @@
-"""The run configuration, read from JSON and shared by every stage.
+"""The run configuration, read from a TOML (or JSON) file and shared by every
+stage.
 
 One object carries what the search is told: which channel of which frames over
 which segments, the conditioning parameters, the analysis window and its
@@ -6,9 +7,9 @@ overlap, and where the output goes. Stages read it rather than being given
 arguments one at a time, so a run is described by one file and reproduced from
 it.
 
-Nothing here decides anything. A value that is not in the configuration is not
-a parameter of the search, and a parameter of the search is not written
-anywhere else.
+Nothing here decides anything. A key the configuration does not set takes its
+default from wdf/config/defaults.toml (`wdf.config.defaults`), and no value of
+the search is written anywhere else; `REQUIRED_KEYS` have no default.
 """
 __author__ = "Elena Cuoco"
 __copyright__ = "Copyright 2017, Elena Cuoco"
@@ -23,6 +24,10 @@ __project__ = "wdf"
 import json
 import copy
 import pprint 
+
+from wdf.config.defaults import defaults, parameter
+
+_RUN = defaults("run")
 pp = pprint.PrettyPrinter(indent=4)
 
 # class to handle the parameters
@@ -114,9 +119,10 @@ def window_schedule(par):
 
 
 #: The high-pass corner and the lowest frequency of the conditioning, Hz, when
-#: a run does not give `LowFrequencyCut`. It is the one default every stage
-#: reads, through `low_frequency_cut`.
-DEFAULT_LOW_FREQUENCY_CUT_HZ = 4.0
+#: a run does not give `LowFrequencyCut` (`[run] LowFrequencyCut` of
+#: wdf/config/defaults.toml). It is the one default every stage reads, through
+#: `low_frequency_cut`.
+DEFAULT_LOW_FREQUENCY_CUT_HZ = _RUN["LowFrequencyCut"]
 
 
 def low_frequency_cut(par):
@@ -135,8 +141,8 @@ def low_frequency_cut(par):
 #: The rules for the coefficients of a window `ThresholdRule` may name, as
 #: p4TSA's `WaveletThreshold` spells them.
 THRESHOLD_RULES = ("block", "dohonojohnston", "cuoco")
-#: The rule of a run that does not name one.
-DEFAULT_THRESHOLD_RULE = "block"
+#: The rule of a run that does not name one (`[run] ThresholdRule`).
+DEFAULT_THRESHOLD_RULE = _RUN["ThresholdRule"]
 
 
 def threshold_rule(par):
@@ -192,7 +198,7 @@ def check_bases(par, schedule):
         return
     if isinstance(names, str):
         names = [n.strip() for n in names.split(",") if n.strip()]
-    given = int(getattr(par, "BlockLength", 0) or 0)
+    given = int(getattr(par, "BlockLength", None) or _RUN["BlockLength"])
     for window, _ in schedule:
         length = given if given > 0 else block_length_of(window)
         for name in names:
@@ -211,6 +217,13 @@ def check_bases(par, schedule):
 #: The table of a configuration file whose sub-tables override the run's
 #: values for one detector.
 DETECTOR_TABLE = "detectors"
+#: The keys a run must give, which have no default: the data (`file`,
+#: `channel`, `sampling`, `gps`), the output (`outdir`, `run`), the read block
+#: `len`, the noise model (`ARorder`, `learn`, `preWhite` offline) and the
+#: search (`window`, `overlap`, `threshold`). Every other key has its default in
+#: wdf/config/defaults.toml.
+REQUIRED_KEYS = ("file", "channel", "sampling", "gps", "outdir", "run", "len", "ARorder", "learn",
+                 "preWhite", "window", "overlap", "threshold")
 
 
 def load_config(path, ifo=None, **overrides):
@@ -266,8 +279,9 @@ COINCIDENCES = ("wavegram", "track")
 #: Stage 4 (`Scorer`): "classic", a column of the candidate table
 #: (`NetworkRankColumn`); "gnn", `GNNCoincidenceScorer` loaded from `GNNModel`.
 SCORERS = ("classic", "gnn")
-#: The paper path is the default of every stage.
-DEFAULT_RECONSTRUCTION, DEFAULT_COINCIDENCE, DEFAULT_SCORER = "wavegram", "wavegram", "classic"
+#: The default of every stage (`[run] Reconstruction`, `Coincidence`, `Scorer`).
+DEFAULT_RECONSTRUCTION, DEFAULT_COINCIDENCE, DEFAULT_SCORER = (
+    _RUN["Reconstruction"], _RUN["Coincidence"], _RUN["Scorer"])
 
 
 def _choice(par, key, allowed, default):
@@ -279,7 +293,7 @@ def _choice(par, key, allowed, default):
 
 def reconstruction_mode(par):
     """The run's `Reconstruction`, one of `RECONSTRUCTIONS`, default
-    "wavegram".
+    `[run] Reconstruction`.
 
     :raises ValueError: on an unknown value.
     """
@@ -306,6 +320,6 @@ def network_path(par):
         raise ValueError(f"Reconstruction {reconstruction!r} with Coincidence {coincidence!r}: "
                          "the wavegram and the track paths do not mix; set both to "
                          "'wavegram' or both to 'track'")
-    if scorer == "gnn" and not getattr(par, "GNNModel", None):
+    if scorer == "gnn" and not parameter(par, "GNNModel", "run"):
         raise ValueError("Scorer 'gnn' needs GNNModel, the path of a saved GNNCoincidenceScorer")
     return reconstruction, coincidence, scorer

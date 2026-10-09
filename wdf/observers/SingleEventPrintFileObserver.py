@@ -23,7 +23,10 @@ import os.path
 
 from wdf.analysis.coefficients import TriggerWriter
 from wdf.analysis.io import trigger_file_name
+from wdf.config.defaults import defaults
 from wdf.observers.observer import Observer
+
+_OBS = defaults("observers")
 
 
 class SingleEventPrintTriggers(Observer):
@@ -34,7 +37,7 @@ class SingleEventPrintTriggers(Observer):
     read at all.
     """
 
-    def __init__(self, par, flush_every=500):
+    def __init__(self, par, flush_every=_OBS["flush_every"]):
         """
         :type par: wdf.config.Parameters.Parameters
         :param par: run configuration, read for the output path

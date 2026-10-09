@@ -14,6 +14,84 @@
 # rate or of the Nyquist frequency.
 
 # ============================================================================
+# Defaults of the run configuration helpers (wdf/config/Parameters.py), the segment workers
+# (wdf/processes/wdfUnitDSWorker.py, wdfUnitOffline.py, wdfUnitOnline.py) and the observers.
+
+[run]
+LowFrequencyCut = 4.0  # [Hz] high-pass corner and lowest frequency of the conditioning, read by every stage through low_frequency_cut
+ThresholdRule = "block"  # [name] rule for the coefficients of a window (block, dohonojohnston or cuoco)
+BlockLength = 0  # [count] block length L of the block rule checked by check_bases; 0: round(ln window)
+Reconstruction = "wavegram"  # [name] stage 2 of the network workflow (wavegram or track)
+Coincidence = "wavegram"  # [name] stage 3 of the network workflow (wavegram or track)
+Scorer = "classic"  # [name] stage 4 of the network workflow (classic or gnn)
+GNNModel = "<unset>"  # [path] saved GNNCoincidenceScorer of the "gnn" scorer; required when Scorer is "gnn"
+
+[worker]
+AREstimationOffset = 50.0  # [s] start of the noise-model fit stretch after the segment start
+ARFitContext = 20.0  # [s] real data read on each side of the fit stretch and dropped after the band-pass
+ZeroPhaseFilter = "root"  # [name] whitening filter of the segment worker (root, magnitude, causal or truncated)
+WhiteningModel = "burg"  # [name] fit the whitening filter comes from (burg: AR model; spectrum: measured spectrum)
+HoldOutsideBand = false  # [bool] whiten only inside the band-pass passband and hold the edge values outside it
+PassbandLevel = -3.0  # [dB] level of the band-pass |H|^2 that defines the passband the whitening whitens
+SqrtWhiteningOrder = "<unset>"  # [count] order of the square-root model of the root filter; unset: max(zero_phase_whitening DEFAULT_SQRT_ORDER, ARorder)
+WhiteningExtraSize = "<unset>"  # [samples] whitening look-ahead buffered past each output block; unset: max(WhiteningExtraSeconds * resampling, filter latency)
+WhiteningExtraSeconds = 20.0  # [s] look-ahead of the whitening when WhiteningExtraSize is unset, at the resampled rate
+ZeroPhaseDuration = "<unset>"  # [s] length of the truncated whitening filter, read half ahead; unset: [whitening.zero_phase] truncation_s
+frame_retries = 100  # [count] one-second steps tried forward from the segment start to find the first frame (implementation setting)
+
+[search]
+Bases = "<unset>"  # [name] wavelet bases competing for each window; unset: p4TSA WDF2Classify's own list
+BlockLambda = "<unset>"  # [-] lambda of the block rule; unset: p4TSA's value (4.505, calibrated for L about 7)
+BlockRemainder = "<unset>"  # [name] how the block rule treats a run's short remainder ("merge"); unset: p4TSA's own handling, no call made
+MinFrequency = "<unset>"  # [Hz] tiles at or below this frequency leave sigma, the block rule and EnWDF; unset or 0: none
+
+[worker.offline]
+BandPassPhase = "zero"  # [name] band-pass phase of the offline worker (only zero is accepted)
+GlitchSubtraction = false  # [bool] M4 sine-Gaussian glitch subtraction before the whitening
+Ridge = false  # [bool] ridge over the segment's whitened stream
+GlitchCleanFitStretch = true  # [bool] with M4, clean the noise-model fit stretch of census transients and fit again
+GlitchRejectFitStretch = false  # [bool] with M4, refuse a fit stretch that still holds transients after cleaning
+RidgeWaveforms = 10  # [count] highest-ranked ridge candidates whose integrated energy is computed
+slot_grid_tolerance = 1e-6  # [-] largest fractional slot offset accepted when aligning the detectors' cell maps (numerical setting)
+
+[worker.online]
+WhiteningMode = "causal"  # [name] online whitening (causal: prediction-error filter; zerophase: offline whitening at fixed latency)
+Ridge = true  # [bool] causal ridge over the running wavegram
+GlitchLabelBases = ["Haar", "DaubC4"]  # [name] bases whose triggers are labelled glitch when GlitchLabel is bases
+GlitchLabel = "census"  # [name] how triggers are labelled glitch (census or bases)
+ARFitGap = 0.0  # [s] gap between the end of a fit stretch and the time the model takes over
+ARFitContext = 20.0  # [s] band-pass settling read before the first fit stretch
+ARRefitInterval = 0.0  # [s] time between model refits; 0: one model for the whole segment
+ARWarmup = "<unset>"  # [samples] past samples that set the causal filter's state; unset: ARorder
+ARFitQuality = true  # [bool] judge each candidate fit stretch with the quality rule (census and octave levels)
+ARFitCandidates = 3  # [count] stretches of the past a fit may be taken on
+ARFitStep = "<unset>"  # [s] spacing of the candidate stretches; unset: ARFitStepFraction * learn
+ARFitStepFraction = 0.5  # [-] spacing of the candidate stretches as a fraction of learn, when ARFitStep is unset
+ARFitLevelRatio = 4.0  # [-] largest octave power over white (smallest: its inverse) of a refit's stretch through the current model
+ARFitLevelCheck = true  # [bool] apply the octave-level rule of ARFitLevelRatio
+ARFitOwnLevelCheck = false  # [bool] apply the octave-level rule to a stretch through its own model
+ARFitOwnLevelRatio = "<unset>"  # [-] level ratio of the own-model check; unset: ARFitLevelRatio
+ARFitSubStretch = "none"  # [name] what a fit takes from candidates holding census transients (none, latest or longest)
+ARFitExcludePad = "<unset>"  # [s] margin excluded around a census transient in a fit stretch; unset: the census pad
+ARFitMinimumLearn = "<unset>"  # [s] shortest sub-stretch a fit accepts; unset: ARFitMinimumLearnFraction * learn
+ARFitMinimumLearnFraction = 0.5  # [-] shortest sub-stretch as a fraction of learn, when ARFitMinimumLearn is unset
+ARModelsFrom = ""  # [path] model history of another run to reuse instead of fitting; empty: fit the models
+frame_contiguity_tolerance_s = 1e-6  # [s] largest gap between two frame reads still read as contiguous (numerical setting)
+
+[worker.online.causal]
+SearchName = "online"  # [name] name of the files of the causal online search
+BandPassPhase = "causal"  # [name] band-pass phase of the causal mode (only causal is accepted)
+
+[worker.online.zerophase]
+SearchName = "online_zerophase"  # [name] name of the files of the zerophase online search
+BandPassPhase = "zero"  # [name] band-pass phase of the zerophase mode (zero or causal)
+ZeroPhaseFilter = "truncated"  # [name] whitening filter of the zerophase mode (only truncated, of fixed support)
+HoldOutsideBand = false  # [bool] whiten only inside the band-pass passband in the zerophase mode
+
+[observers]
+flush_every = 500  # [count] triggers buffered per Parquet row group of SingleEventPrintTriggers (I/O setting)
+
+# ============================================================================
 # Signal conditioning: band-pass and decimation, zero-phase whitening, glitch
 # subtraction (M4) and the census of transients.
 
