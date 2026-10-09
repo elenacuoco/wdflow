@@ -5,6 +5,60 @@ what the software does differently, not how it came to.
 
 ## Unreleased
 
+### Waveform completion
+
+`wdf.analysis.waveform_completion`: an offline stage between the detection
+and a parameter estimation that fills the holes between an event's tiles.
+`complete(stream, fs, tiles, settings)` builds a time-frequency mask from
+the event's tiles (`event_tiles`) -- the holes between them bridged in
+log-frequency up to `CompletionBridgeGap`, the track's ridge
+`CompletionBand` octaves on each side when there is one, the whole grown by
+`CompletionDilationTime` and `CompletionDilationOctaves` -- and inverts every
+coefficient inside it, without the detection threshold, over the zero-phase
+whitened stream from `CompletionPad` before the first tile to after the
+last, in `CompletionBasis` (the cosine-packet best basis `CosinePackets<m>`,
+a `LocalCos<M>` or a p4TSA wavelet), the kept coefficients soft-thresholded
+at `CompletionThreshold` noise scales; `CompletionMethod` "mp" fits the M4
+sine-Gaussian atoms inside the mask instead. The result (`CompletedWaveform`)
+carries the waveform on the stream's sampling, NaN-free, the mask, the
+coverage of a reference ridge, the overlap with the sparse reconstruction,
+and `strain(taps, band)` through `hrss.strain_from_whitened`.
+`whitened_stretch` whitens a stretch of raw strain offline as the online
+worker did (`ModelHistory`), `energy_ridge` reads a model-free ridge off a
+known waveform, `hole_fraction` the share of its energy a reconstruction
+leaves at zero. The settings (`CompletionSettings.from_parameters`) are
+written back to the run parameters. Nothing calls the stage by default:
+no run output changes.
+
+### The combined candidate list
+
+`wdf.analysis.combine`: `combine_paths(candidates_w, candidates_t, settings)`
+(`combine_candidates` for any number of paths) returns one list from the
+candidate tables of the wavegram and track paths of the same stage 1: a row
+per candidate found by either path, one row for the two when both found the
+same pair -- within `CombineWindow` (default the pair's coincidence window)
+on the per-detector instants (`CombineMatch` "instant", default; "candidate"
+or "extent") -- carrying both statistics (`statistic_<path>`) and rates
+(`far_per_day_<path>`), the time of the first path of `CombineTimePreference`
+(default "w,t") that found it, `far_per_day` = the smallest rate times
+`NetworkTrialsFactor` (default the number of paths), `combined_statistic` =
+-log10 of it, `found_by`, `far_path`, `time_path`. Nothing in the paths
+changes.
+
+### Track admission: the common-span rule and the physical lag search
+
+`TrackCommonRule` (default "all", nothing changes): how the three minima of
+admission (a) combine. "duration-or-fraction" needs `TrackMinCommonCycles`
+and either `TrackMinCommonFraction` or, when `TrackMinCommonDuration` is
+positive, that absolute time, so that two tracks sharing a stated length of
+signal pair when one detector's ridge wandered onto noise over the rest of
+its track. `track_compatibility` takes `common_rule`.
+
+`TrackLagSearch` also takes "physical" (default 0.1 s, nothing changes): the
+lag search's half-width is the light travel time plus `TrackTimingJitter`,
+so the coherence lag is the best physical one and admission (b) always
+holds. `TrackCoincidenceSettings.lag_search(a, b)` gives the width in use.
+
 ### Track overlap policy and event instant
 
 `TrackOverlapPolicy` (default "drop", nothing changes): online, a track of a

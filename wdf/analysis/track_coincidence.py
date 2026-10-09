@@ -80,6 +80,8 @@ TRACK_STATISTIC = "track_statistic"
 #: What a finder admits: "full" (a, b and c), "tracks" (a and b, for the
 #: calibration), "classic" (every pair the classical rule forms).
 GATES = ("full", "tracks", "classic")
+#: `TrackCommonRule`: how the common-span minima of admission (a) combine.
+COMMON_RULES = ("all", "duration-or-fraction")
 
 
 @dataclass
@@ -107,8 +109,17 @@ class TrackCoincidenceSettings:
         2 cycles are 50 ms at 40 Hz and 10 ms at 200 Hz.
     :param min_common_s: absolute floor on that time, s
         (`TrackMinCommonDuration`, default 0: none).
+    :param common_rule: how the three minima combine (`TrackCommonRule`):
+        "all" (default) needs every one of them; "duration-or-fraction" needs
+        the cycles and either the fraction or the absolute duration (the
+        latter only when `min_common_s` is positive), so that two tracks
+        sharing a stated length of signal pair even when one of them was
+        prolonged by noise and the shared part is less than half of the
+        shorter.
     :param lag_search_s: half-width of the coherence's lag search, s
-        (`TrackLagSearch`); at least the light travel time plus the jitter.
+        (`TrackLagSearch`); at least the light travel time plus the jitter, or
+        "physical": the light travel time plus the jitter itself, so that the
+        lag is the best physical one and admission (b) always holds.
     :param coherence_min: least ``|Gamma|`` admitted (`TrackCoherenceMin`):
         0.0 ("none", the default) for no coherence cut, the coherence then
         ranking only; None ("calibrate") sets it with
@@ -128,7 +139,8 @@ class TrackCoincidenceSettings:
     min_common_fraction: float = 0.5
     min_common_cycles: float = 2.0
     min_common_s: float = 0.0
-    lag_search_s: float = 0.1
+    common_rule: str = "all"
+    lag_search_s: object = 0.1
     coherence_min: float = 0.0
     percentile: float = 99.0
     calibration_slides: int = 100
@@ -138,7 +150,8 @@ class TrackCoincidenceSettings:
                 light_travel_time_s="TrackLightTravelTime",
                 min_common_fraction="TrackMinCommonFraction",
                 min_common_cycles="TrackMinCommonCycles",
-                min_common_s="TrackMinCommonDuration", lag_search_s="TrackLagSearch",
+                min_common_s="TrackMinCommonDuration", common_rule="TrackCommonRule",
+                lag_search_s="TrackLagSearch",
                 coherence_min="TrackCoherenceMin", percentile="TrackCoherencePercentile",
                 calibration_slides="TrackCalibrationSlides",
                 calibration_minimum="TrackCalibrationMinimum")
@@ -160,7 +173,17 @@ class TrackCoincidenceSettings:
                 setattr(par, key, "none" if out.coherence_min == 0.0 and word in (None, "none", "off")
                         else "calibrate" if out.coherence_min is None else out.coherence_min)
                 continue
-            if value is not None:
+            if name == "common_rule":
+                if value is not None:
+                    word = str(value).strip().lower()
+                    if word not in COMMON_RULES:
+                        raise ValueError(f"TrackCommonRule {value!r}: one of {COMMON_RULES}")
+                    out.common_rule = word
+            elif name == "lag_search_s" and isinstance(value, str):
+                if value.strip().lower() != "physical":
+                    raise ValueError(f"TrackLagSearch {value!r}: seconds, or 'physical'")
+                out.lag_search_s = "physical"
+            elif value is not None:
                 value = int(value) if name.startswith("calibration") else float(value)
                 setattr(out, name, value)
             setattr(par, key, getattr(out, name))
@@ -178,10 +201,16 @@ class TrackCoincidenceSettings:
         travel = (self.light_travel_time_s if self.light_travel_time_s is not None
                   else light_travel_time(a, b))
         window = float(travel) + float(self.jitter_s)
-        if self.lag_search_s < window:
+        if self.lag_search_s != "physical" and float(self.lag_search_s) < window:
             raise ValueError(f"TrackLagSearch {self.lag_search_s} s is shorter than the "
                              f"{a}-{b} light travel time plus jitter, {window:.4f} s")
         return window
+
+    def lag_search(self, a, b):
+        """Half-width of the lag search between `a` and `b`, s: `lag_search_s`,
+        or the window itself with "physical"."""
+        window = self.window(a, b)
+        return window if self.lag_search_s == "physical" else float(self.lag_search_s)
 
 
 def waveform_coherence(first, second, fs, max_lag_s):
@@ -237,7 +266,7 @@ def waveform_coherence(first, second, fs, max_lag_s):
 
 def track_compatibility(left, right, displacement_left, displacement_right, window_s,
                         tolerance, min_common_s=0.0, min_common_fraction=0.0,
-                        min_common_cycles=0.0):
+                        min_common_cycles=0.0, common_rule="all"):
     """How two tracks agree in time and in f(t).
 
     :param left: an event row with `track_t_start`, `track_t_end`,
@@ -252,6 +281,9 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     :param min_common_s: least time the two f(t) agree within the tolerance.
     :param min_common_fraction: least fraction of the shorter track it is.
     :param min_common_cycles: least number of cycles it holds.
+    :param common_rule: "all" (every minimum) or "duration-or-fraction" (the
+        cycles, and the fraction or -- when `min_common_s` is positive -- the
+        absolute time), see `TrackCoincidenceSettings`.
     :return: dict -- `track_time_overlap` (the shared span over the shorter
         track), `track_f_distance` (median ``|d log2 f|`` over it, octaves; the
         smallest over the shifts -window, 0, +window), `track_f_overlap` (the
@@ -295,8 +327,15 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     out["track_common_s"] = common
     out["track_common_fraction"] = float(min(common / shortest, 1.0))
     out["track_common_cycles"] = float(np.sum(2.0 ** best_f[agree]) * slot)
-    out["track_compatible"] = float(common > 0 and common >= min_common_s
-                                    and out["track_common_fraction"] >= min_common_fraction
+    if common_rule not in COMMON_RULES:
+        raise ValueError(f"common_rule {common_rule!r}: one of {COMMON_RULES}")
+    enough_fraction = out["track_common_fraction"] >= min_common_fraction
+    enough_duration = common >= min_common_s
+    if common_rule == "all":
+        extent = enough_fraction and enough_duration
+    else:
+        extent = enough_fraction or (min_common_s > 0 and enough_duration)
+    out["track_compatible"] = float(common > 0 and extent
                                     and out["track_common_cycles"] >= min_common_cycles)
     return out
 
@@ -410,14 +449,14 @@ class TrackCoincidenceFinder:
         window = st.window(ifo_a, ifo_b)
         out = track_compatibility(row_a, row_b, da, db, window, st.frequency_tolerance,
                                   st.min_common_s, st.min_common_fraction,
-                                  st.min_common_cycles)
+                                  st.min_common_cycles, st.common_rule)
         wa = self.waveforms.get(ifo_a, {}).get(ca)
         wb = self.waveforms.get(ifo_b, {}).get(cb)
         if wa is None or wb is None:
             lag = coherence = phase = float("nan")
         else:
             lag, coherence, phase = waveform_coherence((wa[0] + da, wa[1]), (wb[0] + db, wb[1]),
-                                                       self.fs, st.lag_search_s)
+                                                       self.fs, st.lag_search(ifo_a, ifo_b))
         out.update(track_lag_s=lag, track_coherence=coherence, track_phase=phase)
         rho_a = float(np.sqrt(max(float(row_a.get("track_energy", np.nan)), 0.0)))
         rho_b = float(np.sqrt(max(float(row_b.get("track_energy", np.nan)), 0.0)))

@@ -385,6 +385,61 @@ the instants' difference; the uncertainty is floored at `AlertSkySigmaFloor`
 ("sample", one sample of the stream, or seconds) and split in quadrature
 between the two detectors. The grid cell is `AlertSkyResolution` degrees.
 
+### Waveform completion
+
+`wdf.analysis.waveform_completion` runs after the detection and before a
+parameter estimation, offline, on the zero-phase whitened stream. The
+wavegram reconstruction (`event_waveform`) inverts only the coefficients
+that survived the detection threshold, so along a chirp the tiles that fell
+below it leave holes in the waveform; the track waveform is continuous but
+limited to the ridge's band and the track's span. The completion builds a
+time-frequency mask around the event and inverts every coefficient inside
+it, with no detection threshold, in one basis:
+
+- the mask (`CompletionMask`, a grid of `CompletionSlot` time cells by
+  `CompletionOctaveStep` octaves from `CompletionLowFrequency` to Nyquist) is
+  the union of the event's tiles (`event_tiles`; with `CompletionTileBand`
+  "centroid", the energy-weighted centroid of the tiles in each time cell
+  `CompletionBand` octaves on each side instead of their whole bands), the
+  holes between occupied time cells shorter than `CompletionBridgeGap`
+  filled with the band interpolated in log-frequency between the two sides
+  (symmetric in time: a rising and a falling sweep are treated alike), the
+  track's ridge `CompletionBand` octaves on each side when the event has a
+  track, the whole grown by `CompletionDilationTime` and
+  `CompletionDilationOctaves`;
+- the piece of the stream from `CompletionPad` before the first tile to
+  `CompletionPad` after the last (a power of two with the basis's margin) is
+  transformed in `CompletionBasis` -- the cosine-packet best basis of the
+  piece (``CosinePackets<m>``, cost `CompletionPacketCost`), a local cosine
+  basis (``LocalCos<M>``) or a p4TSA wavelet (a mother, or ``<mother>P<D>``);
+  the coefficients whose tile meets the mask are kept, soft-thresholded at
+  `CompletionThreshold` times the piece's robust noise scale, the rest zeroed,
+  and the piece inverted;
+- `CompletionMethod` "mp" fits sine-Gaussian atoms of the M4 dictionary
+  (`glitch_subtraction.SineGaussianBank`, `CompletionQs` by
+  `CompletionFrequencyCount` frequencies) inside the mask by matching pursuit
+  in noise units, down to `CompletionStopSNR` or `CompletionMaxAtoms`, and
+  returns their sum.
+
+`complete(stream, fs, tiles, settings, track, reference, sparse)` returns a
+`CompletedWaveform`: the waveform on the stream's sampling in the stream's
+units, NaN-free; the mask; the noise scale; the coefficients kept; the
+coverage (the fraction of `reference` -- the track, or a known ridge -- the
+mask holds); the overlap with the sparse reconstruction. `strain(taps, band,
+bandpass)` brings it back to strain through `hrss.strain_from_whitened` with
+the taps of the model in force. `complete_event(graph, labels, cluster_id,
+...)` reads the tiles and the sparse reconstruction from a detector graph.
+`whitened_stretch(strain, rate, start, history, bandpass)` whitens a stretch
+of raw strain offline as the online worker did (the band-pass fed block by
+block, then the taps of the model in force at each sample, `ModelHistory`);
+on the run's block grid it reproduces the worker's stream to float32, and on
+an injected strain it gives the injection as the search saw it.
+`energy_ridge` gives a model-free ridge of a known waveform for the coverage;
+`hole_fraction` the share of a known waveform's energy where a reconstruction
+is zero.
+
+Nothing calls the stage by default; it changes no run output.
+
 ### Optional screens on the paper path
 
 `NetworkLagCut` (default "none") measures each pair's lag on the two events'
@@ -543,9 +598,17 @@ It admits a pair when:
    `TrackMinCommonDuration` (an optional floor, 0 by default). The rule is
    relative because a track is as long as its signal: a merger lasts a few
    tenths of a second, an inspiral seconds. Coherence over fewer than about two
-   cycles says nothing about the phase;
+   cycles says nothing about the phase. `TrackCommonRule` says how the three
+   minima combine: "all" (the default) needs every one; "duration-or-fraction"
+   needs the cycles and either the fraction or, when `TrackMinCommonDuration`
+   is positive, the absolute time, so that two tracks sharing a stated length
+   of signal pair even when one detector's ridge wandered onto noise over the
+   rest of its track and the shared part is less than half of the shorter;
 2. the lag is physical: `|track_lag_s|` is at most the light travel time plus
-   `TrackTimingJitter`.
+   `TrackTimingJitter`. `TrackLagSearch` is the half-width of the lag search
+   in seconds (0.1 by default) or "physical", the light travel time plus the
+   jitter itself: the lag is then the best physical one and this condition
+   always holds.
 
 The coherence is not cut on by default (`TrackCoherenceMin = "none"`). It
 enters the ranking statistic, and the false-alarm rate of the time slides
@@ -583,6 +646,29 @@ positive when L1 leads.
 A time slide moves an event's times. The finder reads each event's
 displacement from its `gpsPeak` and applies it to the event's track and
 waveform, so `TimeSlideFAR` runs on it.
+
+### One list from the two paths
+
+`wdf.analysis.combine` puts the candidate lists of the wavegram path and the
+track path of the same stage 1 side by side. `combine_paths(candidates_w,
+candidates_t, settings)` (`CombineSettings.from_parameters(par)`) returns one
+row per distinct candidate: a candidate found by either path, or one row for
+the two when both found the same pair. Two candidates are the same pair when
+they lie within `CombineWindow` of each other (default: the pair's
+coincidence window, 2.5 light travel times, 25 ms for H1-L1), read on the
+per-detector instants (`CombineMatch = "instant"`, the default: every
+detector within the window), on the candidate times ("candidate") or on the
+per-detector event extents padded by the window ("extent"); the matching is
+one to one, closest first. The time and per-detector columns of a merged row
+come from the first path of `CombineTimePreference` that found it (default
+the wavegram path, whose envelope instant is the better clock, then the track
+path); `time_path` says which. Every path keeps its own `far_per_day_<path>`
+and `statistic_<path>` (its ranking column) and the row's `far_per_day` is the
+smallest of them times `NetworkTrialsFactor` (default the number of paths
+combined), since the lower of two independently calibrated rates was read as
+many times as there are paths; `combined_statistic` = -log10 of that rate per
+day ranks the list. `found_by` names the paths ("w", "t" or "w+t"). The
+module reads the two lists as written and recomputes no background.
 
 ### How to choose
 
@@ -635,6 +721,21 @@ waveform, so `TimeSlideFAR` runs on it.
 | `NetworkGlitchVeto` | "none" | wavegram path: "none", "veto" or "penalty" on `glitch_single_ifo` |
 | `NetworkGlitchTolerance` | 0.01 s | added to the light travel time for coincident transients |
 | `NetworkGlitchFactor` | 0.1 | rank factor of a single-detector glitch |
+| `CompletionMethod` | "mask" | completion: invert every coefficient inside the mask, or "mp" fit sine-Gaussian atoms inside it |
+| `CompletionBasis` | "CosinePackets32" | `CosinePackets<m>`, `LocalCos<M>` or a p4TSA wavelet |
+| `CompletionPacketCost` | "entropy" | cosine-packet cost: l1, entropy, wdfUniversal, wdfBlock |
+| `CompletionSlot` | 64 samples / rate | the mask's time cell, s |
+| `CompletionOctaveStep` | 0.125 | the mask's frequency cell, octaves |
+| `CompletionTileBand` | "extent" | each tile's whole band, or "centroid" `CompletionBand` octaves around the tiles' centroid per time cell |
+| `CompletionBridgeGap` | 4.0 s | a hole between occupied time cells shorter than this is bridged in log-frequency; 0 bridges nothing |
+| `CompletionBand` | 0.5 oct | half-width around the track's ridge (and the tiles' centroid) |
+| `CompletionDilationTime` | 0.1 s | the mask grown by this on each side in time |
+| `CompletionDilationOctaves` | 0.5 | ... and by this in frequency, on each side |
+| `CompletionThreshold` | 1.0 | soft threshold on the kept coefficients, in the piece's noise scale; 0 for none |
+| `CompletionPad` | 0.5 s | the waveform before the first tile and after the last |
+| `CompletionLowFrequency` | `MinFrequency` | the mask's floor, Hz |
+| `CompletionStopSNR`, `CompletionMaxAtoms` | 4.0, 200 | "mp": the pursuit stops below this SNR, or after this many atoms |
+| `CompletionQs`, `CompletionFrequencyCount` | (1, 2, 4, 8, 16), 40 | "mp": the atoms' quality factors and frequencies (log-spaced over the mask's band) |
 | `TrackLookback` | 4.0 s | map searched before a seed's window |
 | `TrackHorizon` | 1.0 s | map searched after it |
 | `TrackBasis` | `RidgeBasis` | `LocalCos<M>` or `CosinePackets<m>` |

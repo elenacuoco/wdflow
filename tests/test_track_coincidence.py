@@ -365,3 +365,75 @@ def test_the_coherence_cut_is_read_from_the_parameters():
         par = SimpleNamespace(TrackCoherenceMin=given)
         assert TrackCoincidenceSettings.from_parameters(par).coherence_min == value
         assert par.TrackCoherenceMin == written
+
+
+def _rows(t_start, slots, f, slot=1 / 32.0):
+    """A synthetic track row: `slots` slot centres from `t_start`, ridge f(t) = `f` (scalar or array)."""
+    times = t_start + slot * (np.arange(slots) + 0.5)
+    return dict(track_t_start=t_start, track_t_end=t_start + slots * slot, track_times=times,
+                track_f=np.broadcast_to(np.asarray(f, float), (slots,)).copy())
+
+
+def test_the_common_rule_duration_or_fraction_admits_a_track_whose_partner_wandered():
+    """Both tracks span 0.375 s; H1 follows a 60 Hz signal throughout, L1's
+    ridge sits on noise at 300 Hz for the first 7 slots and on the signal for
+    the last 5. The common span, 5 slots = 0.156 s, is 0.42 of the shorter
+    track: "all" rejects (fraction < 0.5); "duration-or-fraction" with a 0.1 s
+    floor admits (7 to 9 cycles); the floor under "all" still rejects on the
+    fraction; without a positive floor the alternative rule is the fraction
+    alone; the cycles still bind."""
+    from wdf.analysis.track_coincidence import track_compatibility
+
+    h1 = _rows(100.0, 12, 60.0)
+    l1 = _rows(100.0, 12, np.r_[np.full(7, 300.0), np.full(5, 60.0)])
+    out = track_compatibility(l1, h1, 0.0, 0.0, 0.0135, 0.5, 0.0, 0.5, 2.0)
+    # 4 or 5 agreeing slots: the shift the smallest median |d log2 f| picks (a tie among the three) may leave the
+    # last slot centre outside the other track's centre range
+    assert 4 / 32 <= out["track_common_s"] <= 5 / 32 + 1e-9
+    assert out["track_common_fraction"] == pytest.approx(out["track_common_s"] / 0.375) and out["track_common_fraction"] < 0.5
+    assert out["track_common_cycles"] == pytest.approx(out["track_common_s"] * 60.0) and out["track_common_cycles"] >= 2
+    assert out["track_compatible"] == 0.0
+    out = track_compatibility(l1, h1, 0.0, 0.0, 0.0135, 0.5, 0.1, 0.5, 2.0, common_rule="duration-or-fraction")
+    assert out["track_compatible"] == 1.0
+    out = track_compatibility(l1, h1, 0.0, 0.0, 0.0135, 0.5, 0.1, 0.5, 2.0, common_rule="all")
+    assert out["track_compatible"] == 0.0
+    out = track_compatibility(l1, h1, 0.0, 0.0, 0.0135, 0.5, 0.0, 0.5, 2.0, common_rule="duration-or-fraction")
+    assert out["track_compatible"] == 0.0
+    slow_h1 = _rows(100.0, 12, 4.0)
+    slow_l1 = _rows(100.0, 12, np.r_[np.full(7, 300.0), np.full(5, 4.0)])
+    out = track_compatibility(slow_l1, slow_h1, 0.0, 0.0, 0.0135, 0.5, 0.1, 0.5, 2.0, common_rule="duration-or-fraction")
+    assert out["track_common_cycles"] < 2 and out["track_compatible"] == 0.0
+    with pytest.raises(ValueError, match="common_rule"):
+        track_compatibility(l1, h1, 0.0, 0.0, 0.0135, 0.5, 0.0, 0.5, 2.0, common_rule="either")
+
+
+def test_the_common_rule_and_the_physical_lag_search_are_read_from_the_parameters():
+    par = SimpleNamespace(TrackCommonRule="duration-or-fraction", TrackMinCommonDuration=0.0625,
+                          TrackLagSearch="physical")
+    st = TrackCoincidenceSettings.from_parameters(par)
+    assert st.common_rule == "duration-or-fraction" and st.min_common_s == 0.0625
+    assert st.lag_search_s == "physical" and par.TrackLagSearch == "physical"
+    assert st.lag_search("H1", "L1") == pytest.approx(st.window("H1", "L1"))
+    default = TrackCoincidenceSettings.from_parameters(SimpleNamespace())
+    assert default.common_rule == "all" and default.lag_search_s == 0.1
+    assert default.lag_search("H1", "L1") == 0.1
+    with pytest.raises(ValueError, match="TrackCommonRule"):
+        TrackCoincidenceSettings.from_parameters(SimpleNamespace(TrackCommonRule="either"))
+    with pytest.raises(ValueError, match="TrackLagSearch"):
+        TrackCoincidenceSettings.from_parameters(SimpleNamespace(TrackLagSearch="wide"))
+    with pytest.raises(ValueError, match="TrackLagSearch"):
+        TrackCoincidenceSettings(lag_search_s=0.005).window("H1", "L1")
+
+
+def test_a_physical_lag_search_keeps_the_lag_inside_the_window():
+    """With TrackLagSearch "physical" the coherence lag of a merger pair is the
+    best one within the light travel time plus jitter, so admission (b) holds
+    and the planted lag is still recovered."""
+    events, waveforms = merger_pair(0.005)
+    st = TrackCoincidenceSettings(lag_search_s="physical")
+    table = TrackCoincidenceFinder(IndexedCoincidenceFinder(), events, waveforms, FS, st).find(events)
+    assert len(table) == 1
+    row = table.iloc[0]
+    assert abs(row["track_lag_s"]) <= st.window("H1", "L1") + 0.5 / FS
+    assert row["track_lag_physical"] == 1.0
+    assert row["dt_s"] == pytest.approx(-0.005, abs=1e-3)
