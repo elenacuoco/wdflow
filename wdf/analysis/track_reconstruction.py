@@ -60,6 +60,13 @@ from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
 from wdf.analysis.ridge_tracking import (RidgeSettings, calibrate_drift, dense_coefficients,
                                          offline_ridge, ridge_waveform, tile_geometry,
                                          window_sigma)
+from wdf.config import constants
+from wdf.config.constants import (EIGHT_THIRDS, FIVE_THIRDS, INSPIRAL_RATE_COEFFICIENT,
+                                  MAD_GAUSSIAN, PERCENT, THREE_EIGHTHS)
+from wdf.config.defaults import defaults
+
+_TR = defaults("track.reconstruction")
+_TRR = defaults("track.ridge")
 
 #: Prefix of the cosine-packet track basis, followed by the smallest segment.
 COSINE_PACKETS = "CosinePackets"
@@ -77,8 +84,8 @@ TRACK_EVENT_COLUMNS = DETECTOR_EVENT_COLUMNS + TRACK_COLUMNS
 
 
 # ================================================================ the track's penalty
-#: G Msun / c^3, s.
-SOLAR_MASS_S = 4.925490947e-6
+#: G Msun / c^3, s (`wdf.config.constants.SOLAR_MASS_S`).
+SOLAR_MASS_S = constants.SOLAR_MASS_S
 
 
 def chirp_allowance(f, chirp_mass, slot_s):
@@ -93,10 +100,10 @@ def chirp_allowance(f, chirp_mass, slot_s):
     :return: numpy.ndarray -- octaves.
     """
     f = np.asarray(f, dtype=float)
-    k = (96.0 / 5.0) * np.pi ** (8.0 / 3.0) * (chirp_mass * SOLAR_MASS_S) ** (5.0 / 3.0)
-    rest = f ** (-8.0 / 3.0) - (8.0 / 3.0) * k * slot_s
+    k = INSPIRAL_RATE_COEFFICIENT * np.pi ** EIGHT_THIRDS * (chirp_mass * SOLAR_MASS_S) ** FIVE_THIRDS
+    rest = f ** (-EIGHT_THIRDS) - EIGHT_THIRDS * k * slot_s
     with np.errstate(divide="ignore", invalid="ignore"):
-        end = np.where(rest > 0, rest ** (-3.0 / 8.0), np.inf)
+        end = np.where(rest > 0, rest ** (-THREE_EIGHTHS), np.inf)
     return np.log2(end / f)
 
 
@@ -121,14 +128,18 @@ class TrackRidgeSettings(RidgeSettings):
         the drift calibration holds at `calibration_kept`
         (`TrackCalibrationQuantile`; 50 is the median).
     :param track_calibration_seeds: random starts of the track's drift
-        calibration (`TrackCalibrationSeeds`, default 500); the map's own
-        calibration takes `calibration_seeds` (`RidgeCalibrationSeeds`).
+        calibration (`TrackCalibrationSeeds`); the map's own calibration
+        takes `calibration_seeds` (`RidgeCalibrationSeeds`).
+
+    The field defaults are the ``[track.ridge]`` table of
+    wdf/config/defaults.toml; `TrackSettings.track_ridge` fills them from
+    the run and ``[track.reconstruction]``.
     """
 
-    mc_range: tuple = (1.0, 30.0)
-    allowance_max: float = 0.27
-    kept_quantile: float = 50.0
-    track_calibration_seeds: int = 500
+    mc_range: tuple = _TRR["mc_range"]
+    allowance_max: float = _TRR["allowance_max"]
+    kept_quantile: float = _TRR["kept_quantile"]
+    track_calibration_seeds: int = _TRR["track_calibration_seeds"]
 
     def allowances(self):
         """``[from, to]`` allowance, octaves."""
@@ -155,7 +166,7 @@ class TrackSettings:
         built once this much of the map past the seed's window is complete,
         so it adds to the declared latency.
     :param basis: basis of the waveform (`TrackBasis`): ``LocalCos<M>`` or
-        ``CosinePackets<m>``; default the map's `RidgeBasis`.
+        ``CosinePackets<m>``; unset, the map's `RidgeBasis`.
     :param seed_states: states on either side of the seed's cell the track
         may pass through and still contain it (`TrackSeedStates`).
     :param packet_cost: cost of the cosine-packet best basis
@@ -167,16 +178,18 @@ class TrackSettings:
         their ids in `track_supersedes`, else discarded.
     :param overlap_memory: online, how many of the most recently emitted
         tracks a later track is checked against for overlap
-        (`TrackOverlapMemory`, default 256).
+        (`TrackOverlapMemory`).
     :param event_instant: the event's instant, `gpsPeak`
         (`TrackEventInstant`): "peak" = centre of the largest sample of the
         waveform's envelope; "end" = end of the track's last slot.
     :param ridge: the map's settings with the track's penalty
-        (`TrackRidgeSettings`): `TrackLambda` (default 3.7 per octave),
-        `TrackMcRange` (default 1 to 30 solar masses), `TrackAllowanceMax`
-        (default 0.27 octave), and the track's own drift and X-drop
-        (`TrackDrift`, `TrackXDrop`, default calibrated on the background
-        with this penalty).
+        (`TrackRidgeSettings`): `TrackLambda`, `TrackMcRange`,
+        `TrackAllowanceMax`, and the track's own drift and X-drop
+        (`TrackDrift`, `TrackXDrop`, "calibrate": calibrated on the
+        background with this penalty).
+
+    Defaults: the ``[track.reconstruction]`` table of
+    wdf/config/defaults.toml.
     """
 
     lookback: float
@@ -185,24 +198,26 @@ class TrackSettings:
     seed_states: int
     packet_cost: str
     ridge: RidgeSettings
-    overlap_policy: str = "drop"
-    event_instant: str = "peak"
-    overlap_memory: int = 256
+    overlap_policy: str = _TR["TrackOverlapPolicy"]
+    event_instant: str = _TR["TrackEventInstant"]
+    overlap_memory: int = _TR["TrackOverlapMemory"]
 
     KEYS = dict(lookback="TrackLookback", horizon="TrackHorizon", basis="TrackBasis",
                 seed_states="TrackSeedStates", packet_cost="TrackPacketCost",
                 overlap_policy="TrackOverlapPolicy", event_instant="TrackEventInstant",
                 overlap_memory="TrackOverlapMemory")
-    DEFAULTS = dict(lookback=4.0, horizon=1.0, seed_states=1, packet_cost="entropy",
-                    overlap_policy="drop", event_instant="peak", overlap_memory=256)
+    DEFAULTS = dict(lookback=_TR["TrackLookback"], horizon=_TR["TrackHorizon"],
+                    basis=_TR["TrackBasis"], seed_states=_TR["TrackSeedStates"],
+                    packet_cost=_TR["TrackPacketCost"], overlap_policy=_TR["TrackOverlapPolicy"],
+                    event_instant=_TR["TrackEventInstant"], overlap_memory=_TR["TrackOverlapMemory"])
     #: Values of `TrackOverlapPolicy` and `TrackEventInstant`.
     OVERLAP_POLICIES = ("drop", "supersede")
     EVENT_INSTANTS = ("peak", "end")
-    #: The track penalty's parameters and defaults: the stiff penalty of
-    #: ridge v1, which followed inspirals, beyond a chirp allowance.
-    PENALTY = dict(TrackLambda=3.7, TrackMcRange=(1.0, 30.0), TrackAllowanceMax=0.27,
-                   TrackDrift="calibrate", TrackXDrop="calibrate", TrackCalibrationQuantile=90.0,
-                   TrackCalibrationSeeds=500)
+    #: The track penalty's parameters and defaults: a stiff penalty beyond
+    #: a chirp allowance.
+    PENALTY = {key: _TR[key] for key in ("TrackLambda", "TrackMcRange", "TrackAllowanceMax",
+                                         "TrackDrift", "TrackXDrop", "TrackCalibrationQuantile",
+                                         "TrackCalibrationSeeds")}
 
     @classmethod
     def from_parameters(cls, par, rate, ridge=None):
@@ -227,7 +242,7 @@ class TrackSettings:
         d = cls.DEFAULTS
         out = cls(lookback=float(get("lookback", d["lookback"])),
                   horizon=float(get("horizon", d["horizon"])),
-                  basis=str(get("basis", ridge.basis)),
+                  basis=str(get("basis", ridge.basis if d["basis"] is None else d["basis"])),
                   seed_states=int(get("seed_states", d["seed_states"])),
                   packet_cost=str(get("packet_cost", d["packet_cost"])), ridge=ridge,
                   overlap_policy=str(get("overlap_policy", d["overlap_policy"])),
@@ -261,7 +276,7 @@ class TrackSettings:
             setattr(par, key, list(value) if isinstance(value, tuple) else value)
         par.TrackMcRange = list(mc)
         quantile = float(values["TrackCalibrationQuantile"])
-        if not 0 < quantile < 100:
+        if not 0 < quantile < PERCENT:
             raise ValueError(f"TrackCalibrationQuantile {quantile}: between 0 and 100")
         seeds = int(values["TrackCalibrationSeeds"])
         if seeds < 1:
@@ -584,7 +599,8 @@ def calibrate_track_drift(Z, settings, seed=1):
         masked = np.where(np.arange(best.shape[1])[None, :] < stop[:, None], best, -np.inf)
         kept = np.argmax(masked, axis=1)
         result = (float(b), X)
-        if np.percentile(kept, getattr(settings, "kept_quantile", 50.0)) <= settings.calibration_kept:
+        if np.percentile(kept, getattr(settings, "kept_quantile", _TRR["kept_quantile"])) \
+                <= settings.calibration_kept:
             break
     return result
 
@@ -745,7 +761,7 @@ def _packet_waveform(track, stream, fs, settings):
     rs = settings.ridge
     m = packet_segment(settings.basis)
     t0, x = stream
-    need = int(np.ceil((track.t_end - track.t_start) * fs)) + 4 * m
+    need = int(np.ceil((track.t_end - track.t_start) * fs)) + _TR["packet_padding_segments"] * m
     n = 1 << int(np.ceil(np.log2(max(need, 2 * m))))
     centre = int(round((0.5 * (track.t_start + track.t_end) - t0) * fs))
     a = centre - n // 2
@@ -756,7 +772,7 @@ def _packet_waveform(track, stream, fs, settings):
     cp = CosinePackets(n, m)
     fine = np.asarray(cp.Analyse(piece, [m] * (n // m)), dtype=float).reshape(n // m, m)
     above = (np.arange(m) + 1) * fs / (2.0 * m) > rs.f_low + 1e-9
-    sigma = max(float(np.median(np.abs(fine[:, above])) / 0.6745), 1e-300)
+    sigma = max(float(np.median(np.abs(fine[:, above])) / MAD_GAUSSIAN), 1e-300)
     cp.BestBasis(piece / sigma, getattr(CosinePackets.Cost, settings.packet_cost), 1.0)
     seg = [int(s) for s in cp.GetSegmentation()]
     c = np.array(cp.GetCoefficients(), dtype=float)
@@ -852,7 +868,7 @@ def _quantile(values, weights, q):
     return float(values[order][np.searchsorted(c, q * c[-1])])
 
 
-def track_row(track, cluster_id, ifo, fs, instant="peak", supersedes=()):
+def track_row(track, cluster_id, ifo, fs, instant=_TR["TrackEventInstant"], supersedes=()):
     """One track as a row of `TRACK_EVENT_COLUMNS`.
 
     The time columns are moments of the waveform's energy (`gpsCentroid`,
@@ -882,7 +898,8 @@ def track_row(track, cluster_id, ifo, fs, instant="peak", supersedes=()):
         spread = float(np.sqrt(np.sum((t - centroid) ** 2 * e) / np.sum(e)))
         peak = float(t[int(np.argmax(np.abs(hilbert(y))))])
         c = np.cumsum(e) / np.sum(e)
-        d90 = float((np.searchsorted(c, 0.95) - np.searchsorted(c, 0.05)) / fs)
+        d90 = float((np.searchsorted(c, _TR["descriptor_quantile_high"])
+                     - np.searchsorted(c, _TR["descriptor_quantile_low"])) / fs)
     else:
         centroid = spread = peak = d90 = float("nan")
     if instant == "end":
@@ -901,7 +918,8 @@ def track_row(track, cluster_id, ifo, fs, instant="peak", supersedes=()):
         gpsCentroid=centroid, tSpread=spread, gpsPeak=peak,
         duration=track.t_end - track.t_start, duration90=d90,
         freqMin=float(track.f_low.min()), freqMean=float(np.exp(np.average(np.log(f), weights=w + 1e-300))),
-        freqMax=float(track.f_high.max()), freqQ05=_quantile(f, w, 0.05), freqQ95=_quantile(f, w, 0.95),
+        freqMax=float(track.f_high.max()), freqQ05=_quantile(f, w, _TR["descriptor_quantile_low"]),
+        freqQ95=_quantile(f, w, _TR["descriptor_quantile_high"]),
         EnWDF=snr, sigma=float(head.get("sigma", np.nan)),
         snrPeak=max((float(s.get("snrPeak", np.nan)) for s in seeds), default=float("nan")),
         significance=float(np.log1p(enwdf_window)), n_pixels=int(track.slots.size),
@@ -918,7 +936,7 @@ def track_row(track, cluster_id, ifo, fs, instant="peak", supersedes=()):
     return row
 
 
-def track_events(tracks, ifo, fs, first_id=0, instant="peak"):
+def track_events(tracks, ifo, fs, first_id=0, instant=_TR["TrackEventInstant"]):
     """A detector's tracks as its event table.
 
     :type tracks: list[Track]
@@ -1018,7 +1036,7 @@ def save_tracks(events, waveforms, csv_path, npz_path):
     np.savez(npz_path, **arrays)
 
 
-def load_tracks(csv_path, npz_path=None, superseded="drop"):
+def load_tracks(csv_path, npz_path=None, superseded=_TR["load_superseded"]):
     """Read what `save_tracks` wrote.
 
     :type superseded: str

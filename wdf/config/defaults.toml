@@ -151,3 +151,102 @@ GlitchOctaveOrder = 8  # [count] order of the Butterworth filters that split the
 [census.causal]
 GlitchCensusMemory = 64.0  # [s] past of each stream on which the online census measures its robust standard deviation
 GlitchCensusMinimum = 8.0  # [s] past needed before the online census starts
+
+# ============================================================================
+# Ridge and track path, wavelet maps.
+
+[ridge]
+RidgeSlot = 0.03125  # [s] slot of the ridge map (1/32 s)
+RidgeOctaveStep = 0.25  # [octaves] width of a state of the ridge map
+RidgeLowFrequency = "<unset>"  # [Hz] lowest state edge; unset: the search's MinFrequency, else LowFrequencyCut
+RidgeHighFrequency = "<unset>"  # [Hz] highest state edge; unset: ridge_high_fraction_of_nyquist of Nyquist
+ridge_high_fraction_of_nyquist = 1.0  # [fraction of Nyquist] highest state edge when RidgeHighFrequency is unset
+RidgeBasis = "LocalCos128"  # [name] basis of the dense window coefficients of the map (LocalCos<M> or p4TSA basis)
+RidgeWindow = "<unset>"  # [samples] analysis window of the map; unset: the search's window (first of a schedule)
+RidgeOverlap = "<unset>"  # [samples] overlap of consecutive map windows; unset: the search's overlap
+RidgeDechirpAlphas = []  # [Hz/s] sweeps of the dechirped local cosine; each cell takes its largest value over them
+RidgeBackground = 256.0  # [s] rolling background that standardises each state row
+RidgeBackgroundUpdate = 8.0  # [s] update period of the rolling background
+RidgeBackgroundMinimum = 64.0  # [s] background needed before a slot is scored
+RidgeBackgroundClip = 5.0  # [-] sigma-clipping level of the background, standard deviations
+RidgeBackgroundIterations = 3  # [count] sigma-clipping iterations of the background
+RidgeLambda = "<unset>"  # [1/octave] penalty per octave of a move beyond the allowance; unset: 1 / (ridge_merger_octaves - RidgeAllowance)
+ridge_merger_octaves = 2.262  # [octaves] move in one slot that costs one cell sigma (fastest slot of an IMRPhenomD merger, Mc 1-30)
+RidgeAllowance = 0.27  # [octaves] free move per slot (fastest inspiral sweep per 1/32 s slot up to 50 ms before the peak)
+RidgeDrift = "<unset>"  # [-] per-cell drift b of the path score; unset: calibrated on the background
+RidgeXDrop = "<unset>"  # [-] drop below an episode's maximum that ends it; unset: calibrated with the drift
+RidgeThreshold = 0.0  # [-] smallest candidate score kept
+RidgeMaxSlots = "<unset>"  # [count] longest path, slots; unset: ridge_max_path_s of slots
+ridge_max_path_s = 16.0  # [s] longest path when RidgeMaxSlots is unset; bounds the streaming path's memory
+RidgeWaveformStates = 1  # [count] states added on each side of a path's cells when its waveform is rebuilt
+RidgeCalibrationSeeds = 2000  # [count] random starts of the drift calibration
+RidgeCalibrationSteps = 64  # [count] slots each calibration start is followed for
+RidgeCalibrationKept = 2.0  # [count] largest median extension into noise the calibrated drift allows, slots
+RidgeCalibrationGridStep = 0.05  # [-] step of the drifts the calibration tries, from 0
+RidgeCalibrationGridMax = 3.0  # [-] largest drift the calibration tries
+RidgeXDropSlots = 8  # [count] span over which the X-drop is measured, slots
+RidgeXDropPercentile = 99.0  # [percent] percentile of the noise drops that sets the X-drop
+cell_frequency_floor = 0.001  # [Hz] floor of a tile's frequency edges before their log2 (numerical guard)
+box_starts_every = 4  # [count] box_scores: boxes of a duration start every duration / this
+
+[track.reconstruction]
+TrackLookback = 4.0  # [s] map before a seed's window searched for its track
+TrackHorizon = 1.0  # [s] map after a seed's window searched for its track; online, it adds to the latency
+TrackBasis = "<unset>"  # [name] basis of the track's waveform (LocalCos<M> or CosinePackets<m>); unset: RidgeBasis
+TrackSeedStates = 1  # [count] states on either side of a seed's cell the track may pass through and still contain it
+TrackPacketCost = "entropy"  # [name] cost of the cosine-packet best basis (l1, entropy, wdfUniversal, wdfBlock)
+TrackOverlapPolicy = "drop"  # [name] online, a later track sharing cells with emitted ones: "drop" or "supersede"
+TrackEventInstant = "peak"  # [name] event instant gpsPeak: "peak" of the waveform's envelope or "end" of the track
+TrackOverlapMemory = 256  # [count] online, most recently emitted tracks a later track is checked against for overlap
+TrackLambda = 3.7  # [1/octave] track penalty per octave of a move beyond the chirp allowance
+TrackMcRange = [1.0, 30.0]  # [Msun] smallest and largest chirp mass (detector frame) of the chirp allowance
+TrackAllowanceMax = 0.27  # [octaves] largest chirp allowance per slot, which bounds it near coalescence
+TrackDrift = "calibrate"  # [-] per-cell drift of the track path; "calibrate": calibrated on the background with the track penalty
+TrackXDrop = "calibrate"  # [-] X-drop of the track path; "calibrate": calibrated with the drift
+TrackCalibrationQuantile = 90.0  # [percent] percentile of the slots kept into noise held at RidgeCalibrationKept by the track's calibration
+TrackCalibrationSeeds = 500  # [count] random starts of the track's drift calibration
+packet_padding_segments = 4  # [count] cosine-packet waveform: segments of the smallest size added to the track's span
+descriptor_quantile_low = 0.05  # [-] lower energy/frequency quantile of a track's descriptors (duration90, freqQ05)
+descriptor_quantile_high = 0.95  # [-] upper energy/frequency quantile of a track's descriptors (duration90, freqQ95)
+load_superseded = "drop"  # [name] load_tracks: "drop" leaves out the tracks a later track superseded, "keep" reads every row
+
+[track.ridge]
+mc_range = [1.0, 30.0]  # [Msun] TrackRidgeSettings field default: chirp-mass range of the allowance
+allowance_max = 0.27  # [octaves] TrackRidgeSettings field default: largest allowance per slot
+kept_quantile = 50.0  # [percent] TrackRidgeSettings field default, and the calibration's when the settings have none: percentile of the slots kept into noise (50 = median)
+track_calibration_seeds = 500  # [count] TrackRidgeSettings field default: random starts of the track's drift calibration
+
+[track.coincidence]
+TrackTimingJitter = 0.0035  # [s] timing jitter added to the light travel time
+TrackFrequencyTolerance = 0.5  # [octaves] largest |d log2 f| between the two tracks' f(t) for them to agree
+TrackLightTravelTime = "<unset>"  # [s] overrides the pair's light travel time; unset: from the detectors' positions
+TrackMinCommonFraction = 0.5  # [-] least fraction of the shorter track over which the two f(t) agree
+TrackMinCommonCycles = 2.0  # [count] least cycles at the tracks' frequency over the time their f(t) agree
+TrackMinCommonDuration = 0.0  # [s] absolute floor on the time the two f(t) agree; 0: none
+TrackCommonRule = "all"  # [name] how the common-span minima combine: "all" or "duration-or-fraction"
+TrackSlotTolerance = 0.0  # [-] fraction of a slot a slot centre may lie outside the other track and still be compared
+TrackLagSearch = 0.1  # [s] half-width of the coherence's lag search, or "physical": light travel time plus jitter
+TrackCoherenceMin = "none"  # [-] least |Gamma| admitted: "none" (no cut), "calibrate", or a number
+TrackCoherencePercentile = 99.0  # [percent] noise percentile of |Gamma| over slid pairs that "calibrate" takes
+TrackCalibrationSlides = 100  # [count] time slides of the coherence calibration
+TrackCalibrationMinimum = 20  # [count] slid pairs passing (a) and (b) needed, else every classical slid pair is used
+graph_basis = "LocalCos64"  # [name] track_event_coefficients: basis of the node maps drawn from the waveforms
+graph_edge_divisor = 4  # [count] track_event_coefficients: window / this is the edge left out on each side and the lead padding
+
+[ridge.event]
+n_bins = 32  # [count] time bins an event's extent is divided into for its ridge descriptors
+fit_min_bins = 3  # [count] least occupied bins for the ridge's slope and scatter (straight-line fit)
+
+[local_cosine]
+bell_iterations = 3  # [count] iterated sines of the Coifman-Meyer bell (0 is the sine bell); 3 matches p4TSA's LocalCos
+
+[wavegram_match]
+bin_per_tile = 1.0  # [-] time bin of the wavegram maps as a fraction of the shortest tile of the band ladder
+profile_block = 20000  # [count] pairs gathered at once in the match profile (numerical setting: bounds memory)
+time_roundoff_ulps = 8.0  # [-] snap of a grid's bin boundary, in ulps of its GPS time (numerical setting: round-off margin)
+
+[wavelets]
+tiles_top_fraction = 0.1  # [-] plot_wavelet_tiles: fraction of the non-zero tiles drawn, loudest first (display only)
+tiles_floor_frequency = 0.1  # [Hz] plot_wavelet_tiles: floor of a drawn tile's lower edge, for a log frequency axis
+tiles_alpha_min = 0.25  # [-] plot_wavelet_tiles: opacity of the faintest drawn tile
+tiles_alpha_span = 0.65  # [-] plot_wavelet_tiles: opacity added up to the loudest tile, in proportion to |wt|

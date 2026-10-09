@@ -53,8 +53,10 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-#: Robust standard deviation of a Gaussian from its median absolute deviation.
-MAD_TO_SIGMA = 1.4826
+from wdf.config.constants import MAD_GAUSSIAN, MAD_TO_SIGMA
+from wdf.config.defaults import defaults
+
+_R = defaults("ridge")
 
 
 @dataclass
@@ -154,26 +156,35 @@ class RidgeSettings:
                 calibration_max="RidgeCalibrationGridMax", xdrop_slots="RidgeXDropSlots",
                 xdrop_percentile="RidgeXDropPercentile")
 
-    #: Defaults, those in samples or Hz stated relative to the rate where
-    #: they depend on it. The penalty is the 3 Oct ridge v2's: the fastest
-    #: inspiral sweep of IMRPhenomD (Mc 1-30) up to 50 ms before the peak,
-    #: 0.27 octave per 1/32 s slot, is free, and the fastest slot including
-    #: the merger, 2.262 octaves, costs one cell sigma.
-    DEFAULTS = dict(slot_s=1.0 / 32.0, octave_step=0.25, basis="LocalCos128", alphas=(),
-                    background_s=256.0, background_update_s=8.0, background_min_s=64.0,
-                    background_clip=5.0, background_iterations=3,
-                    lam=1.0 / (2.262 - 0.27), allowance=0.27, drift=None, xdrop=None,
-                    threshold=0.0, waveform_states=1, calibration_seeds=2000,
-                    calibration_steps=64, calibration_kept=2.0,
-                    calibration_step=0.05, calibration_max=3.0,
-                    xdrop_slots=8, xdrop_percentile=99.0)
+    #: Defaults, from the ``[ridge]`` table of wdf/config/defaults.toml. The
+    #: penalty `lam` is ``1 / (ridge_merger_octaves - RidgeAllowance)`` unless
+    #: `RidgeLambda` is set there: a move of `ridge_merger_octaves` in one
+    #: slot costs one cell sigma.
+    DEFAULTS = dict(slot_s=_R["RidgeSlot"], octave_step=_R["RidgeOctaveStep"], basis=_R["RidgeBasis"],
+                    alphas=_R["RidgeDechirpAlphas"],
+                    background_s=_R["RidgeBackground"], background_update_s=_R["RidgeBackgroundUpdate"],
+                    background_min_s=_R["RidgeBackgroundMinimum"],
+                    background_clip=_R["RidgeBackgroundClip"],
+                    background_iterations=_R["RidgeBackgroundIterations"],
+                    lam=(1.0 / (_R["ridge_merger_octaves"] - _R["RidgeAllowance"])
+                         if _R["RidgeLambda"] is None else _R["RidgeLambda"]),
+                    allowance=_R["RidgeAllowance"], drift=_R["RidgeDrift"], xdrop=_R["RidgeXDrop"],
+                    threshold=_R["RidgeThreshold"], waveform_states=_R["RidgeWaveformStates"],
+                    calibration_seeds=_R["RidgeCalibrationSeeds"],
+                    calibration_steps=_R["RidgeCalibrationSteps"],
+                    calibration_kept=_R["RidgeCalibrationKept"],
+                    calibration_step=_R["RidgeCalibrationGridStep"],
+                    calibration_max=_R["RidgeCalibrationGridMax"],
+                    xdrop_slots=_R["RidgeXDropSlots"], xdrop_percentile=_R["RidgeXDropPercentile"])
 
     @classmethod
     def from_parameters(cls, par, rate):
         """The settings a run asks for, defaults filled in and written back.
 
-        `RidgeWindow` and `RidgeOverlap` default to the search's `window` and
-        `overlap` (the first of a schedule); `RidgeMaxSlots` to 16 s of slots.
+        Unset in ``[ridge]``, `RidgeWindow` and `RidgeOverlap` default to the
+        search's `window` and `overlap` (the first of a schedule),
+        `RidgeMaxSlots` to `ridge_max_path_s` of slots, `RidgeHighFrequency`
+        to `ridge_high_fraction_of_nyquist` of the Nyquist frequency.
 
         :param par: run configuration; it receives every value used.
         :type rate: float
@@ -186,6 +197,9 @@ class RidgeSettings:
             value = getattr(par, cls.KEYS[field], None)
             return default if value is None else value
 
+        def unset(key, derived):
+            return derived if _R[key] is None else _R[key]
+
         window = par.window[0] if isinstance(par.window, (list, tuple)) else par.window
         overlap = par.overlap[0] if isinstance(par.overlap, (list, tuple)) else par.overlap
         d = cls.DEFAULTS
@@ -194,11 +208,13 @@ class RidgeSettings:
         out = cls(
             slot_s=slot,
             octave_step=float(get("octave_step", d["octave_step"])),
-            f_low=float(get("f_low", getattr(par, "MinFrequency", None) or low_frequency_cut(par))),
-            f_high=float(get("f_high", 0.5 * float(rate))),
+            f_low=float(get("f_low", unset("RidgeLowFrequency",
+                                           getattr(par, "MinFrequency", None) or low_frequency_cut(par)))),
+            f_high=float(get("f_high", unset("RidgeHighFrequency",
+                                             _R["ridge_high_fraction_of_nyquist"] * 0.5 * float(rate)))),
             basis=str(get("basis", d["basis"])),
-            window=int(get("window", window)),
-            overlap=int(get("overlap", overlap)),
+            window=int(get("window", unset("RidgeWindow", window))),
+            overlap=int(get("overlap", unset("RidgeOverlap", overlap))),
             alphas=tuple(float(a) for a in get("alphas", d["alphas"])),
             background_s=float(get("background_s", d["background_s"])),
             background_update_s=float(get("background_update_s", d["background_update_s"])),
@@ -210,7 +226,8 @@ class RidgeSettings:
             drift=None if drift in (None, "calibrate") else float(drift),
             xdrop=None if xdrop in (None, "calibrate") else float(xdrop),
             threshold=float(get("threshold", d["threshold"])),
-            max_slots=int(get("max_slots", int(round(16.0 / slot)))),
+            max_slots=int(get("max_slots", unset("RidgeMaxSlots",
+                                                 int(round(_R["ridge_max_path_s"] / slot))))),
             waveform_states=int(get("waveform_states", d["waveform_states"])),
             calibration_seeds=int(get("calibration_seeds", d["calibration_seeds"])),
             calibration_steps=int(get("calibration_steps", d["calibration_steps"])),
@@ -324,12 +341,12 @@ def tile_geometry(n, fs, basis, alpha=0.0):
 
 def window_sigma(coefficients, f_hi, f_low):
     """Each window's noise scale: the median of ``|c|`` over the coefficients
-    whose tile reaches above `f_low`, over 0.6745.
+    whose tile reaches above `f_low`, over `MAD_GAUSSIAN`.
 
     :return: numpy.ndarray -- one scale per window.
     """
     keep = np.asarray(f_hi) > f_low + 1e-9
-    return np.median(np.abs(np.atleast_2d(coefficients)[:, keep]), axis=-1) / 0.6745
+    return np.median(np.abs(np.atleast_2d(coefficients)[:, keep]), axis=-1) / MAD_GAUSSIAN
 
 
 def window_tiles(coefficients, starts, fs, settings, alpha=0.0):
@@ -405,7 +422,8 @@ def cell_sums(tiles, t0, n_slots, settings):
         half = 0.5 * (fh - fl)
         fa, fb = 0.5 * (fl + fh) + sw * (ta - tc), 0.5 * (fl + fh) + sw * (tb - tc)
         lo, hi = np.minimum(fa, fb) - half, np.maximum(fa, fb) + half
-        llo, lhi = np.log2(np.maximum(lo, 1e-3)), np.log2(np.maximum(hi, 1e-3))
+        floor = _R["cell_frequency_floor"]
+        llo, lhi = np.log2(np.maximum(lo, floor)), np.log2(np.maximum(hi, floor))
         width = np.maximum(lhi - llo, 1e-12)
         s0 = np.clip(np.floor((llo - edges[0]) / step).astype(int), 0, None)
         nst = np.ceil((lhi - edges[0]) / step).astype(int) - s0
@@ -1021,7 +1039,7 @@ def offline_ridge(Z, t0, settings, X=None):
     return found, settings
 
 
-def box_scores(Z, durations_s, settings, starts_every=4):
+def box_scores(Z, durations_s, settings, starts_every=_R["box_starts_every"]):
     """The best local-alignment score in every box of each duration, as ridge
     v2 standardises them for a false-alarm estimate.
 
@@ -1055,7 +1073,7 @@ def box_scores(Z, durations_s, settings, starts_every=4):
 
 
 def standardise(boxes):
-    """Per duration, the median and 1.4826 MAD of the box scores.
+    """Per duration, the median and `MAD_TO_SIGMA` MAD of the box scores.
 
     :return: dict -- duration to (median, robust sigma).
     """

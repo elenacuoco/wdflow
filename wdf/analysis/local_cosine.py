@@ -21,8 +21,14 @@ __email__ = "elena.cuoco@unibo.it"
 
 import numpy as np
 
-#: Iterations of the sine that make the Coifman-Meyer bell smooth.
-DEFAULT_BELL_ITERATIONS = 3
+from wdf.config.constants import BELL_PI_FRACTION
+from wdf.config.defaults import defaults
+
+_LC = defaults("local_cosine")
+
+#: Iterations of the sine that make the Coifman-Meyer bell smooth
+#: (``[local_cosine] bell_iterations`` of wdf/config/defaults.toml).
+DEFAULT_BELL_ITERATIONS = _LC["bell_iterations"]
 
 
 def bell(m, overlap=None, iterations=DEFAULT_BELL_ITERATIONS):
@@ -40,7 +46,7 @@ def bell(m, overlap=None, iterations=DEFAULT_BELL_ITERATIONS):
     theta = (np.arange(-overlap, overlap) + 0.5) / overlap
     for _ in range(int(iterations)):
         theta = np.sin(0.5 * np.pi * theta)
-    return np.sin(0.25 * np.pi * (1.0 + theta))
+    return np.sin(BELL_PI_FRACTION * np.pi * (1.0 + theta))
 
 
 def _check(n, m, overlap):

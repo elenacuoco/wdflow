@@ -59,6 +59,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from wdf.config.constants import PERCENT
+from wdf.config.defaults import defaults
+
+_W = defaults("wavelets")
+
 
 LOCAL_COSINE = "LocalCos"
 
@@ -327,7 +332,8 @@ def wavelet_energy_snr(wt: np.ndarray, sigma: float) -> dict:
     )
 
 
-def plot_wavelet_tiles(ax, wt: np.ndarray, fs: float, t0: float = 0.0, top_frac: float = 0.10,
+def plot_wavelet_tiles(ax, wt: np.ndarray, fs: float, t0: float = 0.0,
+                       top_frac: float = _W["tiles_top_fraction"],
                        wave=None, **rect_kwargs) -> int:
     """Draw the top `top_frac` (by `|wt|`) coefficient tiles as rectangle
     patches on `ax` (e.g. overlaid on a Q-scan Axes whose x-data is absolute
@@ -354,7 +360,7 @@ def plot_wavelet_tiles(ax, wt: np.ndarray, fs: float, t0: float = 0.0, top_frac:
     # of |wt| are exactly zero, every tile clears the cut, and the overlay
     # becomes a solid block covering whatever it was drawn over.
     surviving = mags > 0
-    thresh = np.percentile(mags[surviving], 100 * (1 - top_frac))
+    thresh = np.percentile(mags[surviving], PERCENT * (1 - top_frac))
     vmax = mags.max()
 
     style = dict(fill=False, edgecolor="white", lw=1.1)
@@ -364,8 +370,8 @@ def plot_wavelet_tiles(ax, wt: np.ndarray, fs: float, t0: float = 0.0, top_frac:
     for t_lo, t_hi, f_lo, f_hi, mag in tiles:
         if mag <= 0 or mag < thresh:
             continue
-        f_lo = max(f_lo, 0.1)  # avoid a zero/negative lower edge under a log frequency axis
-        alpha = 0.25 + 0.65 * min(mag / vmax, 1.0)
+        f_lo = max(f_lo, _W["tiles_floor_frequency"])  # no zero lower edge under a log frequency axis
+        alpha = _W["tiles_alpha_min"] + _W["tiles_alpha_span"] * min(mag / vmax, 1.0)
         ax.add_patch(Rectangle((t0 + t_lo, f_lo), t_hi - t_lo, f_hi - f_lo, alpha=alpha, **style))
         n_drawn += 1
     return n_drawn

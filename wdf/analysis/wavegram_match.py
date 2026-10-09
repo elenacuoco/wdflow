@@ -66,17 +66,20 @@ from wdf.analysis.pairs import _paired_device
 from wdf.analysis.wavelets import ladder_rows
 from scipy.signal import correlation_lags, fftconvolve
 
+from wdf.config.defaults import defaults
+
+_WM = defaults("wavegram_match")
 
 #: The width of a time bin, seconds, as a fraction of the shortest tile the
 #: band ladder holds. A bin coarser than the light travel time cannot place a
 #: pair on the sky; one much finer costs displacements without resolving
 #: anything, since a tile's own duration is what limits the map's resolution.
-BIN_PER_TILE = 1.0
+BIN_PER_TILE = _WM["bin_per_tile"]
 
 # Pairs gathered at once. A gathered block is one map per pair, so the cap
 # is what keeps this stage's memory independent of how many pairs a slid
 # background produces.
-PROFILE_BLOCK = 20_000
+PROFILE_BLOCK = _WM["profile_block"]
 
 
 def render(cloud, bands, first, last, bin_seconds):
@@ -117,7 +120,7 @@ def render(cloud, bands, first, last, bin_seconds):
     # few ulps to either side of the integer it represents. Snap only at that
     # floating-point scale: otherwise `ceil` can invent a column and a tile can
     # occupy two bins when its support is exactly one bin wide.
-    time_roundoff = 8.0 * np.spacing(max(abs(float(first)), abs(float(last))))
+    time_roundoff = _WM["time_roundoff_ulps"] * np.spacing(max(abs(float(first)), abs(float(last))))
     n_bins = int(np.ceil(((last - first) - time_roundoff) / bin_seconds))
     if n_bins < 1:
         raise ValueError(

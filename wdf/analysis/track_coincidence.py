@@ -21,13 +21,14 @@ threshold is set:
 (a) the tracks are compatible: the time their f(t) agree, `track_common_s`,
     is at least `TrackMinCommonFraction` of the shorter track, holds at least
     `TrackMinCommonCycles` cycles at the tracks' frequency there, and is at
-    least `TrackMinCommonDuration` (an absolute floor, 0 by default);
+    least `TrackMinCommonDuration` (an absolute floor);
 (b) the coherence lag is physical: ``|track_lag_s| <=`` light travel time
     plus `TrackTimingJitter` (the search is wider, so a lag at its edge
     fails);
 (c) ``track_coherence >= TrackCoherenceMin``.
 
-By default `TrackCoherenceMin` is "none": no coherence cut. The coherence then
+With `TrackCoherenceMin` "none" (the ``[track.coincidence]`` default of
+wdf/config/defaults.toml), there is no coherence cut. The coherence then
 enters the ranking only, through `track_statistic`, and the false-alarm rate
 of the time slides decides. `TrackCoherenceMin` may instead be a number, or
 "calibrate": the `TrackCoherencePercentile` of ``|Gamma|`` over time-slid
@@ -70,6 +71,11 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from wdf.config.constants import PERCENT
+from wdf.config.defaults import defaults
+
+_TC = defaults("track.coincidence")
+
 #: The features a track pair adds to the classical ones.
 TRACK_EDGE_FEATURES = ["track_time_overlap", "track_common_s", "track_common_fraction",
                        "track_common_cycles", "track_f_distance",
@@ -84,9 +90,19 @@ GATES = ("full", "tracks", "classic")
 COMMON_RULES = ("all", "duration-or-fraction")
 
 
+def _coherence_min(value):
+    """`TrackCoherenceMin` as a number: 0.0 for "none"/"off" or None (no
+    cut), None for "calibrate", else the number."""
+    word = str(value).strip().lower() if isinstance(value, str) else value
+    return 0.0 if word in (None, "none", "off") else None if word == "calibrate" else float(value)
+
+
 @dataclass
 class TrackCoincidenceSettings:
     """What admits a pair of tracks.
+
+    Field defaults: the ``[track.coincidence]`` table of
+    wdf/config/defaults.toml.
 
     :param jitter_s: timing jitter added to the light travel time, s
         (`TrackTimingJitter`).
@@ -96,21 +112,21 @@ class TrackCoincidenceSettings:
         (`TrackLightTravelTime`); None reads it from the detectors.
     :param min_common_fraction: least fraction of the shorter track over
         which the two f(t) agree within the tolerance
-        (`TrackMinCommonFraction`, default 0.5). The rule is relative because
+        (`TrackMinCommonFraction`). The rule is relative because
         a track is as long as its signal: a compact binary's merger lasts a
         few tenths of a second, an inspiral seconds. Half the shorter track
         asks the two detectors to see the same part of the signal, not
         merely to touch.
     :param min_common_cycles: least number of cycles at the tracks'
-        frequency over that time (`TrackMinCommonCycles`, default 2). The
+        frequency over that time (`TrackMinCommonCycles`). The
         coherence of two waveforms is measured on their cycles: over less
         than about two, any two oscillations of similar frequency correlate,
         so a shared span shorter than that says nothing about the phase.
         2 cycles are 50 ms at 40 Hz and 10 ms at 200 Hz.
     :param min_common_s: absolute floor on that time, s
-        (`TrackMinCommonDuration`, default 0: none).
+        (`TrackMinCommonDuration`; 0: none).
     :param common_rule: how the three minima combine (`TrackCommonRule`):
-        "all" (default) needs every one of them; "duration-or-fraction" needs
+        "all" needs every one of them; "duration-or-fraction" needs
         the cycles and either the fraction or the absolute duration (the
         latter only when `min_common_s` is positive), so that two tracks
         sharing a stated length of signal pair even when one of them was
@@ -118,7 +134,7 @@ class TrackCoincidenceSettings:
         shorter.
     :param slot_tolerance: fraction of a slot by which a slot centre of one
         track may lie outside the other track's first-to-last slot centres
-        and still be compared (`TrackSlotTolerance`, default 0: none). The
+        and still be compared (`TrackSlotTolerance`; 0: none). The
         two detectors' slot grids coincide at zero lag (the same analysis
         grid) and not under a time slide of an arbitrary displacement; with 0
         the comparison reads an aligned pair more generously than a
@@ -130,7 +146,7 @@ class TrackCoincidenceSettings:
         "physical": the light travel time plus the jitter itself, so that the
         lag is the best physical one and admission (b) always holds.
     :param coherence_min: least ``|Gamma|`` admitted (`TrackCoherenceMin`):
-        0.0 ("none", the default) for no coherence cut, the coherence then
+        0.0 ("none") for no coherence cut, the coherence then
         ranking only; None ("calibrate") sets it with
         `calibrate_coherence_min`.
     :param percentile: the noise percentile the calibration takes
@@ -142,19 +158,19 @@ class TrackCoincidenceSettings:
         (`TrackCalibrationMinimum`).
     """
 
-    jitter_s: float = 0.0035
-    frequency_tolerance: float = 0.5
-    light_travel_time_s: float = None
-    min_common_fraction: float = 0.5
-    min_common_cycles: float = 2.0
-    min_common_s: float = 0.0
-    common_rule: str = "all"
-    slot_tolerance: float = 0.0
-    lag_search_s: object = 0.1
-    coherence_min: float = 0.0
-    percentile: float = 99.0
-    calibration_slides: int = 100
-    calibration_minimum: int = 20
+    jitter_s: float = _TC["TrackTimingJitter"]
+    frequency_tolerance: float = _TC["TrackFrequencyTolerance"]
+    light_travel_time_s: float = _TC["TrackLightTravelTime"]
+    min_common_fraction: float = _TC["TrackMinCommonFraction"]
+    min_common_cycles: float = _TC["TrackMinCommonCycles"]
+    min_common_s: float = _TC["TrackMinCommonDuration"]
+    common_rule: str = _TC["TrackCommonRule"]
+    slot_tolerance: float = _TC["TrackSlotTolerance"]
+    lag_search_s: object = _TC["TrackLagSearch"]
+    coherence_min: float = _coherence_min(_TC["TrackCoherenceMin"])
+    percentile: float = _TC["TrackCoherencePercentile"]
+    calibration_slides: int = _TC["TrackCalibrationSlides"]
+    calibration_minimum: int = _TC["TrackCalibrationMinimum"]
 
     KEYS = dict(jitter_s="TrackTimingJitter", frequency_tolerance="TrackFrequencyTolerance",
                 light_travel_time_s="TrackLightTravelTime",
@@ -170,16 +186,16 @@ class TrackCoincidenceSettings:
     def from_parameters(cls, par):
         """The settings a run asks for, defaults filled in and written back.
 
-        `TrackCoherenceMin` is "none" (default, no cut), "calibrate", or a
-        number.
+        `TrackCoherenceMin` is "none" (no cut), "calibrate", or a number;
+        unset, the ``[track.coincidence]`` default.
         """
         out = cls()
         for name, key in cls.KEYS.items():
             value = getattr(par, key, None)
             if name == "coherence_min":
+                value = _TC["TrackCoherenceMin"] if value is None else value
                 word = str(value).strip().lower() if isinstance(value, str) else value
-                out.coherence_min = (0.0 if word in (None, "none", "off") else
-                                     None if word == "calibrate" else float(value))
+                out.coherence_min = _coherence_min(value)
                 setattr(par, key, "none" if out.coherence_min == 0.0 and word in (None, "none", "off")
                         else "calibrate" if out.coherence_min is None else out.coherence_min)
                 continue
@@ -197,7 +213,7 @@ class TrackCoincidenceSettings:
                 value = int(value) if name.startswith("calibration") else float(value)
                 setattr(out, name, value)
             setattr(par, key, getattr(out, name))
-        if not 0 < out.percentile < 100:
+        if not 0 < out.percentile < PERCENT:
             raise ValueError(f"TrackCoherencePercentile {out.percentile}: between 0 and 100")
         if not 0.0 <= out.slot_tolerance <= 1.0:
             raise ValueError(f"TrackSlotTolerance {out.slot_tolerance}: a fraction of a slot, 0 to 1")
@@ -278,7 +294,8 @@ def waveform_coherence(first, second, fs, max_lag_s):
 
 def track_compatibility(left, right, displacement_left, displacement_right, window_s,
                         tolerance, min_common_s=0.0, min_common_fraction=0.0,
-                        min_common_cycles=0.0, common_rule="all", slot_tolerance=0.0):
+                        min_common_cycles=0.0, common_rule=_TC["TrackCommonRule"],
+                        slot_tolerance=0.0):
     """How two tracks agree in time and in f(t).
 
     :param left: an event row with `track_t_start`, `track_t_end`,
@@ -367,7 +384,7 @@ def track_compatibility(left, right, displacement_left, displacement_right, wind
     return out
 
 
-def track_event_coefficients(events, waveforms, fs, window, basis="LocalCos64",
+def track_event_coefficients(events, waveforms, fs, window, basis=_TC["graph_basis"],
                              bin_seconds=None):
     """Node maps of track events, drawn from their waveforms, for the graph.
 
@@ -386,15 +403,16 @@ def track_event_coefficients(events, waveforms, fs, window, basis="LocalCos64",
 
     m = _local_cosine_segment(basis)
     stride = window // 2
+    edge = window // _TC["graph_edge_divisor"]
     t_lo, t_hi = coeff_time_bounds(window, fs, basis)
     centre = 0.5 * (t_lo + t_hi) * fs
-    central = (centre >= window // 4) & (centre < window - window // 4)
+    central = (centre >= edge) & (centre < window - edge)
     rows, labels = [], []
     ids = events["cluster_id"].astype(int).tolist()
     for label, cid in enumerate(ids):
         t0, y = waveforms.get(cid, (np.nan, np.zeros(0)))
         y = np.asarray(y, dtype=float)
-        pad = np.concatenate([np.zeros(window // 4), y, np.zeros(window)])
+        pad = np.concatenate([np.zeros(edge), y, np.zeros(window)])
         made = 0
         for a in range(0, max(pad.size - window + 1, 1), stride):
             seg = pad[a:a + window]
@@ -404,7 +422,7 @@ def track_event_coefficients(events, waveforms, fs, window, basis="LocalCos64",
             index, value = from_dense(c)
             if not len(index) and made:
                 continue
-            gps = t0 + (a - window // 4) / fs
+            gps = t0 + (a - edge) / fs
             peak = gps + float(centre[int(np.argmax(np.abs(c)))]) / fs
             rows.append(dict(gps=gps, gpsPeak=peak, n_coeff=window, fs=fs, sigma=1.0, wave=basis,
                              EnWDF=float(np.sqrt(np.sum(c ** 2))), wt_index=index, wt_value=value))
