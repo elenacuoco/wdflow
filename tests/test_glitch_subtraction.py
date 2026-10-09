@@ -7,11 +7,10 @@ no atom, a chirp away from the glitch must be left untouched, and the
 subtraction in the conditioned domain must equal the subtraction of the
 atoms' whitened images in the whitened domain.
 """
-import os
 
 import numpy as np
 import pytest
-from scipy.signal import fftconvolve, lfilter
+from scipy.signal import lfilter
 
 from types import SimpleNamespace
 

@@ -11,7 +11,7 @@ parameter estimation, the writing and any diagnostics attach as observers.
 __author__ = "Elena Cuoco"
 __project__ = "wdf"
 
-from py4tsa.tsa import WaveletThreshold, WDF2Classify, EventFullFeatured
+from py4tsa.tsa import WDF2Classify, EventFullFeatured
 
 from wdf.observers.observable import Observable
 from wdf.config import Parameters

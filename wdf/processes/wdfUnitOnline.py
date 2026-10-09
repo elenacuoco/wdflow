@@ -678,7 +678,7 @@ class wdfUnitOnline:
         `ARFitCandidates` stretches of `learn` seconds, `ARFitStep` apart,
         ending `ARFitGap` before `now`, that passes the quality rule.
         """
-        par, rate = self.par, float(self.par.resampling)
+        par = self.par
         chosen = (self._reused_model(now) if self._reused is not None
                   else self._choose_stretch(past, past_start, now))
         if chosen is None:
@@ -1209,7 +1209,6 @@ class wdfUnitOnline:
 
     def _drain_tracks(self):
         """The tracks whose seeds' slices of the map are complete."""
-        from dataclasses import replace
 
         st, par = self._ridge_state, self.par
         cells = st["cells"]

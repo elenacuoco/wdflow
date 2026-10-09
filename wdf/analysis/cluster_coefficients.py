@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from wdf.analysis.coefficients import coefficient_matrix, from_dense, window_length
+from wdf.analysis.coefficients import coefficient_matrix, from_dense
 
 
 def _rows_by_label(frame: pd.DataFrame, cluster_column: str) -> dict:

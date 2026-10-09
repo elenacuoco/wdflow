@@ -204,7 +204,6 @@ def test_the_wavegram_is_on_the_noise_scale():
 def test_a_trigger_joins_only_where_it_has_energy():
     """The support of a broadband transient covers everything beneath it. The
     bands it occupies are where its energy is, and only those connect."""
-    import numpy as np
 
     low = _fixed_coefficients(_triggers([512], 6), [9, 10])
     high = _fixed_coefficients(_triggers([512], 6, seed=3), [400, 401])
@@ -228,7 +227,6 @@ def test_a_trigger_joins_only_where_it_has_energy():
 def test_energy_in_a_band_connects_to_the_band_beside_it():
     """A transient that sweeps moves between neighbouring bands, so touching
     means adjacent as well as shared."""
-    import numpy as np
 
     triggers = _triggers([512], 8)
     triggers = _walking_coefficients(triggers, [2 ** (7 + k % 2)
@@ -242,7 +240,6 @@ def test_energy_in_a_band_connects_to_the_band_beside_it():
 def test_a_sweeping_transient_is_not_broken_by_the_continuity_test():
     """A chirp climbs one band at a time, and the test asks the bands to touch
     rather than the two wavegrams to look alike."""
-    import numpy as np
 
     sweeping = _walking_coefficients(_triggers([512], 10),
                                      [2 ** (4 + k // 3) for k in range(10)])

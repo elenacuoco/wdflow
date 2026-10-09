@@ -22,7 +22,6 @@ import time
 import numpy as np
 
 from py4tsa.tsa import *
-from py4tsa.tsa import WaveletThreshold
 from py4tsa.tsa import SeqView_double_t as SV
 
 
@@ -284,12 +283,6 @@ class wdfUnitDSWorker(object):
         # parameters: its family decides where the band edges are.
         self.par.BandPassFilter = ds.family
         self.par.BandPassPassband = list(ds.passband())
-        
-        #Perform operation to intialite the detection loop    
-        #gpsStart = gpsStart - self.par.preWhite            
-        data = SV()
-        data_ds = SV()
-        dataw = SV()
         Noutdata = int(self.par.resampling)
 
         # The band the whitening whitens. The model is fitted on band-passed
@@ -562,7 +555,7 @@ class wdfUnitDSWorker(object):
                     break  # If no exceptions are thrown, exit the while loop
                 except:
                     gpsStart=gpsStart+1.0
-                    print("No frame, moving to the next one. New gpsStart is", gpsStart)
+                    logging.warning("No frame, moving to the next one. New gpsStart is %s", gpsStart)
                 continue  # If an exception is thrown, continue with the next iteration of the while loop
             ###---preheating---###
             streaming = FrameIChannel(self.par.file, self.par.channel, 1.0, gpsStart)

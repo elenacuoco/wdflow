@@ -1,8 +1,6 @@
 """The search reads its rule, its block rule and its name from the parameters."""
-import os
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 pytest.importorskip("py4tsa")

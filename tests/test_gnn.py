@@ -143,16 +143,6 @@ def _reference_build(builder, clustered, coefficients):
     nodes_df["ifo"] = node_ifo
     idx_by_ifo = {ifo: nodes_df.index[nodes_df["ifo"] == ifo].to_numpy() for ifo in ifos}
 
-    grids = np.vstack([
-        coefficients[ifo][int(row["cluster_id"])].wavegram(builder.wavegram_time_bins).ravel()
-        for ifo in ifos
-        for _, row in clustered[ifo].reset_index(drop=True).iterrows()
-    ])
-    grids = np.log1p(grids)
-    norms = np.linalg.norm(grids, axis=1, keepdims=True)
-    norms[norms == 0.0] = 1.0
-    shapes = grids / norms
-
     intra_edges, intra_feats = [], []
     for idxs in idx_by_ifo.values():
         for i, j in combinations(idxs, 2):

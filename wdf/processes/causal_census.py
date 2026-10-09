@@ -27,7 +27,7 @@ __maintainer__ = "Elena Cuoco"
 __email__ = "elena.cuoco@unibo.it"
 
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.signal import sosfilt, sosfilt_zi

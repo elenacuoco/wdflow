@@ -42,7 +42,7 @@ import pandas as pd
 from wdf.analysis.metaparameters import energy_quantile
 from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
 from wdf.analysis.pairs import neighbour_pairs
-from wdf.analysis.robust_events import EPS, _UnionFind
+from wdf.analysis.robust_events import EPS
 from wdf.analysis.wavelets import (coeff_freq_bands, coeff_time_bounds, ladder_rows,
                                    packet_depths)
 
@@ -1021,7 +1021,6 @@ def event_coefficients(graph: DetectorGraph, labels=None,
     index_of = nodes["wt_index"].to_numpy()
     value_of = nodes["wt_value"].to_numpy()
     sigma_of = nodes["sigma"].to_numpy(dtype=float)
-    span = scale / fs
 
     # A compact, fixed-size view is anchored on the centre of the tile carrying
     # each event's largest coefficient. The anchor is not part of the physical

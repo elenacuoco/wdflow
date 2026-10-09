@@ -30,7 +30,7 @@ import pandas as pd
 
 from wdf.analysis.pairs import neighbour_pairs
 from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
-from wdf.analysis.robust_events import EPS, _UnionFind
+from wdf.analysis.robust_events import EPS
 
 PIXEL_EDGE_FEATURES = [
     "time_gap", "frequency_overlap", "log_scale_ratio",
@@ -249,7 +249,6 @@ def cluster_events(graph: PixelGraph, significance=None, labels=None) -> pd.Data
     """
     from wdf.analysis.metaparameters import energy_quantile
     from wdf.analysis.scale import normalised_energy
-    from wdf.analysis.wavelets import tile_frequency
 
     nodes = graph.nodes
     if nodes.empty:

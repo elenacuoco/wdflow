@@ -32,7 +32,12 @@ tools read it.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+__author__ = "Elena Cuoco"
+__license__ = "GPL"
+__maintainer__ = "Elena Cuoco"
+__email__ = "elena.cuoco@unibo.it"
+
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd

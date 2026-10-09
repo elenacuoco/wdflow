@@ -28,6 +28,11 @@ cross-correlation lag) are left empty, never invented.
 """
 from __future__ import annotations
 
+__author__ = "Elena Cuoco"
+__license__ = "GPL"
+__maintainer__ = "Elena Cuoco"
+__email__ = "elena.cuoco@unibo.it"
+
 import datetime as _dt
 import hashlib
 import os

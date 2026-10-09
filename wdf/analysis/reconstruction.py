@@ -296,7 +296,6 @@ def spectral_centroid(triggers) -> np.ndarray:
         coefficient columns.
     :return: numpy.ndarray -- the centroid in Hz, `nan` where undefined.
     """
-    import pandas as pd
 
     out = np.full(len(triggers), np.nan)
     if not len(triggers):

@@ -26,7 +26,7 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 from wdf.analysis.detectors import network_light_travel_time
-from wdf.analysis.pairs import cross_pairs, interval_pairs, neighbour_pairs
+from wdf.analysis.pairs import interval_pairs, neighbour_pairs
 
 EPS = np.finfo(float).tiny
 
