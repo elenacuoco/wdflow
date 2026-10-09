@@ -165,10 +165,11 @@ def test_the_track_configuration_is_the_zerophase_one_on_the_track_path():
     a, b = vars(zp), vars(tr)
     assert {k for k in set(a) | set(b) if a.get(k) != b.get(k)} == {
         "ConfigFile", "SearchName", "run", "Reconstruction", "Coincidence", "RidgeBasis",
-        "TrackBasis", "NetworkRankColumn", "TrackOverlapPolicy"}
+        "TrackBasis", "NetworkRankColumn", "TrackOverlapPolicy", "TrackSlotTolerance"}
     assert (tr.Reconstruction, tr.Coincidence, tr.RidgeBasis, tr.TrackBasis) == \
         ("track", "track", "LocalCos64", "LocalCos64")
     assert (zp.TrackOverlapPolicy, tr.TrackOverlapPolicy) == ("drop", "supersede")
+    assert (zp.TrackSlotTolerance, tr.TrackSlotTolerance) == (0.0, 0.5)
     assert zp.TrackEventInstant == tr.TrackEventInstant == "peak"
     for key, line in assignments(TRACK):
         assert "#" in line, f"{key} has no comment"

@@ -63,6 +63,8 @@ same at zero lag, not under a time slide of an arbitrary displacement, so
 the slides admit about 2.5 times fewer pairs than the zero lag on the mock
 and the track background is underestimated; 0.5 reads an aligned and a
 misaligned pair alike. `track_compatibility` takes `slot_tolerance`.
+`configs/online_zerophase_track.toml` sets 0.5, since its background comes
+from time slides whose shifts are off-grid; the other configurations keep 0.
 
 `TrackLagSearch` also takes "physical" (default 0.1 s, nothing changes): the
 lag search's half-width is the light travel time plus `TrackTimingJitter`,

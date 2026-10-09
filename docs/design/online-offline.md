@@ -613,7 +613,7 @@ It admits a pair when:
    aligned pair keeps its boundary slots where a misaligned one loses them:
    the slides then admit fewer pairs than the zero lag does (about 2.5 times
    fewer on the mock) and the background is underestimated; 0.5 reads both
-   alike;
+   alike, and `configs/online_zerophase_track.toml` sets it;
 2. the lag is physical: `|track_lag_s|` is at most the light travel time plus
    `TrackTimingJitter`. `TrackLagSearch` is the half-width of the lag search
    in seconds (0.1 by default) or "physical", the light travel time plus the
