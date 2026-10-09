@@ -224,7 +224,7 @@ def combine_candidates(candidates, settings=None, rank_columns=None):
     """One list from the candidate tables of several paths.
 
     :param candidates: dict path name -> candidate table (``gps_candidate``, ``far_per_day``; the per-detector and
-        rank columns when it has them). Tables are taken in the dict's order; the first is matched to the
+        rank columns when it has them; an empty table, with or without columns, is a path with no candidate). Tables are taken in the dict's order; the first is matched to the
         others in turn.
     :param settings: `CombineSettings` (default: the defaults).
     :param rank_columns: dict path name -> the column of its detection statistic, copied to
@@ -241,7 +241,12 @@ def combine_candidates(candidates, settings=None, rank_columns=None):
     names = list(candidates)
     if not names:
         raise ValueError("no candidate table to combine")
+    candidates = dict(candidates)
     for name, table in candidates.items():
+        if table is None or not len(table):
+            # a path with no candidate at all (e.g. no admitted pair on the stretch) may carry no columns
+            candidates[name] = pd.DataFrame({"gps_candidate": np.zeros(0), "far_per_day": np.zeros(0)})
+            continue
         for col in ("gps_candidate", "far_per_day"):
             if col not in table:
                 raise ValueError(f"the candidates of path {name!r} carry no {col!r}")

@@ -135,6 +135,16 @@ def test_empty_and_single_path():
     assert out.far_per_day.iloc[0] == pytest.approx(0.01) and out.trials_factor.iloc[0] == 1.0
 
 
+def test_an_empty_table_without_columns_is_a_path_with_no_candidate():
+    w = _table([100.0], [0.01], "gnn_logit", "w")
+    out = combine_paths(w, pd.DataFrame(), CombineSettings(window_s=0.02), rank_w="gnn_logit", rank_t="track_statistic")
+    assert len(out) == 1 and out.found_by.iloc[0] == "w" and out.far_per_day.iloc[0] == pytest.approx(0.02)
+    assert np.isnan(out.far_per_day_t.iloc[0]) and np.isnan(out.statistic_t.iloc[0])
+    out = combine_paths(pd.DataFrame(), w, CombineSettings(window_s=0.02))
+    assert len(out) == 1 and out.found_by.iloc[0] == "t" and out.time_path.iloc[0] == "t"
+    assert len(combine_paths(pd.DataFrame(), None)) == 0
+
+
 def test_missing_rate_is_an_error():
     w = _table([100.0], [0.01], "gnn_logit", "w").drop(columns=["far_per_day"])
     with pytest.raises(ValueError):
