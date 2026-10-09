@@ -21,6 +21,9 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.network_graph import EDGE_FEATURES, TriggerGraphBuilder
+from wdf.config.defaults import defaults
+
+_D = defaults("baseline")
 
 # The two single-detector statistics belong in the ranking as well: a pair of
 # loud events and a pair of quiet ones with the same geometry are not equally
@@ -66,7 +69,7 @@ class LogisticCoincidenceBaseline:
             )
         self.model = make_pipeline(
             StandardScaler(),
-            LogisticRegression(max_iter=1000, class_weight="balanced"),
+            LogisticRegression(max_iter=_D["max_iter"], class_weight=_D["class_weight"]),
         ).fit(self._design(table), labels)
         return self
 

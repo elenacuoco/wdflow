@@ -21,6 +21,10 @@ from wdf.analysis.coefficients import (
     read_triggers,
 )
 from wdf.analysis.robust_events import stride_seconds
+from wdf.config.constants import SECONDS_PER_DAY
+from wdf.config.defaults import defaults
+
+_D = defaults("io")
 
 # Every column wdf.observers.SingleEventPrintFileObserver writes for a trigger.
 TRIGGER_COLUMNS = list(META_FIELDS) + ["wave", "n_coeff", "fs"] + list(COEFFICIENT_FIELDS)
@@ -128,7 +132,7 @@ def covered_livetime_days(spans) -> float:
         if length < 0.0:
             raise ValueError(f"span {k} ends before it starts: ({first}, {last})")
         total += length
-    return total / 86400.0
+    return total / SECONDS_PER_DAY
 
 
 #: Characters a search name may hold in a file name.
@@ -229,8 +233,8 @@ def load_triggers_dir(base_dir: str, ifo: str, pattern: str = "*.parquet") -> pd
 
 def clean_triggers(
     df: pd.DataFrame,
-    snr_ceiling: float = 500.0,
-    edge_guard_s: float = 5.0,
+    snr_ceiling: float = _D["snr_ceiling"],
+    edge_guard_s: float = _D["edge_guard_s"],
 ) -> pd.DataFrame:
     """Drop WDF numerical-artifact triggers before clustering/coincidence.
 

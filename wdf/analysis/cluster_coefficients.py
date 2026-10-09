@@ -21,6 +21,9 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.coefficients import coefficient_matrix, from_dense
+from wdf.config.defaults import defaults
+
+_D = defaults("cluster_coefficients")
 
 
 def _rows_by_label(frame: pd.DataFrame, cluster_column: str) -> dict:
@@ -178,7 +181,7 @@ class ClusterCoefficients:
         _, samples = self.reconstruct()
         return float(np.linalg.norm(samples) / sigma)
 
-    def wavegram(self, n_time_bins: int = 64) -> np.ndarray:
+    def wavegram(self, n_time_bins: int = _D["wavegram_time_bins"]) -> np.ndarray:
         """The cluster's tiles rendered on a fixed octave-by-time grid.
 
         Each coefficient is placed at its own tile's absolute time and octave,

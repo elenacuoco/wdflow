@@ -39,6 +39,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from wdf.config.defaults import defaults
+
+_D = defaults("scale")
+
 from wdf.analysis.wavelets import coeff_freq_bands, coeff_time_bounds, packet_depths
 
 SCALE_PIXEL_COLUMNS = [
@@ -302,8 +306,8 @@ def scale_maximum(pixels: pd.DataFrame,
     return out
 
 
-def local_noise_scale(triggers: pd.DataFrame, neighbours: int = 41,
-                      minimum: int = 5) -> np.ndarray:
+def local_noise_scale(triggers: pd.DataFrame, neighbours: int = _D["neighbours"],
+                      minimum: int = _D["minimum"]) -> np.ndarray:
     """The noise scale of each block read on the blocks around it.
 
     A block's own scale is a median absolute deviation over its coefficients,
@@ -369,7 +373,8 @@ def local_noise_scale(triggers: pd.DataFrame, neighbours: int = 41,
 
 
 def on_local_scale(triggers: pd.DataFrame, statistic: str = "EnWDF",
-                   neighbours: int = 41, minimum: int = 5) -> np.ndarray:
+                   neighbours: int = _D["neighbours"],
+                   minimum: int = _D["minimum"]) -> np.ndarray:
     """A block's statistic re-expressed on the noise of its neighbours.
 
     The statistic divides by the block's own scale, so restoring it and

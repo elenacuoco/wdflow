@@ -24,6 +24,10 @@ import numpy as np
 from wdf.analysis.coefficients import to_dense
 import pandas as pd
 
+from wdf.config.defaults import defaults
+
+_D = defaults("reconstruction")
+
 
 def inverse_transform(coefficients, wave):
     """Invert one window's wavelet coefficients back to the time domain.
@@ -93,8 +97,8 @@ def synthesis_weight(window, overlap):
     return weight
 
 
-def stitch(triggers, fs, window, overlap, overlap_policy="overlap_add",
-           taper_edges=False):
+def stitch(triggers, fs, window, overlap, overlap_policy=_D["overlap_policy"],
+           taper_edges=_D["taper_edges"]):
     """Stitch consecutive triggers into one reconstructed time series.
 
     Consecutive windows overlap, so a sample in the overlapped region has one
@@ -393,7 +397,7 @@ def waveform_overlap(reconstructed, injected, max_lag=0):
     return dict(overlap=best, lag=best_lag, overlap_at_zero_lag=at_zero)
 
 
-def phase_residual(reconstructed, injected, amplitude_floor=0.1):
+def phase_residual(reconstructed, injected, amplitude_floor=_D["amplitude_floor"]):
     """The phase a reconstruction carries, against the phase it should carry.
 
     Both series are taken to their analytic signal and their unwrapped phases

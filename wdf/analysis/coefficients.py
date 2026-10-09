@@ -19,9 +19,14 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# The coefficient index is stored as an unsigned 16-bit integer, so a window
-# may hold up to this many coefficients.
-MAX_COEFF = 1 << 16
+from wdf.config.defaults import defaults
+
+_D = defaults("coefficients")
+
+# The coefficient index is stored as an unsigned 16-bit integer (the
+# `wt_index` field of `TRIGGER_SCHEMA`), so a window may hold up to this many
+# coefficients.
+MAX_COEFF = int(np.iinfo(np.uint16).max) + 1
 
 # A GPS time is a large number that has to stay meaningful to well under a
 # millisecond, so it needs double precision. Everything else here is a
@@ -180,7 +185,7 @@ class TriggerWriter:
     reader needs before it can open it at all.
     """
 
-    def __init__(self, path: str, flush_every: int = 20000):
+    def __init__(self, path: str, flush_every: int = _D["flush_every"]):
         """
         :type path: str
         :param path: file to write; an existing file is replaced.
@@ -291,7 +296,7 @@ def trigger_statistics(frame: pd.DataFrame) -> dict:
     gps = pd.to_numeric(frame["gps"], errors="coerce").to_numpy()
     livetime = float(np.nanmax(gps) - np.nanmin(gps))
 
-    quantiles = [0.5, 0.9, 0.99, 1.0]
+    quantiles = list(_D["summary_quantiles"])
     return dict(
         n_triggers=int(len(frame)),
         livetime_s=livetime,

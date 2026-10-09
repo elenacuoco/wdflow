@@ -28,6 +28,11 @@ import re
 import numpy as np
 import pandas as pd
 
+from wdf.config.constants import DAYS_PER_JULIAN_YEAR, SECONDS_PER_DAY
+from wdf.config.defaults import defaults
+
+_D = defaults("submission")
+
 # What the challenge asks for, in order. The first two match injections; the
 # rest are read for diagnosis and must be present whether or not they are known.
 SUBMISSION_COLUMNS = [
@@ -36,10 +41,11 @@ SUBMISSION_COLUMNS = [
     "right_ascension", "declination",
 ]
 
-# The value standing for "this pipeline does not provide it".
-MISSING = -999.0
+# The value standing for "this pipeline does not provide it" (`[submission]
+# missing_value` of wdf/config/defaults.toml).
+MISSING = _D["missing_value"]
 
-SECONDS_PER_YEAR = 365.25 * 86400.0
+SECONDS_PER_YEAR = DAYS_PER_JULIAN_YEAR * SECONDS_PER_DAY
 
 _NAME = re.compile(r"^[a-z0-9-]+$")
 

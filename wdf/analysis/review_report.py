@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.injections import efficiency
+from wdf.config.constants import MS_PER_S, PERCENT
+from wdf.config.defaults import defaults
+
+_D = defaults("review_report")
 
 C_BLUE, C_ORANGE = "#2a78d6", "#eb6834"
 INK, INK_MUTED, SURFACE = "#0b0b0b", "#52514e", "#fcfcfb"
@@ -73,16 +77,16 @@ def _headline_numbers(recovery, coincidence_matched, candidates, background_cand
                       false_alarm_candidates, livetime_days):
     """Ordered (label, value) pairs summarising the run."""
     out = [("Injections", f"{len(recovery):,}"),
-           ("Recovered per detector", f"{recovery['found'].mean() * 100:.1f}%")]
+           ("Recovered per detector", f"{recovery['found'].mean() * PERCENT:.1f}%")]
     found = recovery[recovery["found"]]
     if len(found) > 2:
         r = float(np.corrcoef(found["injected_snr"], found["recovered_snr"])[0, 1])
         out.append(("SNR correlation", f"{r:.3f}"))
         if "dt_s" in found:
-            out.append(("Median timing offset", f"{found['dt_s'].median() * 1e3:+.1f} ms"))
+            out.append(("Median timing offset", f"{found['dt_s'].median() * MS_PER_S:+.1f} ms"))
     if coincidence_matched is not None and len(coincidence_matched):
         out.append(("Astrophysical in coincidence",
-                    f"{coincidence_matched['found'].mean() * 100:.1f}%"))
+                    f"{coincidence_matched['found'].mean() * PERCENT:.1f}%"))
     if candidates is not None:
         out.append(("Foreground coincidences", f"{len(candidates):,}"))
     if background_candidates is not None and livetime_days:
@@ -97,7 +101,7 @@ def _by_class_table(recovery):
     """Per-class injected, found, efficiency and median recovered SNR."""
     grouped = recovery.groupby(["category", "subclass"])
     table = grouped.agg(injected=("found", "size"), found=("found", "sum")).reset_index()
-    table["efficiency"] = (table["found"] / table["injected"]).round(3)
+    table["efficiency"] = (table["found"] / table["injected"]).round(decimals=3)
     med = grouped["recovered_snr"].median().reset_index(name="median_recovered_snr")
     table = table.merge(med, on=["category", "subclass"])
     table["median_recovered_snr"] = table["median_recovered_snr"].round(2)
@@ -106,7 +110,7 @@ def _by_class_table(recovery):
 
 def _population_figure(injections):
     """Injected classes and SNR distribution."""
-    fig, axes = _figure(1, 2, (11, 3.6))
+    fig, axes = _figure(1, 2, figsize=_D["population_figsize"])
     order = injections.groupby("subclass").size().sort_values()
     colours = [C_BLUE if s in ("bbh", "bhns", "bns") else C_ORANGE for s in order.index]
     axes[0].barh(order.index, order.values, color=colours, height=0.7)
@@ -116,7 +120,8 @@ def _population_figure(injections):
     for cat, colour in (("cbc", C_BLUE), ("glitch", C_ORANGE)):
         sel = injections[injections["category"] == cat]
         if len(sel):
-            axes[1].hist(sel["network_snr"], bins=np.linspace(0, 100, 26), histtype="step",
+            axes[1].hist(sel["network_snr"], bins=np.linspace(*_D["population_snr_range"], _D["population_snr_edges"]),
+                         histtype="step",
                          lw=2, color=colour, label=cat)
     axes[1].set_xlabel("injected network SNR")
     axes[1].set_title("Signal-to-noise ratio", color=INK)
@@ -127,10 +132,11 @@ def _population_figure(injections):
 def _efficiency_figure(recovery):
     """Efficiency against injected SNR, one panel per class."""
     classes = sorted(recovery["subclass"].unique())
-    ncol = min(4, max(len(classes), 1))
+    ncol = min(_D["panel_columns"], max(len(classes), 1))
     nrow = int(np.ceil(len(classes) / ncol))
-    fig, axes = _figure(nrow, ncol, (3.2 * ncol, 2.6 * nrow), sharex=True, sharey=True)
-    bins = np.linspace(4, 50, 12)
+    fig, axes = _figure(nrow, ncol, figsize=(_D["panel_size"][0] * ncol, _D["panel_size"][1] * nrow),
+                        sharex=True, sharey=True)
+    bins = np.linspace(*_D["efficiency_snr_range"], _D["efficiency_snr_edges"])
     for ax, name in zip(axes, classes):
         sel = recovery[recovery["subclass"] == name]
         curve = efficiency(sel, bins=bins, injected_snr_column="injected_snr")
@@ -138,7 +144,7 @@ def _efficiency_figure(recovery):
         ax.fill_between(curve["snr_mid"], 0, curve["efficiency"], step="mid",
                         alpha=0.12, color=C_BLUE)
         ax.set_title(f"{name} (n={len(sel)})", fontsize=9, color=INK)
-        ax.set_ylim(0, 1.05)
+        ax.set_ylim(0, _D["efficiency_ylim_top"])
     for ax in axes[len(classes):]:
         ax.set_visible(False)
     for ax in axes[max(len(classes) - ncol, 0):len(classes)]:
@@ -151,7 +157,7 @@ def _efficiency_figure(recovery):
 def _recovery_figure(recovery):
     """Recovered against injected SNR, and the timing residual."""
     found = recovery[recovery["found"]]
-    fig, axes = _figure(1, 2, (11, 3.8))
+    fig, axes = _figure(1, 2, figsize=_D["recovery_figsize"])
     for cat, colour in (("cbc", C_BLUE), ("glitch", C_ORANGE)):
         sel = found[found["category"] == cat]
         if len(sel):
@@ -162,7 +168,7 @@ def _recovery_figure(recovery):
     axes[0].set_title("SNR recovery", color=INK)
     axes[0].legend(fontsize=8)
     if len(found):
-        axes[1].hist(found["dt_s"] * 1e3, bins=40, color=C_BLUE, alpha=0.85)
+        axes[1].hist(found["dt_s"] * MS_PER_S, bins=_D["timing_bins"], color=C_BLUE, alpha=0.85)
     axes[1].set_xlabel("recovered $-$ injected time [ms]")
     axes[1].set_ylabel("injections")
     axes[1].set_title("Timing", color=INK)

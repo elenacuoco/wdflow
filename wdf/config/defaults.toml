@@ -407,3 +407,99 @@ seed = 0  # [-] seed of the generator of the shifts
 [background]
 keep = 1000000  # [count] largest values of each ranking BackgroundAccumulator holds exactly (numerical setting: bounds memory)
 bins = 4096  # [count] bins of the histogram covering the values below the kept tail
+
+# ============================================================================
+# Defaults of the learning, evaluation, report, plot and I/O modules of wdf/analysis.
+
+[gnn.coincidence]
+hidden = 16  # [count] width of the hidden representation of GNNCoincidenceScorer
+seed = 0  # [-] torch seed of GNNCoincidenceScorer, for a reproducible initialisation
+epochs = 100  # [count] training epochs of GNNCoincidenceScorer.fit
+lr = 1e-2  # [-] Adam learning rate of GNNCoincidenceScorer.fit
+
+[gnn.detector]
+hidden = 32  # [count] width of the hidden representation of DetectorEdgeScorer
+layers = 2  # [count] rounds of message passing of DetectorEdgeScorer
+seed = 0  # [-] torch seed of DetectorEdgeScorer, for a reproducible initialisation
+epochs = 100  # [count] gradient steps of DetectorEdgeScorer.fit
+lr = 1e-2  # [-] Adam learning rate of DetectorEdgeScorer.fit
+
+[gnn.labels]
+tolerance_s = 0.5  # [s] how far outside its window a trigger may still claim an injection (edge_labels_from_injections)
+
+[anomaly]
+hidden = 16  # [count] width of the hidden representation of BackgroundAnomalyScorer
+seed = 0  # [-] torch seed of BackgroundAnomalyScorer, for a reproducible initialisation
+epochs = 100  # [count] passes over the background graphs in BackgroundAnomalyScorer.fit
+lr = 1e-2  # [-] Adam learning rate of BackgroundAnomalyScorer.fit
+scale_floor = 1e-6  # [-] smallest standard deviation used to standardise node and edge features
+
+[baseline]
+max_iter = 1000  # [count] iteration limit of the logistic-regression solver (numerical setting)
+class_weight = "balanced"  # [name] sklearn class weighting of the logistic baseline; "balanced" weighs classes by inverse frequency
+
+[cluster_coefficients]
+wavegram_time_bins = 64  # [count] time columns of a cluster's octave-by-time wavegram grid (ClusterCoefficients.wavegram)
+
+[coefficients]
+flush_every = 20000  # [count] trigger rows buffered before TriggerWriter writes a Parquet row group (I/O setting)
+summary_quantiles = [0.5, 0.9, 0.99, 1.0]  # [-] quantiles reported by the trigger-file summary for coefficient count, EnWDF and snrPeak
+
+[evaluation]
+train_fraction = 0.5  # [fraction] fraction of the candidates' time span that temporal_split gives to training
+far_targets = [1.0, 0.14285714285714285]  # [1/day] false-alarm rates at which compare_statistics reads efficiency (once a day, once a week = 1/7)
+
+[injections]
+window_s = 0.5  # [s] margin around a candidate's span within which an injection is matched to it
+efficiency_bins = 10  # [count] equal SNR bins over the data range of the efficiency curve when no edges are given
+
+[io]
+snr_ceiling = 500.0  # [-] snrPeak at or above which clean_triggers discards a trigger as a numerical artifact
+edge_guard_s = 5.0  # [s] span discarded by clean_triggers at each end of a trigger set, where whitening and AR fit settle
+
+[metaparameters]
+energy_quantiles = [0.05, 0.95]  # [-] energy quantiles bounding duration90 (time) and freqQ05/freqQ95 (log frequency) of a trigger
+
+[modes]
+far_targets = [1.0, 0.1]  # [1/day] false-alarm rates at which compare_modes reads each mode's efficiency
+roc_points = 60  # [count] background ranks sampled (geometrically) by mode_roc
+
+[plots]
+rate_bin_s = 60.0  # [s] width of a time bin of the trigger-rate plot (plot_rate)
+display_octaves = 20  # [octaves] tile plots show frequencies down to the sampling rate over 2**display_octaves (display setting)
+context_min_s = 1.0  # [s] least context drawn on each side of an event in plot_cluster_membership (display setting)
+frequency_floor_hz = 1.0  # [Hz] lowest frequency shown by plot_cluster_membership (display setting)
+
+[reconstruction]
+overlap_policy = "overlap_add"  # [name] how stitch reconciles the two estimates of an overlapped sample: "overlap_add" or "central_window"
+taper_edges = false  # [bool] stitch ramps the series at the edges of coverage instead of stepping from zero
+amplitude_floor = 0.1  # [fraction] fraction of the injected envelope's peak below which phase_residual does not compare phases
+
+[report]
+top_n = 5  # [count] loudest events listed per detector in the run report
+tiles_window_s = 0.5  # [s] raw triggers within this distance of the loudest event are drawn in its time-frequency plot
+basis_figure_min_height = 2.5  # [in] least height of the winning-basis bar chart (display setting)
+basis_figure_row_height = 0.28  # [in] height per basis of the winning-basis bar chart (display setting)
+
+[review_report]
+population_figsize = [11, 3.6]  # [in] size of the injected-population figure (display setting)
+population_snr_range = [0, 100]  # [-] injected network SNR range of the population histogram (display setting)
+population_snr_edges = 26  # [count] bin edges of the population SNR histogram over population_snr_range (display setting)
+panel_columns = 4  # [count] most panels per row of the efficiency-by-class figure (display setting)
+panel_size = [3.2, 2.6]  # [in] width and height of one efficiency-by-class panel (display setting)
+efficiency_snr_range = [4, 50]  # [-] injected SNR range of the efficiency-by-class curves
+efficiency_snr_edges = 12  # [count] bin edges of the efficiency-by-class curves over efficiency_snr_range
+efficiency_ylim_top = 1.05  # [-] upper limit of the efficiency axis (display setting)
+recovery_figsize = [11, 3.8]  # [in] size of the SNR-recovery and timing figure (display setting)
+timing_bins = 40  # [count] bins of the timing-residual histogram (display setting)
+
+[roc]
+n_thresholds = 200  # [count] thresholds swept, evenly spaced over both score ranges, by ROCCurve.curve
+ylim_top = 1.02  # [-] upper limit of the true-positive-rate axis of ROCCurve.plot (display setting)
+
+[scale]
+neighbours = 41  # [count] blocks, centred on each block, over which local_noise_scale takes the median noise scale
+minimum = 5  # [count] fewest blocks with a usable scale for local_noise_scale to form a median; below it a block keeps its own
+
+[submission]
+missing_value = -999.0  # [-] file-format sentinel written for a submission column the pipeline does not provide (fixed by the challenge format)

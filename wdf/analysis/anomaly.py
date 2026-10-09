@@ -26,6 +26,9 @@ from torch import nn
 
 from wdf.analysis.gnn import (_IntraMessagePassing, _to_pyg_data,
                               usable_device)
+from wdf.config.defaults import defaults
+
+_D = defaults("anomaly")
 
 
 class BackgroundAnomalyScorer(nn.Module):
@@ -37,8 +40,8 @@ class BackgroundAnomalyScorer(nn.Module):
     the population it was fitted to, they can. The score is how badly they fail.
     """
 
-    def __init__(self, node_dim: int, cross_edge_dim: int, hidden: int = 16,
-                 seed: int = 0, device: str | None = None):
+    def __init__(self, node_dim: int, cross_edge_dim: int, hidden: int = _D["hidden"],
+                 seed: int = _D["seed"], device: str | None = None):
         """
         :type node_dim: int
         :param node_dim: width of a node's feature vector.
@@ -130,7 +133,7 @@ class BackgroundAnomalyScorer(nn.Module):
         backward = self.decoder(torch.cat([h[j], h[i]], dim=1))
         return (0.5 * ((forward - target) ** 2 + (backward - target) ** 2)).mean(dim=1)
 
-    def fit(self, graphs, epochs: int = 100, lr: float = 1e-2):
+    def fit(self, graphs, epochs: int = _D["epochs"], lr: float = _D["lr"]):
         """Fit on background graphs only.
 
         :param graphs: iterable of `TriggerGraph` built from time-slid events.
@@ -170,7 +173,7 @@ class BackgroundAnomalyScorer(nn.Module):
             mean = total / count
             variance = torch.clamp(squares / count - mean * mean, min=0.0)
             mean_buffer.copy_(mean.to(mean_buffer.dtype))
-            scale_buffer.copy_(variance.sqrt().clamp_min(1e-6).to(
+            scale_buffer.copy_(variance.sqrt().clamp_min(_D["scale_floor"]).to(
                 scale_buffer.dtype))
 
         standardise(self.feature_mean, self.feature_scale, lambda d: d.x)
