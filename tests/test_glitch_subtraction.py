@@ -40,6 +40,7 @@ COLOUR = np.convolve([1.0, -2 * R * np.cos(2 * np.pi * 60.0 / FS), R * R], [1.0,
 
 @pytest.fixture(scope="module")
 def whitening():
+    pytest.importorskip("py4tsa")
     from wdf.processes.zero_phase_whitening import TruncatedWhitening
     ar = np.concatenate([[1.0], -COLOUR[1:]])
     w = TruncatedWhitening(ar, int(FS), 0, duration=4.0, sampling=FS)

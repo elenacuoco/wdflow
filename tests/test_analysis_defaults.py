@@ -242,8 +242,10 @@ def test_every_module_imports_with_the_defaults_file(module):
 
     try:
         importlib.import_module(module)
-    except ModuleNotFoundError as error:
-        if error.name and error.name.split(".")[0] in ("py4tsa", "torch", "torch_geometric",
-                                                        "pycbc", "gwpy", "coloredlogs"):
-            pytest.skip(f"{module} needs {error.name}")
+    except ImportError as error:
+        # an optional dependency, missing here or re-raised by the module with its own message
+        missing = getattr(error, "name", None) or getattr(error.__cause__, "name", None)
+        if missing and missing.split(".")[0] in ("py4tsa", "torch", "torch_geometric",
+                                                 "pycbc", "gwpy", "coloredlogs"):
+            pytest.skip(f"{module} needs {missing}")
         raise

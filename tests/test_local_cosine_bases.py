@@ -131,6 +131,7 @@ def test_without_a_minimum_frequency_the_search_is_the_core_s_own(tmp_outdir):
 
 
 def test_use_min_frequency_needs_the_core():
+    pytest.importorskip("py4tsa")
     from wdf.processes.wdf import use_min_frequency
 
     class Old:
@@ -149,6 +150,7 @@ def test_use_min_frequency_needs_the_core():
 
 
 def test_use_block_remainder():
+    pytest.importorskip("py4tsa")
     from wdf.processes.wdf import use_block_remainder
 
     class Old:

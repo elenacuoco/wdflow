@@ -1,6 +1,7 @@
 """Waveform completion: the mask from tiles (bridged, dilated, with a ridge),
 the inversion inside it in each basis, the pursuit, the settings, the strain
 and the offline whitening of a stretch."""
+import importlib.util
 from types import SimpleNamespace
 
 import numpy as np
@@ -66,7 +67,13 @@ def test_the_settings_are_parameters_and_are_recorded():
     assert set(DEFAULTS) == set(CompletionSettings.KEYS.values())
 
 
-@pytest.mark.parametrize("bad", [dict(CompletionMethod="fit"), dict(CompletionBasis="Fourier"),
+# without py4tsa a wavelet name is checked when the transform runs, not here
+_NEEDS_CORE = pytest.mark.skipif(importlib.util.find_spec("py4tsa") is None,
+                                 reason="wavelet names are checked against py4tsa")
+
+
+@pytest.mark.parametrize("bad", [dict(CompletionMethod="fit"),
+                                 pytest.param(dict(CompletionBasis="Fourier"), marks=_NEEDS_CORE),
                                  dict(CompletionBasis="CosinePackets30"), dict(CompletionPacketCost="l0"),
                                  dict(CompletionTileBand="ridge"), dict(CompletionSlot=0.0),
                                  dict(CompletionDilationTime=-1.0), dict(CompletionMaxAtoms=0),
@@ -217,6 +224,7 @@ def test_the_strain_undoes_the_taps_and_the_stretch_is_whitened_as_the_worker_do
     from scipy.signal import fftconvolve
 
     from wdf.analysis.hrss import ModelHistory
+    pytest.importorskip("py4tsa")
     from wdf.processes.zero_phase_whitening import truncated_taps
 
     ar = np.array([1e-22, 1.2, -0.5])
