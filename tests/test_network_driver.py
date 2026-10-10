@@ -20,6 +20,13 @@ def frozen(name):
     return pd.read_parquet(os.path.join(FIXTURES, name))
 
 
+def same(actual, expected):
+    """The frame is the snapshot: every column equal, the floating-point ones
+    to a relative tolerance of 1e-9, since their last bits depend on the
+    numpy, scipy and BLAS builds."""
+    pd.testing.assert_frame_equal(actual, expected, check_exact=False, rtol=1e-9, atol=0.0)
+
+
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("paper"))
@@ -41,12 +48,10 @@ def test_a_mixed_path_or_a_gnn_without_model_is_refused():
 
 def test_the_paper_path_triggers_are_the_snapshot(runs):
     """With the defaults the worker's triggers, as written and as held in
-    memory, are those of the snapshot, exactly."""
+    memory, are those of the snapshot."""
     for ifo, (triggers, result, worker) in runs.items():
-        pd.testing.assert_frame_equal(triggers, frozen(f"paper_path_triggers_{ifo}.parquet"),
-                                      check_exact=True)
-        pd.testing.assert_frame_equal(pd.DataFrame(result.triggers),
-                                      frozen(f"paper_path_online_{ifo}.parquet"), check_exact=True)
+        same(triggers, frozen(f"paper_path_triggers_{ifo}.parquet"))
+        same(pd.DataFrame(result.triggers), frozen(f"paper_path_online_{ifo}.parquet"))
         assert not hasattr(worker.par, "Reconstruction") and result.tracks == []
 
 
@@ -54,9 +59,8 @@ def test_the_paper_path_events_and_network_are_the_snapshot(runs):
     triggers = {ifo: r[0] for ifo, r in runs.items()}
     events, cand = snap.paper_network(triggers)
     for ifo in snap.DELAY:
-        pd.testing.assert_frame_equal(events[ifo], frozen(f"paper_path_events_{ifo}.parquet"),
-                                      check_exact=True)
-    pd.testing.assert_frame_equal(cand, frozen("paper_path_network.parquet"), check_exact=True)
+        same(events[ifo], frozen(f"paper_path_events_{ifo}.parquet"))
+    same(cand, frozen("paper_path_network.parquet"))
 
 
 def test_the_driver_reproduces_the_catalogue_paper_path():
@@ -69,13 +73,12 @@ def test_the_driver_reproduces_the_catalogue_paper_path():
     result = run_network(par, triggers=triggers)
     expected = frozen("paper_path_network.parquet")
     assert len(expected) >= 1
-    pd.testing.assert_frame_equal(result.candidates[expected.columns], expected, check_exact=True)
+    same(result.candidates[expected.columns], expected)
     expected_rank = result.candidates.groupby("ifos_involved")["network_morphology"].rank(
         ascending=False, method="min").astype(int)
     assert (result.candidates["rank"] == expected_rank).all()
     for ifo in snap.DELAY:
-        pd.testing.assert_frame_equal(result.events[ifo],
-                                      frozen(f"paper_path_events_{ifo}.parquet"), check_exact=True)
+        same(result.events[ifo], frozen(f"paper_path_events_{ifo}.parquet"))
     assert set(vars(par)) - {"NetworkLagCut", "NetworkLagWindow", "NetworkLagTolerance", "NetworkLagScale",
                              "NetworkLagSearch", "NetworkGlitchVeto", "NetworkGlitchTolerance",
                              "NetworkGlitchFactor", "NetworkPenaltySpace"} == set()
@@ -139,7 +142,7 @@ def test_the_network_stream_holds_and_forgets():
         stream.add(ifo, t)
     held = stream.candidates().candidates
     expected = frozen("paper_path_network.parquet")
-    pd.testing.assert_frame_equal(held[expected.columns], expected, check_exact=True)
+    same(held[expected.columns], expected)
     short = NetworkStream(Parameters(NetworkMemory=1.0), list(triggers))
     for ifo, t in triggers.items():
         short.add(ifo, t)
