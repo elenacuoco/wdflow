@@ -100,16 +100,36 @@ Glitches are single-detector by construction and are never projected. They exist
 to measure the accidental floor of the coincidence, and a glitch placed in both
 detectors would measure something else.
 
-## Status
+## Training the GNN scorer and rescoring with it
 
-Timing coincidence + time-slide FAR is the production-track method: fast,
-deterministic, no training data required. The GNN scorer is comparatively
-early-stage -- real positive examples are limited to catalogued events in
-whatever segment(s) are being analyzed, so `fit` is closer to a
-proof-of-concept calibration than a large-scale trained model; extending its
-training set via synthetic signal injection (e.g. bilby/pycbc) rather than
-relying only on catalogued real events is the natural next step, independent
-of the `torch_geometric` batching infrastructure already in place for it.
+The learned scorer is fitted once, saved, and loaded by the network stage.
+
+1. **Graphs.** Run stage 2 on each training segment
+   (`wdf.analysis.network_driver.wavegram_stage(triggers)` returns the detector
+   graphs, their labels, the events and the maps) and assemble each segment's
+   network graph with `TriggerGraphBuilder(ifos=..., coincidence=config).build(events,
+   maps, comparison)`, `config` the run's `coincidence_config(NetworkSettings)`.
+   On the track path the edges also carry `TRACK_EDGE_FEATURES`, so the model's
+   `cross_edge_dim` is `N_EDGE_FEATURES + len(TRACK_EDGE_FEATURES)`.
+2. **Labels.** `wdf.analysis.network_graph.edge_labels_from_injections(graph,
+   injection_times, window_s=0.5)` labels a cross edge 1 when both events hold the
+   same injection. Time-slid graphs give negatives in quantity.
+3. **Split.** Pass `(graph, labels, mask)`, the mask the training half of
+   `wdf.analysis.evaluation.temporal_split(graph.candidate_table())`, so that
+   the edges a model is scored on were not fitted on.
+4. **Fit and save.** `model = GNNCoincidenceScorer(node_dim, hidden=16, seed=0,
+   cross_edge_dim=..., profile_dim=...)`; `model.fit(examples, epochs=100,
+   lr=1e-2, batch_size=None, pos_weight=None)` returns the loss per epoch and
+   stores the node-feature scaling with the weights; `model.save(path)`.
+5. **Rescore.** Set `Scorer = "gnn"` and `GNNModel = path`. `run_network` loads
+   the model (`GNNCoincidenceScorer.load`), `WavegramCoincidenceFinder` scores
+   every pair it forms, zero lag and time slides alike, and the pairs are ranked
+   on `gnn_logit`. The optional lag and glitch penalties act on the logit in
+   log-odds (`NetworkPenaltySpace`). The candidates and the background are scored
+   by one model, so the false-alarm rate is measured on the statistic that ranks.
+
+`DetectorEdgeScorer` is the per-detector counterpart: it scores the edges of a
+detector graph, with labels from `wdf.analysis.gnn.edge_labels_from_injections`.
 
 ## One noise scale, and an orthonormal candidate list
 

@@ -1,0 +1,12 @@
+# The example's own values, read by examples/zero_phase_whitening_example.py.
+# The run configuration (noise model, band-pass, decimation) comes from the
+# file given with --config, configs/offline_default.toml by default.
+#
+# Every key ends with a comment "# [unit] meaning".
+
+span_s = 60.0  # [s] whitened stretch the three checks are computed on, starting at the given GPS time
+fit_gap_s = 10.0  # [s] gap between the end of the noise-model fit stretch and the given GPS time
+block_s = 1.0  # [s] read block of the stream
+welch_nperseg = 4096  # [samples] segment length of the Welch spectrum of the flatness check
+flatness_f_low = 20.0  # [Hz] lower edge of the band the flatness is computed over
+flatness_nyquist_fraction = 0.9  # [fraction of Nyquist] upper edge of the band the flatness is computed over

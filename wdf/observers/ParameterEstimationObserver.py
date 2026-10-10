@@ -51,14 +51,15 @@ class ParameterEstimation(Observer, Observable):
         index, value = from_dense(coefficients)
         gps = float(event.mTime)
         sigma = float(event.mSigma)
+        wave = str(event.mWave)
         features = meta_features(index, value, self.Ncoeff, self.sampling,
-                                 sigma, gps=gps)
+                                 sigma, gps=gps, wave=wave)
 
         self.update_observers(eventPE(
             gps=gps,
             EnWDF=float(event.mSNR),
             sigma=sigma,
-            wave=str(event.mWave),
+            wave=wave,
             n_coeff=int(self.Ncoeff),
             fs=float(self.sampling),
             index=index,

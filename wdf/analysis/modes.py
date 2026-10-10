@@ -25,6 +25,9 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.evaluation import efficiency_at_far, threshold_at_far
+from wdf.config.defaults import defaults
+
+_D = defaults("modes")
 
 
 @dataclass
@@ -66,7 +69,7 @@ class DetectionMode:
                 self.background[self.statistic].to_numpy(dtype=float))
 
 
-def compare_modes(modes, far_targets=(1.0, 0.1)) -> pd.DataFrame:
+def compare_modes(modes, far_targets=_D["far_targets"]) -> pd.DataFrame:
     """What each mode recovers at the same false-alarm rates.
 
     :type modes: iterable[DetectionMode]
@@ -93,7 +96,7 @@ def compare_modes(modes, far_targets=(1.0, 0.1)) -> pd.DataFrame:
          "n_found", "efficiency", "measurable"]]
 
 
-def mode_roc(mode: DetectionMode, n_points: int = 60) -> pd.DataFrame:
+def mode_roc(mode: DetectionMode, n_points: int = _D["roc_points"]) -> pd.DataFrame:
     """A mode's efficiency as a function of its own false-alarm rate.
 
     The rates are read off the background itself rather than from a grid of

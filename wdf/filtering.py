@@ -6,6 +6,8 @@ core.
 import numpy as np
 from scipy.signal import sosfilt
 
+from wdf.config.constants import SCIPY_PADLEN_PER_TAP
+
 
 def sosfilt_zi(sos):
     """Initial conditions for `sos` at the steady state of a unit step.
@@ -44,7 +46,8 @@ def sosfiltfilt(sos, x, padlen=None):
     :type x: numpy.ndarray
     :param x: 1-D data.
     :type padlen: int or None
-    :param padlen: samples of odd extension at each end; None for the default.
+    :param padlen: samples of odd extension at each end; None for scipy's
+        default, `SCIPY_PADLEN_PER_TAP` times the number of taps.
     :return: numpy.ndarray -- the filtered data, same length as `x`.
     """
     sos = np.asarray(sos)
@@ -52,7 +55,7 @@ def sosfiltfilt(sos, x, padlen=None):
     if padlen is None:
         ntaps = 2 * sos.shape[0] + 1
         ntaps -= min((sos[:, 2] == 0).sum(), (sos[:, 5] == 0).sum())
-        edge = 3 * ntaps
+        edge = SCIPY_PADLEN_PER_TAP * ntaps
     else:
         edge = int(padlen)
     if x.shape[0] <= edge:

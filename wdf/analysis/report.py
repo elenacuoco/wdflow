@@ -27,6 +27,10 @@ import matplotlib.pyplot as plt
 
 from wdf.analysis.clustering import collect_significant_pixels
 from wdf.analysis.plots import plot_glitchgram, plot_trigger_tiles
+from wdf.config.constants import PERCENT
+from wdf.config.defaults import defaults
+
+_D = defaults("report")
 
 
 def _fig_to_b64(fig) -> str:
@@ -47,13 +51,15 @@ def _wave_stats_b64(ifo: str, df: pd.DataFrame) -> str | None:
     if "wave" not in df.columns or df["wave"].empty:
         return None
     counts = df["wave"].value_counts().sort_values(ascending=True)
-    fig, ax = plt.subplots(figsize=(6, max(2.5, 0.28 * len(counts))), dpi=110)
+    fig, ax = plt.subplots(
+        figsize=(6, max(_D["basis_figure_min_height"], _D["basis_figure_row_height"] * len(counts))),
+        dpi=110)
     ax.barh(counts.index, counts.values, color="steelblue")
     ax.set_xlabel("n triggers")
     ax.set_title(f"{ifo}: winning-basis distribution ({len(df)} triggers, "
                  f"{df['wave'].nunique()} distinct bases)")
     for y, v in enumerate(counts.values):
-        ax.text(v, y, f" {v} ({100 * v / len(df):.1f}%)", va="center", fontsize=7)
+        ax.text(v, y, f" {v} ({PERCENT * v / len(df):.1f}%)", va="center", fontsize=7)
     return _fig_to_b64(fig)
 
 
@@ -98,7 +104,7 @@ def build_run_report(
     par: dict | None = None,
     gps_reference: float | None = None,
     event_name: str = "run",
-    top_n: int = 5,
+    top_n: int = _D["top_n"],
     rank_col: str | None = None,
     filename: str = "report.html",
 ) -> str:
@@ -175,7 +181,7 @@ def build_run_report(
             best = top.iloc[0]
             center_gps = best["gpsPeak"]
             raw = raw_triggers[ifo]
-            window_s = 0.5
+            window_s = _D["tiles_window_s"]
             near = raw[(raw["gps"] - center_gps).abs() <= window_s] if "gps" in raw.columns else raw.iloc[0:0]
             tf_b64 = _tf_plot_b64(ifo, near, float(par[ifo].resampling), float(par[ifo].sigma),
                                    float(center_gps), float(best[this_rank_col]))

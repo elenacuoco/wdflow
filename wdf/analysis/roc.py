@@ -15,6 +15,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from wdf.config.defaults import defaults
+
+_D = defaults("roc")
+
 
 class ROCCurve:
     def __init__(self, positive_scores: np.ndarray, background_scores: np.ndarray):
@@ -35,7 +39,7 @@ class ROCCurve:
             background[score_col].to_numpy(),
         )
 
-    def curve(self, n_thresholds: int = 200) -> pd.DataFrame:
+    def curve(self, n_thresholds: int = _D["n_thresholds"]) -> pd.DataFrame:
         """Sweep thresholds spanning both score distributions. TPR = fraction
         of known positives with score >= threshold. FPR = fraction of
         background time-slide candidates with score >= threshold (a
@@ -81,7 +85,7 @@ class ROCCurve:
         ax.set_xlabel("FPR (background slide-trials >= threshold)")
         ax.set_ylabel("TPR (known events >= threshold)")
         ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1.02)
+        ax.set_ylim(0, _D["ylim_top"])
         ax.legend(loc="lower right", fontsize=8)
         if savepath:
             ax.figure.savefig(savepath, dpi=150, bbox_inches="tight")

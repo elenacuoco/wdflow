@@ -19,6 +19,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from wdf.config.constants import SECONDS_PER_DAY
+from wdf.config.defaults import defaults
+
+_D = defaults("background")
+
 __all__ = ["BackgroundAccumulator"]
 
 
@@ -44,7 +49,7 @@ class BackgroundAccumulator:
         held only for the rows that are kept.
     """
 
-    def __init__(self, statistics, keep: int = 1_000_000, bins: int = 4096,
+    def __init__(self, statistics, keep: int = _D["keep"], bins: int = _D["bins"],
                  extras=()):
         self.statistics = [str(s) for s in statistics]
         self.keep = int(keep)
@@ -124,7 +129,7 @@ class BackgroundAccumulator:
     @property
     def livetime_days(self) -> float:
         """The livetime the slides credited, days."""
-        return self.livetime_s / 86400.0
+        return self.livetime_s / SECONDS_PER_DAY
 
     def threshold(self, statistic: str, far_per_day: float,
                   livetime_days: float | None = None):

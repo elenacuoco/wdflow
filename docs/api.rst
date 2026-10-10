@@ -16,10 +16,52 @@ wdf.config.Parameters
 .. automodule:: wdf.config.Parameters
    :members:
 
+wdf.config.defaults
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.config.defaults
+   :members:
+
+wdf.config.constants
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.config.constants
+   :members:
+
 wdf.processes.wdfUnitDSWorker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.processes.wdfUnitDSWorker
+   :members:
+
+wdf.processes.wdfUnitOnline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.wdfUnitOnline
+   :members:
+
+wdf.processes.wdfUnitOffline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.wdfUnitOffline
+   :members:
+
+wdf.processes.glitch_subtraction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.glitch_subtraction
+   :members:
+
+wdf.processes.census
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.census
+   :members:
+
+wdf.processes.causal_census
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.causal_census
    :members:
 
 wdf.processes.wdf
@@ -80,6 +122,12 @@ wdf.observers.SingleEventPrintFileObserver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.observers.SingleEventPrintFileObserver
+   :members:
+
+wdf.observers.TrackObserver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.observers.TrackObserver
    :members:
 
 wdf.structures.eventPE
@@ -263,6 +311,72 @@ wdf.analysis.ridge
 ~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.ridge
+   :members:
+
+wdf.analysis.ridge_tracking
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.ridge_tracking
+   :members:
+
+wdf.analysis.track_reconstruction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.track_reconstruction
+   :members:
+
+wdf.analysis.track_coincidence
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.track_coincidence
+   :members:
+
+wdf.analysis.network_driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.network_driver
+   :members:
+
+wdf.analysis.hrss
+~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.hrss
+   :members:
+
+wdf.analysis.waveform_completion
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.waveform_completion
+   :members:
+
+wdf.analysis.alerts
+~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.alerts
+   :members:
+
+wdf.analysis.combine
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.combine
+   :members:
+
+wdf.analysis.pair_screen
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.pair_screen
+   :members:
+
+wdf.analysis.local_cosine
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.local_cosine
+   :members:
+
+wdf.analysis.dechirp
+~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.dechirp
    :members:
 
 wdf.analysis.reconstruction

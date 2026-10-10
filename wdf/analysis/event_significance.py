@@ -50,6 +50,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from wdf.config.defaults import defaults
+
+_D = defaults("event_significance")
+
 
 def _sizes(column, name):
     """Event sizes as whole numbers, refusing anything that is not one.
@@ -75,7 +79,7 @@ def _sizes(column, name):
     return values.astype(np.int64)
 
 
-def size_bins(sizes, min_count: int = 200) -> np.ndarray:
+def size_bins(sizes, min_count: int = _D["min_count"]) -> np.ndarray:
     """Edges that pool event sizes until each bin is measurable.
 
     Sizes are pooled upward, so the smallest events --- which a search produces
@@ -124,13 +128,13 @@ class EventCalibration:
     size_column: str = "n_pixels"
     tail_starts: list = field(default_factory=list)
     tail_scales: list = field(default_factory=list)
-    tail_fraction: float = 0.1
+    tail_fraction: float = _D["tail_fraction"]
     max_size: int = None
 
     @classmethod
     def fit(cls, background: pd.DataFrame, statistic: str = "EnWDF",
-            size_column: str = "n_pixels", min_count: int = 200,
-            tail_fraction: float = 0.1) -> "EventCalibration":
+            size_column: str = "n_pixels", min_count: int = _D["min_count"],
+            tail_fraction: float = _D["tail_fraction"]) -> "EventCalibration":
         """Measure the distribution from events built on injection-free data.
 
         The background must come from the same event-building pipeline as the
@@ -192,7 +196,7 @@ class EventCalibration:
         # an exponential tail.
         tail_starts, tail_scales = [], []
         for table in tables:
-            k = max(int(np.ceil(tail_fraction * table.size)), 10)
+            k = max(int(np.ceil(tail_fraction * table.size)), _D["tail_min_count"])
             k = min(k, table.size)
             if table.size == 0 or k < 2:
                 tail_starts.append(np.nan)
@@ -314,7 +318,7 @@ class EventCalibration:
         return out
 
 
-def out_of_sample_significance(background: pd.DataFrame, folds: int = 10,
+def out_of_sample_significance(background: pd.DataFrame, folds: int = _D["folds"],
                                **kwargs) -> np.ndarray:
     """Each background event scored by a calibration fitted without it.
 
@@ -366,7 +370,7 @@ def out_of_sample_significance(background: pd.DataFrame, folds: int = 10,
 
 
 def significance_off_source(background: pd.DataFrame, events: pd.DataFrame,
-                            folds: int = 10, time_column: str = "gpsStart",
+                            folds: int = _D["folds"], time_column: str = "gpsStart",
                             **kwargs) -> np.ndarray:
     """Each event scored by a calibration fitted away from its own time.
 

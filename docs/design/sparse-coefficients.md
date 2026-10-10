@@ -39,3 +39,38 @@ part that does not fit, and it carries no information the pairs do not.
 --- the inverse transform does --- and `coefficient_matrix` does it for a frame.
 Everything else asks those two, so the representation can change again without
 the rest of the code learning about it.
+
+## Which basis, and where its coefficients sit
+
+A trigger records the basis that won its window (`wave`), and that name is all
+a reader needs to place and invert the coefficients
+(`wdf.analysis.wavelets.packet_depth`, `mother_wavelet`, `coeff_freq_bands`,
+`coeff_time_bounds`, `wdf.analysis.reconstruction.inverse_transform`):
+
+| `wave` | layout | row width | tile duration |
+|---|---|---|---|
+| a mother, e.g. `DaubC8` | the pyramid: index 0, index 1, then `[2^j, 2^(j+1))` | doubles each octave | `N / 2^j` samples |
+| a mother, `P` and a depth D, e.g. `Coif1P6` | the uniform packet level D: band `b` at `[b N / 2^D, (b+1) N / 2^D)`, frequency order | `fs / 2^(D+1)` | `2^D` samples |
+| `LocalCos` and a segment M, e.g. `LocalCos128` | the local cosine basis (Coifman-Meyer bell of half-width M / 2, DCT-IV per segment), frequency-major, the layout of packet depth `log2 M`: row `k` at `[k N / M, (k+1) N / M)`, coefficient `j` of a row on segment `j` | `fs / 2M` | `M` samples |
+
+The bases that compete are chosen per run with `Bases` (a list or one
+comma-separated string; `bases` is read too), passed to p4TSA's
+`WDF2Classify.SetBases`; without it the core's own default list competes. Under
+the block rule a packet band or a LocalCos row must hold one block of
+`round(ln N)` coefficients, so `M <= N / round(ln N)`: 128 at a window of 1024.
+The list that competed is written to `parametersUsed` as `bases`.
+
+`MinFrequency` (Hz, default 0: none) leaves every coefficient whose tile's upper
+edge is at or below it out of the window's noise scale, the block rule and
+EnWDF (p4TSA `WDF2Classify.SetMinFrequency`), each basis read on its own
+layout; the trigger holds zeros there. At a window of 1024 and 2048 Hz, 16 Hz
+drops pyramid indices 0-15 and LocalCos128 rows 0-1. With a full-band
+whitening the levels below the band-pass corner carry seismic residuals that
+fire windows on their own; the cut keeps them out of the statistic.
+
+`BlockRemainder` chooses how the block rule judges the short block at the end
+of a run (1 to L - 1 coefficients): `legacy` (the default) like a full block,
+so a lone coefficient survives at 2.12 sigma; `merge` joins it to the block
+before it; `scaled` judges it at a full block's false-alarm probability. At a
+window of 1024 every LocalCos128 row of 8 ends on a remainder of 1 under
+`legacy`, which is why that basis fires on noise.

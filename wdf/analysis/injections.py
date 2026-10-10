@@ -6,6 +6,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from wdf.config.defaults import defaults
+
+_D = defaults("injections")
+
 MATCH_COLUMNS = ["found", "candidate_index", "dt_s", "recovered_snr"]
 
 
@@ -42,7 +46,7 @@ def candidate_spans(candidates, candidate_time="gpsPeak"):
     return np.minimum(start, end), np.maximum(start, end)
 
 
-def match_injections(candidates, injections, window_s=0.5, candidate_time="gpsPeak",
+def match_injections(candidates, injections, window_s=_D["window_s"], candidate_time="gpsPeak",
                      candidate_statistic="EnWDF", injection_time="gps"):
     """Associate each injection with the loudest candidate covering it in time.
 
@@ -110,7 +114,7 @@ def match_injections(candidates, injections, window_s=0.5, candidate_time="gpsPe
     return out
 
 
-def false_alarms(candidates, injections, window_s=0.5, candidate_time="gpsPeak",
+def false_alarms(candidates, injections, window_s=_D["window_s"], candidate_time="gpsPeak",
                  injection_time="gps"):
     """Candidates that lie near no injection.
 
@@ -147,7 +151,8 @@ def efficiency(matched, bins=None, injected_snr_column="network_snr", group_colu
     :type matched: pandas.DataFrame
     :param matched: output of `match_injections`.
     :type bins: numpy.ndarray | None
-    :param bins: bin edges in SNR; ten equal bins over the data range if None.
+    :param bins: bin edges in SNR; if None, `[injections] efficiency_bins` equal
+        bins over the data range (wdf/config/defaults.toml).
     :type injected_snr_column: str
     :param injected_snr_column: column holding the injected optimal SNR, the
         ground truth the mock data set records -- not the search's own `EnWDF`.
@@ -158,7 +163,7 @@ def efficiency(matched, bins=None, injected_snr_column="network_snr", group_colu
     """
     if bins is None:
         lo, hi = matched[injected_snr_column].min(), matched[injected_snr_column].max()
-        bins = np.linspace(lo, hi, 11)
+        bins = np.linspace(lo, hi, _D["efficiency_bins"] + 1)
     bins = np.asarray(bins, dtype=float)
 
     groups = [(None, matched)] if group_column is None else list(matched.groupby(group_column))
@@ -177,7 +182,7 @@ def efficiency(matched, bins=None, injected_snr_column="network_snr", group_colu
     return pd.DataFrame(rows)
 
 
-def unclaimed_candidates(candidates, injections, window_s=0.5,
+def unclaimed_candidates(candidates, injections, window_s=_D["window_s"],
                          candidate_time="gpsPeak", injection_time="gps",
                          statistic=None, limit=None):
     """Candidates that no injection accounts for, loudest first.

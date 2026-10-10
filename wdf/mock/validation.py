@@ -32,10 +32,14 @@ import os
 
 import numpy as np
 
+from wdf.config.constants import (GAUSSIAN_KURTOSIS, KURTOSIS_MOMENT_ORDER,
+                                  KURTOSIS_VARIANCE_FACTOR)
+from wdf.config.defaults import defaults
 from wdf.mock.dataset import _polarisations, _sensitivity, project_cbc
 
-DEFAULT_BANDS = ((8.0, 16.0), (16.0, 32.0), (32.0, 64.0), (64.0, 128.0),
-                 (128.0, 256.0), (256.0, 512.0), (512.0, 1000.0))
+_V = defaults("mock.validation")
+
+DEFAULT_BANDS = _V["bands"]
 
 
 def read_ffl(ffl, channel, start=None, end=None):
@@ -69,7 +73,7 @@ def read_ffl(ffl, channel, start=None, end=None):
             float(series.sample_rate.value), float(series.t0.value))
 
 
-def spectrum_check(samples, sample_rate, resolution=1.0 / 16.0,
+def spectrum_check(samples, sample_rate, resolution=_V["spectrum_resolution"],
                    bands=DEFAULT_BANDS):
     """How flat the spectrum of a white series is, band by band.
 
@@ -119,12 +123,14 @@ def spectrum_check(samples, sample_rate, resolution=1.0 / 16.0,
 
 
 def gaussianity_check(samples, sample_rate, bands=DEFAULT_BANDS,
-                      chunk_s=256.0):
+                      chunk_s=_V["chunk_s"]):
     """How Gaussian a series is inside each band.
 
     Each band is cut out with an ideal filter, applied in the frequency domain
     chunk by chunk, and its samples normalised by their own deviation. Their
-    excess kurtosis and the share of them beyond three deviations are then
+    excess kurtosis and the share of them beyond ``[mock.validation]
+    tail_threshold_sigma`` deviations (the reported ``tail_3sigma`` keys are
+    named after its default) are then
     compared with what a Gaussian allows for the number of independent samples
     the band holds, ``2 B T`` for a band `B` wide over `T` seconds --- not the
     number of samples, which a narrow band makes strongly correlated. The
@@ -160,13 +166,13 @@ def gaussianity_check(samples, sample_rate, bands=DEFAULT_BANDS,
         for band in bands:
             mask = (frequency >= band[0]) & (frequency < band[1])
             y = np.fft.irfft(spectrum * mask, n_chunk)
-            sums[band] += (y.sum(), (y ** 2).sum(), (y ** 4).sum())
+            sums[band] += (y.sum(), (y ** 2).sum(), (y ** KURTOSIS_MOMENT_ORDER).sum())
             # The band's measured deviation is known only once every chunk is
             # in; the tail is counted against the one unit-variance white noise
             # gives the band, its share of the spectrum, which is reported
             # beside the measured variance so the two can be told apart.
             expected_sd = np.sqrt(2.0 * (band[1] - band[0]) / float(sample_rate))
-            tails[band] += int((np.abs(y) > 3.0 * expected_sd).sum())
+            tails[band] += int((np.abs(y) > _V["tail_threshold_sigma"] * expected_sd).sum())
             peak[band] = max(peak[band], float(np.abs(y).max()))
     n = float(n_chunks * n_chunk)
     duration = n / float(sample_rate)
@@ -176,11 +182,11 @@ def gaussianity_check(samples, sample_rate, bands=DEFAULT_BANDS,
         _, variance, s4 = sums[band] / n
         sd = np.sqrt(variance)
         independent = 2.0 * (band[1] - band[0]) * duration
-        tail_expected = 2.0 * 0.0013498980316301
+        tail_expected = 2.0 * _V["tail_probability"]
         out.append({
             "band": (float(band[0]), float(band[1])),
-            "excess_kurtosis": float(s4 / variance ** 2 - 3.0),
-            "kurtosis_sigma": float(np.sqrt(24.0 / independent)),
+            "excess_kurtosis": float(s4 / variance ** 2 - GAUSSIAN_KURTOSIS),
+            "kurtosis_sigma": float(np.sqrt(KURTOSIS_VARIANCE_FACTOR / independent)),
             "tail_3sigma": float(tails[band] / n),
             "tail_3sigma_expected": tail_expected,
             "tail_3sigma_sigma": float(np.sqrt(
@@ -225,7 +231,7 @@ def true_template(row, ifo, sample_rate, relative_sensitivity=None):
 
 
 def matched_filter_check(foreground, background, t0, sample_rate, truth, ifo,
-                         relative_sensitivity=None, max_lag_s=0.01):
+                         relative_sensitivity=None, max_lag_s=_V["max_lag_s"]):
     """Recover every injection's amplitude in one detector with its template.
 
     For each compact binary the template is rebuilt from the truth table

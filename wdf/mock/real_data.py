@@ -22,6 +22,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from wdf.config.defaults import defaults
 from wdf.mock.dataset import (
     _inject_one,
     _write_frames,
@@ -29,8 +30,12 @@ from wdf.mock.dataset import (
     truth_columns,
 )
 
+_MOCK = defaults("mock")
+_D = defaults("mock.dataset")
+_R = defaults("mock.real_data")
 
-def measured_psd(strain, sample_rate, segment_s=8.0):
+
+def measured_psd(strain, sample_rate, segment_s=_R["psd_segment_s"]):
     """The one-sided power spectral density of a stretch of strain.
 
     :type strain: numpy.ndarray
@@ -89,26 +94,28 @@ def inject_into_strain(
     channels,
     start_gps,
     duration,
-    n_cbc=60,
-    n_glitch=60,
-    n_ccsn=0,
+    n_cbc=_R["n_cbc"],
+    n_glitch=_R["n_glitch"],
+    n_ccsn=_D["n_ccsn"],
     ccsn_catalogue=None,
-    snr_range=(6.0, 60.0),
-    seed=0,
+    snr_range=_R["snr_range"],
+    seed=_D["seed"],
     cbc_mix=None,
     min_detector_snr=None,
-    minimum_gap=400.0,
-    edge_pad=400.0,
-    low_frequency_cutoff=20.0,
+    minimum_gap=_R["minimum_gap"],
+    edge_pad=_R["edge_pad"],
+    low_frequency_cutoff=_R["low_frequency_cutoff"],
     high_frequency_cutoff=None,
     channel_suffix="REAL-STRAIN",
-    frame_length=1024.0,
-    psd_segment_s=8.0,
+    frame_length=_MOCK["frame_length"],
+    psd_segment_s=_R["psd_segment_s"],
 ):
     """Write a foreground and a background frame set from recorded strain.
 
     The two differ only by the injections, so their difference is the injected
-    waveform and the background is the same noise without it.
+    waveform and the background is the same noise without it. Defaults:
+    ``[mock.real_data]``, with ``[mock] frame_length`` and ``[mock.dataset]``
+    ``n_ccsn`` and ``seed``.
 
     No two injections can overlap at any `minimum_gap`, since each reserves its
     own measured support and the arrival time at every detector is checked, not

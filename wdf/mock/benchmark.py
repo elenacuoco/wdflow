@@ -39,51 +39,60 @@ import subprocess
 
 import numpy as np
 
+from wdf.config.constants import MS_PER_S, SECONDS_PER_HOUR
+from wdf.config.defaults import defaults
+
+_MOCK = defaults("mock")
+_B = defaults("mock.benchmark")
+_POPULATION = defaults("mock.dataset.chirp_mass_population")
+_TRACK = defaults("mock.waveforms.cbc_track")
+
 # Virgo's amplitude sensitivity relative to the LIGO detectors, as measured
 # and supplied for this benchmark.
-V1_RELATIVE_SENSITIVITY = 0.32
+V1_RELATIVE_SENSITIVITY = _B["v1_relative_sensitivity"]
 
+# The benchmark's configuration: ``[mock.benchmark]``, with the rate, the
+# band's low edge and the frame length of ``[mock]``, the population of
+# ``[mock.dataset.chirp_mass_population]`` and the track of
+# ``[mock.waveforms.cbc_track]``.
 BENCHMARK_CONFIG = {
-    "duration": 21600.0,
-    "start_gps": 1400000000.0,
-    "sample_rate": 2048,
-    "n_cbc": 300,
-    "n_glitch": 0,
-    "snr_range": (6.0, 20.0),
-    "snr_core": (7.0, 12.0, 0.6),
-    "seed": 20260927,
-    "detectors": ("H1", "L1", "V1"),
-    "edge_pad": 500.0,
-    "low_frequency_cutoff": 5.0,
+    "duration": _B["duration"],
+    "start_gps": _B["start_gps"],
+    "sample_rate": _MOCK["sample_rate"],
+    "n_cbc": _B["n_cbc"],
+    "n_glitch": _B["n_glitch"],
+    "snr_range": _B["snr_range"],
+    "snr_core": _B["snr_core"],
+    "seed": _B["seed"],
+    "detectors": _B["detectors"],
+    "edge_pad": _B["edge_pad"],
+    "low_frequency_cutoff": _MOCK["low_frequency_cutoff"],
     "noise": "white",
     "relative_sensitivity": {"V1": V1_RELATIVE_SENSITIVITY},
-    "cbc_population": {
-        "chirp_mass": (5.0, 30.0),
-        "mass_ratio": (1.0, 4.0),
-        "spin": (-0.5, 0.5),
-        "f_lower": 20.0,
-        "approximant": "IMRPhenomD",
-    },
-    "minimum_injection_gap": 20.0,
+    "cbc_population": dict(_POPULATION),
+    "minimum_injection_gap": _B["minimum_injection_gap"],
     "channel_suffix": "MOCK-STRAIN",
-    "frame_length": 1024.0,
+    "frame_length": _MOCK["frame_length"],
     "write_background": True,
-    "track_points": 64,
+    "track_points": _TRACK["n_points"],
 }
 
 # The band the worker passes at the benchmark's rate, for the record of how
 # much of each injection's amplitude lies outside it: its band-pass runs from
-# `LowFrequencyCut` to 0.9 of the Nyquist frequency of the stream it searches
+# `LowFrequencyCut` to ``[mock.benchmark] worker_band_high_fraction`` of the
+# Nyquist frequency of the stream it searches
 # (wdf.processes.BandPassDownSampling).
-WORKER_BAND = (12.0, 0.9 * 0.5 * 2048)
+WORKER_BAND = (_B["worker_band_low"],
+               _B["worker_band_high_fraction"] * 0.5 * BENCHMARK_CONFIG["sample_rate"])
 
 
 def worker_band(sample_rate, resampling_factor=1):
     """The band the worker passes on a set written at `sample_rate`.
 
     The worker searches the stream at ``sample_rate / resampling_factor`` and
-    band-passes it to 0.9 of that rate's Nyquist frequency, so a set written
-    above the rate it is searched at loses what lies between the two.
+    band-passes it to ``[mock.benchmark] worker_band_high_fraction`` of that
+    rate's Nyquist frequency, so a set written above the rate it is searched
+    at loses what lies between the two.
 
     :type sample_rate: float
     :param sample_rate: rate of the frames, Hz.
@@ -94,7 +103,7 @@ def worker_band(sample_rate, resampling_factor=1):
     factor = int(resampling_factor)
     if factor < 1 or factor != float(resampling_factor):
         raise ValueError("resampling_factor must be a positive integer")
-    return (WORKER_BAND[0], 0.9 * 0.5 * float(sample_rate) / factor)
+    return (WORKER_BAND[0], _B["worker_band_high_fraction"] * 0.5 * float(sample_rate) / factor)
 
 
 def _provenance():
@@ -171,7 +180,8 @@ def _band_loss(truth, detectors, relative_sensitivity, sample_rate, band):
     from wdf.mock.noise import white_psd
     from wdf.mock.validation import true_template
 
-    psd = white_psd(int(0.5 * sample_rate * 16) + 1, 1.0 / 16.0, sample_rate)
+    delta_f = _MOCK["white_psd_delta_f"]
+    psd = white_psd(int(0.5 * sample_rate / delta_f) + 1, delta_f, sample_rate)
     losses = []
     for _, row in truth[truth["category"] == "cbc"].iterrows():
         for ifo in detectors:
@@ -184,8 +194,12 @@ def _band_loss(truth, detectors, relative_sensitivity, sample_rate, band):
     return np.asarray(losses)
 
 
-def _summarise(report, truth, losses):
-    """The validation, reduced to what goes in a file and a README."""
+def _summarise(report, truth, losses, snr_core=BENCHMARK_CONFIG["snr_core"]):
+    """The validation, reduced to what goes in a file and a README.
+
+    ``share_network_snr_7_12`` is the share of network SNRs inside the core
+    ``snr_core[:2]`` (7-12 for the default core).
+    """
     mf = report["matched_filter"]
     out = {"light_travel": report["light_travel"], "spectrum": {},
            "gaussianity": {}, "matched_filter": {}}
@@ -209,7 +223,7 @@ def _summarise(report, truth, losses):
         "network_snr_range": (float(cbc["network_snr"].min()),
                               float(cbc["network_snr"].max())),
         "share_network_snr_7_12": float(
-            cbc["network_snr"].between(7.0, 12.0).mean()),
+            cbc["network_snr"].between(snr_core[0], snr_core[1]).mean()),
         "chirp_mass_range": (float(cbc["chirp_mass"].min()),
                              float(cbc["chirp_mass"].max())),
         "detector_snr_range": {
@@ -305,8 +319,8 @@ def _validation_text(summary):
             f"recorded = {mf['recovered_minus_recorded_mean']:+.2f} +/- "
             f"{mf['recovered_minus_recorded_std']:.2f} (expected 0 +/- 1).")
     for pair, (dt, bound) in summary["light_travel"].items():
-        lines.append(f"- {pair}: largest |dt| {dt * 1e3:.2f} ms, light travel "
-                     f"{bound * 1e3:.2f} ms.")
+        lines.append(f"- {pair}: largest |dt| {dt * MS_PER_S:.2f} ms, light travel "
+                     f"{bound * MS_PER_S:.2f} ms.")
     pop = summary["population"]
     lines.append(
         f"- Population: {pop['n']} injections, network SNR "
@@ -379,7 +393,8 @@ def write_benchmark(outdir, config=None, validate=True):
         os.path.join(outdir, "validation_matched_filter.parquet"), index=False)
     losses = _band_loss(truth, detectors, sensitivity,
                         float(config["sample_rate"]), band)
-    summary = _summarise(report, truth, losses)
+    summary = _summarise(report, truth, losses,
+                         config.get("snr_core") or BENCHMARK_CONFIG["snr_core"])
     summary["worker_band_loss"]["band"] = band
     summary["worker_read_max_difference"] = worker_read_check(
         outdir, detectors, config.get("channel_suffix", "MOCK-STRAIN"))
@@ -406,7 +421,7 @@ def write_benchmark(outdir, config=None, validate=True):
             resampling_factor=resampling_factor,
             search_rate=float(config["sample_rate"]) / resampling_factor,
             track_points=config["track_points"],
-            duration_h=config["duration"] / 3600.0,
+            duration_h=config["duration"] / SECONDS_PER_HOUR,
             start_gps=config["start_gps"],
             detectors=", ".join(detectors),
             n_cbc=config["n_cbc"],

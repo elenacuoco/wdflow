@@ -24,6 +24,10 @@ import numpy as np
 from wdf.analysis.coefficients import to_dense
 import pandas as pd
 
+from wdf.config.defaults import defaults
+
+_D = defaults("reconstruction")
+
 
 def inverse_transform(coefficients, wave):
     """Invert one window's wavelet coefficients back to the time domain.
@@ -32,10 +36,15 @@ def inverse_transform(coefficients, wave):
     :param coefficients: the ``wt*`` coefficients of one trigger.
     :type wave: str
     :param wave: name of the basis that produced them, as recorded on the
-        trigger.
+        trigger: a mother for its pyramid, or a mother followed by ``P`` and a
+        depth for that uniform wavelet-packet level, or ``LocalCos`` and a
+        segment length M for the local cosine basis, inverted as
+        ``WaveletTransform(n, LocalCos, log2 M)``
+        (`wdf.analysis.wavelets.packet_depth`).
     :return: numpy.ndarray -- the reconstructed samples.
     """
     from py4tsa.tsa import WaveletTransform
+    from wdf.analysis.wavelets import mother_wavelet, packet_depth
     from wdf.structures.array2SeqView import array2SeqView
 
     coefficients = np.asarray(coefficients, dtype=float).reshape(-1)
@@ -43,7 +52,11 @@ def inverse_transform(coefficients, wave):
 
     view = array2SeqView(0.0, 1.0, n)
     view = view.Fill(0.0, coefficients.copy())
-    WaveletTransform(n, getattr(WaveletTransform, wave)).Inverse(view)
+    mother = getattr(WaveletTransform, mother_wavelet(wave))
+    depth = packet_depth(wave)
+    transform = (WaveletTransform(n, mother, depth) if depth
+                 else WaveletTransform(n, mother))
+    transform.Inverse(view)
 
     return np.array([view.GetY(0, i) for i in range(n)])
 
@@ -84,8 +97,8 @@ def synthesis_weight(window, overlap):
     return weight
 
 
-def stitch(triggers, fs, window, overlap, overlap_policy="overlap_add",
-           taper_edges=False):
+def stitch(triggers, fs, window, overlap, overlap_policy=_D["overlap_policy"],
+           taper_edges=_D["taper_edges"]):
     """Stitch consecutive triggers into one reconstructed time series.
 
     Consecutive windows overlap, so a sample in the overlapped region has one
@@ -287,7 +300,6 @@ def spectral_centroid(triggers) -> np.ndarray:
         coefficient columns.
     :return: numpy.ndarray -- the centroid in Hz, `nan` where undefined.
     """
-    import pandas as pd
 
     out = np.full(len(triggers), np.nan)
     if not len(triggers):
@@ -385,7 +397,7 @@ def waveform_overlap(reconstructed, injected, max_lag=0):
     return dict(overlap=best, lag=best_lag, overlap_at_zero_lag=at_zero)
 
 
-def phase_residual(reconstructed, injected, amplitude_floor=0.1):
+def phase_residual(reconstructed, injected, amplitude_floor=_D["amplitude_floor"]):
     """The phase a reconstruction carries, against the phase it should carry.
 
     Both series are taken to their analytic signal and their unwrapped phases

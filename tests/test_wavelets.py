@@ -187,3 +187,69 @@ def test_the_overlay_still_honours_the_top_fraction():
     plt.close(fig)
 
     assert 8 <= drawn <= 12       # about half of the twenty survivors
+
+
+PACKET = "Coif1P6"
+PACKET_N = 1024
+
+
+def test_a_packet_level_is_named_by_its_mother_and_its_depth():
+    from wdf.analysis.wavelets import mother_wavelet, packet_depth, packet_depths
+
+    assert packet_depth(PACKET) == 6 and mother_wavelet(PACKET) == "Coif1"
+    assert packet_depth("Coif1") == 0 and mother_wavelet("Coif1") == "Coif1"
+    assert packet_depth(None) == 0
+    assert packet_depth(6) == 6 and packet_depth(np.int64(3)) == 3
+    # A P with nothing before it is no mother and declares no depth.
+    assert packet_depth("P6") == 0 and mother_wavelet("P6") == "P6"
+    assert packet_depths(["DaubC8", PACKET, "Haar", PACKET]).tolist() == [0, 6, 0, 6]
+    assert packet_depths(None).size == 0
+
+
+def test_a_packet_depth_of_zero_or_below_is_refused():
+    from wdf.analysis.wavelets import packet_depth
+
+    with pytest.raises(ValueError, match="depth of 0"):
+        packet_depth("HaarP0")
+    with pytest.raises(ValueError, match="negative"):
+        packet_depth(-1)
+
+
+def test_a_packet_level_splits_the_band_into_equal_bands_in_frequency_order():
+    f_lo, f_hi = coeff_freq_bands(PACKET_N, FS, PACKET)
+    width = FS / 2 ** 7
+    band = np.arange(PACKET_N) // 16
+    assert np.array_equal(f_lo, band * width)
+    assert np.array_equal(f_hi, (band + 1) * width)
+    assert f_lo[0] == 0.0 and f_hi[-1] == FS / 2
+
+
+def test_a_packet_coefficient_covers_two_to_the_depth_samples():
+    t_lo, t_hi = coeff_time_bounds(PACKET_N, FS, PACKET)
+    position = np.arange(PACKET_N) % 16
+    assert np.array_equal(t_lo, position * 64 / FS)
+    assert np.array_equal(t_hi, (position + 1) * 64 / FS)
+    assert t_hi.max() == pytest.approx(PACKET_N / FS)
+
+
+def test_a_packet_band_takes_the_octave_that_holds_it():
+    level, position = coeff_levels(PACKET_N, PACKET)
+    pyramid_level, _ = coeff_levels(PACKET_N)
+    # [0, 16) Hz is drawn by half its upper edge, in [8, 16); [16, 32) is an
+    # octave itself; [256, 272) lies in [256, 512); [1008, 1024) in the last.
+    assert level[[0, 16, 256, 1023]].tolist() == [3, 4, 8, 9]
+    assert level[256] == pyramid_level[256]
+    assert np.array_equal(position, np.arange(PACKET_N) % 16)
+
+
+def test_a_packet_depth_beyond_the_window_is_refused():
+    with pytest.raises(ValueError, match="exceeds"):
+        coeff_freq_bands(64, FS, "Coif1P7")
+
+
+def test_the_geometry_follows_each_basis_of_a_mixed_table():
+    """A number stands for a name wherever only the layout matters."""
+    assert np.array_equal(coeff_freq_bands(PACKET_N, FS, 6)[0],
+                          coeff_freq_bands(PACKET_N, FS, PACKET)[0])
+    assert np.array_equal(coeff_freq_bands(PACKET_N, FS, "DaubC8")[0],
+                          coeff_freq_bands(PACKET_N, FS)[0])

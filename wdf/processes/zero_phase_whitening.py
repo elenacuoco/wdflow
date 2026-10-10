@@ -47,18 +47,37 @@ from threadpoolctl import threadpool_limits
 
 from py4tsa.tsa import DoubleWhitening, LatticeView
 
-#: Floor for the square-root order when the caller does not state one. The
+from wdf.config.defaults import defaults
+
+#: The defaults of the zero-phase whitenings: table ``[whitening.zero_phase]``
+#: of wdf/config/defaults.toml.
+_ZP = defaults("whitening.zero_phase")
+
+#: Floor for the square-root order when the caller does not state one
+#: (`[whitening.zero_phase] sqrt_order`). The
 #: order used is this or the order of the model, whichever is larger: a root
 #: far below the model it is taken of cannot follow it, and the error is paid
 #: twice, since the filter runs both ways and the response is the square of its
 #: magnitude.
-DEFAULT_SQRT_ORDER = 256
-DEFAULT_GRID = 1 << 15
+DEFAULT_SQRT_ORDER = _ZP["sqrt_order"]
+#: FFT length the square-root target is sampled on (`[whitening.zero_phase]
+#: sqrt_grid`).
+DEFAULT_GRID = _ZP["sqrt_grid"]
 #: Width in hertz of the raised cosine that joins the held modulus to ``|A|``
-#: inside each passband edge (`held_modulus`): wide enough that the target
+#: inside each passband edge (`held_modulus`, `[whitening.zero_phase]
+#: band_blend_hz`): wide enough that the target
 #: has no corner, whose impulse response would decay slowly, and narrow
 #: enough to leave the band ``|A|`` itself.
-DEFAULT_BAND_BLEND_HZ = 1.0
+DEFAULT_BAND_BLEND_HZ = _ZP["band_blend_hz"]
+
+
+def _segment(nperseg, sampling):
+    """The Welch segment length in samples: `nperseg`, or
+    `[whitening.zero_phase] spectrum_segment_s` seconds at `sampling` when it is
+    None."""
+    if nperseg is None:
+        return int(round(_ZP["spectrum_segment_s"] * float(sampling)))
+    return nperseg
 
 
 def _order_for(ar, order):
@@ -301,7 +320,7 @@ def in_band_scale(scale, response, modulus, freq=None, band=None):
     return float(scale) * float(np.sqrt(np.median(ratio)))
 
 
-def whitened_level(whitened, sampling, band=None, nperseg=8192):
+def whitened_level(whitened, sampling, band=None, nperseg=None):
     """The level in band of a whitened stretch, read on the stretch itself.
 
     The median over the band of its median-averaged spectrum, in units of the
@@ -318,12 +337,14 @@ def whitened_level(whitened, sampling, band=None, nperseg=8192):
     :param sampling: its sampling frequency, hertz.
     :type band: tuple or None
     :param band: ``(f_lo, f_hi)`` in hertz; None for zero to Nyquist.
-    :type nperseg: int
-    :param nperseg: segment length of the spectral estimate.
+    :type nperseg: int or None
+    :param nperseg: segment length of the spectral estimate, samples; None for
+        `[whitening.zero_phase] spectrum_segment_s` seconds at `sampling`.
     :return: float
     """
     from scipy.signal import welch
 
+    nperseg = _segment(nperseg, sampling)
     whitened = np.asarray(whitened, dtype=float).reshape(-1)
     freq, psd = welch(whitened, fs=float(sampling),
                       nperseg=int(min(nperseg, whitened.size)), average="median")
@@ -526,7 +547,8 @@ class ZeroPhaseWhitening(object):
     @classmethod
     def from_spectrum(cls, samples, sampling, output_size, extra_size=0,
                       order=DEFAULT_SQRT_ORDER, grid=DEFAULT_GRID, band=None,
-                      nperseg=8192, average="median", blend=DEFAULT_BAND_BLEND_HZ):
+                      nperseg=None, average=_ZP["spectrum_average"],
+                      blend=DEFAULT_BAND_BLEND_HZ):
         """Build the whitening from the spectrum of a stretch, without Burg.
 
         The stretch is the one the model would have been fitted on. Its
@@ -553,8 +575,9 @@ class ZeroPhaseWhitening(object):
         :param grid: FFT length the spectrum is interpolated onto.
         :type band: tuple or None
         :param band: ``(low, high)`` outside which the spectrum is held flat.
-        :type nperseg: int
-        :param nperseg: segment length of the spectral estimate.
+        :type nperseg: int or None
+        :param nperseg: segment length of the spectral estimate, samples; None
+            for `[whitening.zero_phase] spectrum_segment_s` seconds at `sampling`.
         :type average: str
         :param average: how the periodograms are combined, "median" or "mean".
         :return: ZeroPhaseWhitening
@@ -562,6 +585,7 @@ class ZeroPhaseWhitening(object):
         """
         from scipy.signal import welch
 
+        nperseg = _segment(nperseg, sampling)
         samples = np.asarray(samples, dtype=float).reshape(-1)
         if samples.size < nperseg:
             raise ValueError(
@@ -574,7 +598,7 @@ class ZeroPhaseWhitening(object):
             freq, psd, order, grid=grid, band=band, blend=blend)
 
         whitened = _both_ways(polynomial, samples)
-        edge = min(int(order), whitened.size // 4)
+        edge = min(int(order), whitened.size // _ZP["level_edge_divisor"])
         inside = whitened[edge:whitened.size - edge] if edge else whitened
         sigma = whitened_level(inside, sampling, band, nperseg)
 
@@ -658,18 +682,23 @@ class ZeroPhaseWhitening(object):
 #: inverse square root of the floor, and the error left at the line falls about
 #: as the inverse of the support. The floor is therefore a trade between the
 #: residual of the narrowest lines and the latency, which is the support; it
-#: is an empirical choice, to be validated on the detector's own lines.
-DEFAULT_RESPONSE_FLOOR = 1e-8
-#: FFT length on which ``|A|`` is sampled to obtain its impulse response. The
+#: is an empirical choice, to be validated on the detector's own lines
+#: (`[whitening.zero_phase] response_floor`).
+DEFAULT_RESPONSE_FLOOR = _ZP["response_floor"]
+#: FFT length on which ``|A|`` is sampled to obtain its impulse response
+#: (`[whitening.zero_phase] response_grid`). The
 #: response found is one period of the true one; the support is refused when it
-#: reaches a quarter of this length, so the period is never what ends it.
-DEFAULT_RESPONSE_GRID = 1 << 23
+#: reaches `[whitening.zero_phase] response_support_divisor` of this length, so
+#: the period is never what ends it.
+DEFAULT_RESPONSE_GRID = _ZP["response_grid"]
 #: Fraction of the kept support over which its two ends are tapered, so that
-#: truncating a tail already below the floor does not leave a step.
-RESPONSE_TAPER = 0.1
+#: truncating a tail already below the floor does not leave a step
+#: (`[whitening.zero_phase] response_taper`).
+RESPONSE_TAPER = _ZP["response_taper"]
 #: Length in seconds of the truncated filter (`TruncatedWhitening`), gwpy's
-#: ``fduration`` default: the whitening reads half of it ahead.
-DEFAULT_TRUNCATION_S = 4.0
+#: ``fduration`` default: the whitening reads half of it ahead
+#: (`[whitening.zero_phase] truncation_s`).
+DEFAULT_TRUNCATION_S = _ZP["truncation_s"]
 
 
 def prediction_error_polynomial(ar):
@@ -705,18 +734,20 @@ def response_support(impulse, floor=DEFAULT_RESPONSE_FLOOR):
     :return: int -- the support ``K`` in samples, at least 1; the taps kept are
         the lags ``-K ... K``.
     :raises ValueError: if the response has not decayed below `floor` within a
-        quarter of the period, where the period would start to fold its own
+        fraction of the period (`[whitening.zero_phase]
+        response_support_divisor`), where the period would start to fold its own
         tail back onto the lags kept.
     """
     impulse = np.asarray(impulse, dtype=float).reshape(-1)
     half = np.abs(impulse[:impulse.size // 2 + 1])
     above = np.flatnonzero(half > float(floor) * half.max())
     support = int(above[-1]) if above.size else 0
-    limit = impulse.size // 4
+    divisor = _ZP["response_support_divisor"]
+    limit = impulse.size // divisor
     if support >= limit:
         raise ValueError(
             f"the impulse response is still above {floor:g} of its peak at "
-            f"lag {limit}, a quarter of the {impulse.size}-point grid it was "
+            f"lag {limit}, 1/{divisor} of the {impulse.size}-point grid it was "
             f"sampled on; use a longer grid or a higher floor")
     return max(support, 1)
 
@@ -874,8 +905,8 @@ def spectrum_at_resolution(ar, length, grid=DEFAULT_RESPONSE_GRID):
         lags kept.
     :return: tuple -- the frequencies as fractions of the sampling rate and
         the spectrum, in units of ``ar[0]**2`` two-sided per unit of those, on
-        the ``4 length // 2 + 1`` non-negative frequencies of a ``4 length``
-        grid.
+        the ``F length // 2 + 1`` non-negative frequencies of a ``F length``
+        grid, ``F`` the `[whitening.zero_phase] resolution_grid_factor`.
     """
     from scipy.signal.windows import hann
 
@@ -891,7 +922,7 @@ def spectrum_at_resolution(ar, length, grid=DEFAULT_RESPONSE_GRID):
     with threadpool_limits(1, user_api="blas"):
         lag_window = np.correlate(window, window, "full")[length - 1:] / np.dot(window, window)
     kept = autocorrelation * lag_window
-    size = 4 * length
+    size = _ZP["resolution_grid_factor"] * length
     lags = np.zeros(size)
     lags[:length] = kept
     lags[size - length + 1:] = kept[1:][::-1]
@@ -926,11 +957,13 @@ def truncated_taps(ar, duration, sampling, band=None, blend=DEFAULT_BAND_BLEND_H
     :param blend: width of the raised cosine inside each edge, hertz.
     :return: numpy.ndarray -- ``2 K + 1`` symmetric taps, lag zero at ``K``,
         ``K = duration * sampling / 2``.
-    :raises ValueError: if the filter would hold fewer than four taps.
+    :raises ValueError: if the filter would hold fewer than
+        `[whitening.zero_phase] truncation_min_taps` taps.
     """
     length = 2 * int(round(0.5 * float(duration) * float(sampling)))
-    if length < 4:
-        raise ValueError(f"a {duration} s filter at {sampling} Hz holds fewer than four taps")
+    fewest = _ZP["truncation_min_taps"]
+    if length < fewest:
+        raise ValueError(f"a {duration} s filter at {sampling} Hz holds fewer than {fewest} taps")
     freq, spectrum = spectrum_at_resolution(ar, length)
     response = 1.0 / np.sqrt(spectrum)
     if band is not None:
@@ -1181,8 +1214,8 @@ class MagnitudeWhitening(_SymmetricTapsWhitening):
 
     @classmethod
     def from_spectrum(cls, samples, sampling, output_size, extra_size=0, band=None,
-                      nperseg=8192, average="median", blend=DEFAULT_BAND_BLEND_HZ,
-                      taper=RESPONSE_TAPER):
+                      nperseg=None, average=_ZP["spectrum_average"],
+                      blend=DEFAULT_BAND_BLEND_HZ, taper=RESPONSE_TAPER):
         """Build the whitening from the spectrum of a stretch, without Burg.
 
         The spectrum is measured on the stretch, held flat outside `band`, and
@@ -1201,9 +1234,10 @@ class MagnitudeWhitening(_SymmetricTapsWhitening):
         :param extra_size: samples buffered beyond the output block.
         :type band: tuple or None
         :param band: ``(low, high)`` outside which the spectrum is held flat.
-        :type nperseg: int
-        :param nperseg: segment length of the spectral estimate, even; it is
-            also the length of the filter.
+        :type nperseg: int or None
+        :param nperseg: segment length of the spectral estimate, samples, even;
+            it is also the length of the filter. None for
+            `[whitening.zero_phase] spectrum_segment_s` seconds at `sampling`.
         :type average: str
         :param average: how the periodograms are combined, "median" or "mean".
         :type taper: float
@@ -1214,6 +1248,7 @@ class MagnitudeWhitening(_SymmetricTapsWhitening):
         """
         from scipy.signal import fftconvolve, welch
 
+        nperseg = _segment(nperseg, sampling)
         samples = np.asarray(samples, dtype=float).reshape(-1)
         if samples.size < nperseg:
             raise ValueError(

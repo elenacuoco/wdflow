@@ -26,13 +26,17 @@ from __future__ import annotations
 
 import numpy as np
 
+from wdf.config.defaults import defaults
+
+_E = defaults("ridge.event")
+
 EPS = np.finfo(float).tiny
 
 RIDGE_FEATURES = ["ridge_occupancy", "ridge_slope", "ridge_scatter",
                   "ridge_monotonicity", "ridge_continuity"]
 
 
-def event_ridge(t_lo, t_hi, f_lo, f_hi, energy, n_bins: int = 32):
+def event_ridge(t_lo, t_hi, f_lo, f_hi, energy, n_bins: int = _E["n_bins"]):
     """One tile per time bin, the loudest, as a track across the plane.
 
     Bins the tiles by the centre of their time support and keeps, per bin, the
@@ -121,7 +125,8 @@ def ridge_features(time, log_frequency, energy) -> dict:
 
         `ridge_occupancy` is always defined --- with no tiles at all it is
         zero, which is a measurement. The rest are `nan` where too few bins
-        are occupied to define them.
+        are occupied to define them: two for the steps, `fit_min_bins` of
+        ``[ridge.event]`` (wdf/config/defaults.toml) for the line fit.
     """
     time = np.asarray(time, dtype=float).reshape(-1)
     log_frequency = np.asarray(log_frequency, dtype=float).reshape(-1)
@@ -147,7 +152,7 @@ def ridge_features(time, log_frequency, energy) -> dict:
     out["ridge_monotonicity"] = (float(max(rising, falling) / moved * 2.0 - 1.0)
                                  if moved else float("nan"))
 
-    if here.sum() >= 3 and np.ptp(t) > 0:
+    if here.sum() >= _E["fit_min_bins"] and np.ptp(t) > 0:
         centre_t = np.average(t, weights=w)
         centre_f = np.average(octave, weights=w)
         variance = np.average((t - centre_t) ** 2, weights=w)
@@ -162,7 +167,7 @@ def ridge_features(time, log_frequency, energy) -> dict:
 
 
 def event_ridge_features(t_lo, t_hi, f_lo, f_hi, energy,
-                         n_bins: int = 32) -> dict:
+                         n_bins: int = _E["n_bins"]) -> dict:
     """The ridge descriptors of one event, from its tiles.
 
     :param t_lo: start of each tile, seconds.

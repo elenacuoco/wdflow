@@ -15,6 +15,9 @@ import numpy as np
 import pandas as pd
 
 from wdf.analysis.detectors import DETECTOR_VERTEX, light_travel_time
+from wdf.config.defaults import defaults
+
+_D = defaults("coincidence")
 
 # Derived from the detectors' positions rather than tabulated: a baseline is a
 # distance, and a table of times has to be extended by hand for every pair.
@@ -42,8 +45,8 @@ class CoincidenceFinder:
     def __init__(
         self,
         ifo_pairs: list[tuple[str, str]] | None = None,
-        timing_jitter_s: float = 0.01,
-        network_stat: str = "quadrature_sum",
+        timing_jitter_s: float = _D["timing_jitter_s"],
+        network_stat: str = _D["network_stat"],
     ):
         """
         :type ifo_pairs: list[tuple[str, str]] | None

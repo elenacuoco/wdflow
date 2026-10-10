@@ -29,13 +29,17 @@ from __future__ import annotations
 
 import numpy as np
 
+from wdf.config.defaults import defaults
+
+_D = defaults("timing")
+
 #: Half-width of the lag search, seconds. A bound is required: two events
 #: admitted in coincidence overlap within the light travel time plus their
 #: spreads, and an unbounded search would let a distant accidental overlap of
 #: unrelated structure win the maximum. The value bounds what the estimator
 #: can return, not what a signal can do, and it must comfortably exceed the
-#: light travel time of the network it is used on.
-MAX_LAG_S = 0.25
+#: light travel time of the network it is used on (`[timing] max_lag_s`).
+MAX_LAG_S = _D["max_lag_s"]
 
 
 def arrival_time_difference(first, second, fs, max_lag_s=MAX_LAG_S):

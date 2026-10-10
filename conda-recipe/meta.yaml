@@ -1,5 +1,5 @@
 {% set name = "wdflow" %}
-{% set version = "1.2.0" %}
+{% set version = "1.4.0" %}
 
 package:
   name: {{ name|lower }}
@@ -21,7 +21,7 @@ requirements:
 
   run:
     - python >=3.10
-    - py4tsa >=3.2
+    - py4tsa >=3.4.1,<4
     - coloredlogs
     - numpy
     - scipy
@@ -31,6 +31,7 @@ requirements:
     - pyarrow
     - h5py
     - threadpoolctl
+    - tomli
 
 test:
   imports:

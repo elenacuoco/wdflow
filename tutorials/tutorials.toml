@@ -1,0 +1,146 @@
+# The values of the tutorials: one table per notebook, read by the notebook's
+# first code cell. A value a library call takes from wdf/config/defaults.toml
+# is not repeated here; what is here is each tutorial's own experiment (its
+# data, its signal, its seeds) and the settings it chooses on purpose.
+#
+# Every key ends with a comment "# [unit] meaning". Units: s, Hz, samples,
+# Msun, "-" (dimensionless), "count", "name", "path".
+
+# 01_the_statistic_and_the_parameters.ipynb
+[statistic]
+fs = 2048.0  # [Hz] sampling frequency of the window
+n = 512  # [samples] window length
+sigma = 1.0  # [-] standard deviation of the whitened noise
+injected_rho = 12.0  # [-] matched-filter signal-to-noise ratio the burst is scaled to
+seed = 7  # [-] seed of the noise
+f0 = 200.0  # [Hz] central frequency of the sine-Gaussian
+q = 12.0  # [-] quality factor of the sine-Gaussian
+wave = "Sym8"  # [name] basis of the transform, thresholding and parameters
+candidate_bases = ["Haar", "DaubC4", "DaubC8", "DaubC12", "DaubC16", "DaubC20", "Sym4", "Sym8", "Coif1", "Coif2"]  # [name] bases of the basis competition
+
+# 02_the_wavegram_and_long_signals.ipynb
+[wavegram]
+fs = 2048.0  # [Hz] sampling frequency
+window = 512  # [samples] analysis window length
+overlap = 128  # [samples] overlap between consecutive windows
+sigma = 1.0  # [-] standard deviation of the whitened noise
+wave = "Sym8"  # [name] basis of the transform
+chirp_f_start = 60.0  # [Hz] start frequency of the one-window chirp
+chirp_f_end = 500.0  # [Hz] end frequency of the one-window chirp
+chirp_rho = 25.0  # [-] norm of the one-window chirp, on the noise scale
+n_time_bins = 24  # [count] time bins of the wavegram ridge
+long_windows = 7  # [count] analysis windows the long chirp spans
+long_f_start = 80.0  # [Hz] start frequency of the long chirp
+long_f_end = 300.0  # [Hz] end frequency of the long chirp
+long_amplitude = 6.0  # [-] peak amplitude of the long chirp, on the noise scale
+gps0 = 1000.0  # [s] time of the long chirp's first sample
+ifo = "H1"  # [name] detector the triggers are labelled with
+time_tol_s = 0.05  # [s] wavegram_events: largest gap between tile time supports chained into one event
+
+# 03_coincidence_and_significance.ipynb
+[coincidence]
+span_s = 3600.0  # [s] length of the synthetic segment
+seed = 11  # [-] seed of the event tables
+n_noise = 300  # [count] noise events per detector
+noise_gamma_shape = 2.0  # [-] shape of the gamma distribution of the noise events' EnWDF
+noise_gamma_scale = 1.8  # [-] scale of the gamma distribution of the noise events' EnWDF
+noise_enwdf_floor = 4.0  # [-] EnWDF added to every noise event (the detection threshold)
+noise_freq_min = 40.0  # [Hz] lower edge of the noise events' uniform freqMean
+noise_freq_max = 900.0  # [Hz] upper edge of the noise events' uniform freqMean
+signal_freq = 180.0  # [Hz] freqMean of the injected events
+freq_min_factor = 0.7  # [-] freqMin of an event as a fraction of its freqMean
+freq_max_factor = 1.4  # [-] freqMax of an event as a multiple of its freqMean
+event_half_duration_s = 0.05  # [s] gpsPeak minus gpsStart of every event
+event_duration_s = 0.1  # [s] duration of every event
+signal_times = [600.0, 1500.0, 2400.0]  # [s] peak times of the injected events in H1
+signal_enwdf_H1 = [14.0, 9.0, 22.0]  # [-] EnWDF of the injected events in H1
+signal_enwdf_L1 = [12.0, 8.5, 19.0]  # [-] EnWDF of the injected events in L1
+l1_delay_s = 0.004  # [s] arrival time in L1 minus arrival time in H1 of the injected events
+n_slides = 200  # [count] FARConfig: time slides of the background
+min_shift_s = 1.0  # [s] FARConfig: step between two slides
+far_seed = 3  # [-] FARConfig: seed of the slide grid's phase
+match_window_s = 0.5  # [s] largest distance of a candidate from an injection for it to count as recovered
+
+# 04_reconstruction_and_phase.ipynb
+[reconstruction]
+fs = 2048  # [Hz] sampling frequency
+window = 512  # [samples] analysis window length
+overlap = 256  # [samples] overlap between consecutive windows
+sigma = 1.0  # [-] noise scale of the threshold and the amplitudes
+wave = "DaubC12"  # [name] basis every window is transformed in
+gps0 = 0.0  # [s] time of the first sample
+ifo = "H1"  # [name] detector the triggers are labelled with
+mass1 = 30.0  # [Msun] mass of the first component of the inspiral
+mass2 = 30.0  # [Msun] mass of the second component of the inspiral
+f_lower = 30.0  # [Hz] starting frequency of the inspiral
+amplitude = 8.0  # [-] peak amplitude of the inspiral, on the noise scale
+pad_windows = 2  # [count] windows of zeros after the inspiral
+max_lag = 4  # [samples] half-width of the lag search of waveform_overlap
+examined = "overlap_add"  # [name] the stitching whose amplitude and phase are examined (a label of [[reconstruction.stitchings]])
+envelope_bands = [[0.1, 0.3], [0.3, 0.6], [0.6, 1.01]]  # [-] bands of the injected envelope, as fractions of its peak, the ratios are binned in
+ratio_quantiles = [0.05, 0.95]  # [-] quantiles of the amplitude ratio reported as lowest and highest
+stft_nperseg = 128  # [samples] segment length of the time-frequency picture
+stft_noverlap = 112  # [samples] overlap of the segments of the time-frequency picture
+sweep_overlaps = [16, 32, 64, 128, 256, 384, 448, 480]  # [samples] overlaps of the shift sweep
+sweep_policies = ["central_window", "overlap_add"]  # [name] stitch overlap policies of the shift sweep
+
+# The three ways of joining the windows that are compared.
+[[reconstruction.stitchings]]
+label = "central_window"  # [name] label of the stitching
+overlap_policy = "central_window"  # [name] stitch overlap_policy
+taper_edges = false  # [bool] stitch taper_edges
+
+[[reconstruction.stitchings]]
+label = "overlap_add"  # [name] label of the stitching
+overlap_policy = "overlap_add"  # [name] stitch overlap_policy
+taper_edges = false  # [bool] stitch taper_edges
+
+[[reconstruction.stitchings]]
+label = "overlap_add + taper_edges"  # [name] label of the stitching
+overlap_policy = "overlap_add"  # [name] stitch overlap_policy
+taper_edges = true  # [bool] stitch taper_edges
+
+# 05_the_paper_path_and_the_track_path.ipynb
+[pipeline]
+fs = 4096  # [Hz] sampling frequency of the synthetic strain
+gps0 = 1000000000.0  # [s] time of the first sample
+seconds = 200.0  # [s] length of the strain
+segment_start_s = 40.0  # [s] start of the analysed segment after gps0 (the segment ends with the strain)
+channel = "SYNTH"  # [name] channel name; the channel is "<IFO>:<channel>"
+seeds = { H1 = 1, L1 = 2 }  # [-] seed of each detector's noise
+delay_s = { H1 = 0.0, L1 = 0.007 }  # [s] arrival time of the chirp in each detector after chirp_at_s
+drift = 0.01  # [-] step of the random walk added to the noise, on the noise scale
+chirp_at_s = 110.0  # [s] start of the chirp after gps0
+chirp_s = 3.0  # [s] duration of the chirp
+chirp_f_start = 40.0  # [Hz] start frequency of the chirp
+chirp_f_end = 200.0  # [Hz] end frequency of the chirp
+chirp_amplitude = 0.6  # [-] peak amplitude of the chirp, on the noise scale
+outdir_prefix = "wdf_tutorial_"  # [name] prefix of the temporary output directory
+paper_config = "online_zerophase_default.toml"  # [path] shipped configuration of the paper path, in configs/
+track_config = "online_zerophase_track.toml"  # [path] shipped configuration of the track path, in configs/
+offline_config = "offline_default.toml"  # [path] shipped configuration of the offline flow, in configs/
+lag_cut = "penalty"  # [name] NetworkLagCut of the screened run
+track_bases = ["LocalCos64", "LocalCos128", "CosinePackets32"]  # [name] TrackBasis values compared on H1
+
+# Overrides of the shipped online configurations for a 200 s stretch.
+[pipeline.online]
+learn = 30  # [s] fit stretch of the noise model
+ARorder = 200  # [count] order of the autoregressive model
+ARWarmup = 200  # [samples] past samples that set the causal filter's state
+ZeroPhaseDuration = 8.0  # [s] truncation of the whitening filter
+ARRefitInterval = 0.0  # [s] time between model refits; 0: one model for the whole segment
+RidgeBackground = 32.0  # [s] rolling background that standardises each state row of the ridge map
+RidgeBackgroundMinimum = 16.0  # [s] background needed before a ridge slot is scored
+
+# Overrides of the shipped offline configuration for a 200 s stretch.
+[pipeline.offline]
+learn = 30  # [s] fit stretch of the noise model
+ARorder = 200  # [count] order of the autoregressive model
+AREstimationOffset = 5.0  # [s] start of the noise-model fit stretch after the segment start
+len = 8.0  # [s] read block of the offline worker
+ZeroPhaseDuration = 8.0  # [s] truncation of the whitening filter
+RidgeBackground = 32.0  # [s] rolling background that standardises each state row of the ridge map
+RidgeBackgroundMinimum = 16.0  # [s] background needed before a ridge slot is scored
+Reconstruction = "track"  # [name] stage-2 path
+Coincidence = "track"  # [name] stage-3 path
+NetworkRankColumn = "track_statistic"  # [name] column the candidates are ranked on

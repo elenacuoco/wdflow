@@ -10,6 +10,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from wdf.config.constants import MS_PER_S
+from wdf.config.defaults import defaults
+
+_D = defaults("plots")
+
 
 def plot_trigger_tiles(ax, triggers, fs, t0=0.0, sigma=None, cmap="viridis"):
     """Draw the time-frequency tiles of the coefficients a trigger set kept.
@@ -51,7 +56,7 @@ def plot_trigger_tiles(ax, triggers, fs, t0=0.0, sigma=None, cmap="viridis"):
             color=colour, alpha=0.85, linewidth=0))
 
     ax.set_xlim(pixels["t_lo"].min() - t0, pixels["t_hi"].max() - t0)
-    ax.set_ylim(max(pixels["f_lo"].min(), fs / 2 ** 20), fs / 2)
+    ax.set_ylim(max(pixels["f_lo"].min(), fs / 2 ** _D["display_octaves"]), fs / 2)
     ax.set_yscale("log")
     ax.set_xlabel("time [s]")
     ax.set_ylabel("frequency [Hz]")
@@ -117,7 +122,7 @@ def plot_glitchgram(ax, triggers, statistic="EnWDF", frequency="freqMean",
     return ax
 
 
-def plot_rate(ax, triggers, bin_s=60.0, t0=None):
+def plot_rate(ax, triggers, bin_s=_D["rate_bin_s"], t0=None):
     """Trigger rate against time, which is the first thing that says whether a
     stretch of data is usable.
 
@@ -176,10 +181,16 @@ def plot_trigger_statistics(fig, triggers, fs=None):
     axes[1, 0].set_xlabel("triggers")
     axes[1, 0].set_title("winning basis")
 
-    level, _ = coeff_levels(window_length(triggers))
-    index = np.concatenate([np.asarray(v, dtype=np.int64)
-                            for v in triggers["wt_index"]]) if len(triggers) else np.empty(0, int)
-    occupancy = np.bincount(level[index] + 1, minlength=int(level.max()) + 2)
+    n_coeff = window_length(triggers)
+    pyramid, _ = coeff_levels(n_coeff)
+    occupancy = np.zeros(int(pyramid.max()) + 2, dtype=np.int64)
+    waves = (triggers["wave"].astype(str) if "wave" in triggers
+             else pd.Series("", index=triggers.index))
+    for wave, group in triggers.groupby(waves, sort=False):
+        # A packet tile is counted on the octave that holds it.
+        level, _ = coeff_levels(n_coeff, wave or None)
+        index = np.concatenate([np.asarray(v, dtype=np.int64) for v in group["wt_index"]])
+        occupancy += np.bincount(level[index] + 1, minlength=len(occupancy))
     axes[1, 1].bar(np.arange(len(occupancy)) - 1, occupancy)
     axes[1, 1].set_yscale("log")
     axes[1, 1].set_xlabel("octave level (-1 is the scaling coefficient)")
@@ -219,8 +230,8 @@ def plot_cluster_membership(ax, labeled, events, cluster_id, fs, cluster_column=
     event = events.loc[events[cluster_column] == cluster_id].iloc[0]
     members = labeled[labeled[cluster_column] == cluster_id]
     span = float(event["duration"])
-    lo = float(event["gpsStart"]) - max(span, 1.0)
-    hi = float(event["gpsStart"]) + span + max(span, 1.0)
+    lo = float(event["gpsStart"]) - max(span, _D["context_min_s"])
+    hi = float(event["gpsStart"]) + span + max(span, _D["context_min_s"])
 
     around = labeled[(labeled["gps"] >= lo) & (labeled["gps"] <= hi)]
     t0 = float(event["gpsStart"])
@@ -235,12 +246,12 @@ def plot_cluster_membership(ax, labeled, events, cluster_id, fs, cluster_column=
             facecolor="tab:blue", alpha=0.7, lw=0))
 
     ax.set_xlim(lo - t0, hi - t0)
-    ax.set_ylim(max(fs / 2 ** 20, 1.0), fs / 2)
+    ax.set_ylim(max(fs / 2 ** _D["display_octaves"], _D["frequency_floor_hz"]), fs / 2)
     ax.set_yscale("log")
     ax.set_xlabel(f"time - {t0:.3f} [s]")
     ax.set_ylabel("frequency [Hz]")
     ax.set_title(f"event {int(cluster_id)}: {int(event['n_triggers'])} windows, "
-                 f"{span * 1e3:.0f} ms")
+                 f"{span * MS_PER_S:.0f} ms")
     return ax
 
 

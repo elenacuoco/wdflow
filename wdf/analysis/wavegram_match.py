@@ -63,19 +63,23 @@ from __future__ import annotations
 import numpy as np
 
 from wdf.analysis.pairs import _paired_device
+from wdf.analysis.wavelets import ladder_rows
 from scipy.signal import correlation_lags, fftconvolve
 
+from wdf.config.defaults import defaults
+
+_WM = defaults("wavegram_match")
 
 #: The width of a time bin, seconds, as a fraction of the shortest tile the
 #: band ladder holds. A bin coarser than the light travel time cannot place a
 #: pair on the sky; one much finer costs displacements without resolving
 #: anything, since a tile's own duration is what limits the map's resolution.
-BIN_PER_TILE = 1.0
+BIN_PER_TILE = _WM["bin_per_tile"]
 
 # Pairs gathered at once. A gathered block is one map per pair, so the cap
 # is what keeps this stage's memory independent of how many pairs a slid
 # background produces.
-PROFILE_BLOCK = 20_000
+PROFILE_BLOCK = _WM["profile_block"]
 
 
 def render(cloud, bands, first, last, bin_seconds):
@@ -84,9 +88,14 @@ def render(cloud, bands, first, last, bin_seconds):
     :param cloud: the event's tiles, as `wdf.analysis.detector_graph.event_tiles`
         returns them: ``(t_lo, t_hi, f_lo, f_hi, energy, amplitude)``, times in
         absolute GPS seconds and amplitudes on the block's noise scale.
-    :param bands: the band edges to render on, shape ``(n_bands, 2)``. They are
-        a property of the analysis window and of the rate, so the two detectors
-        share them and a map of one is comparable with a map of the other.
+    :param bands: the band edges to render on, shape ``(n_bands, 2)``, as
+        `wdf.analysis.detector_graph.band_grid` returns them. They are a
+        property of the analysis windows and of the rate, so the two detectors
+        share them and a map of one is comparable with a map of the other. A
+        tile whose band is a row is drawn in it; a tile of a wavelet-packet
+        level, narrower than an octave, is drawn in the row holding it
+        (`wdf.analysis.wavelets.ladder_rows`), so that two detectors that won
+        different bases are still compared on one set of rows.
     :type first: float
     :param first: left edge of the grid, absolute GPS seconds.
     :type last: float
@@ -96,9 +105,8 @@ def render(cloud, bands, first, last, bin_seconds):
     :return: numpy.ndarray -- shape ``(n_bands, n_bins)``, the signed
         coefficient density on the tile's complete time support, and zero
         where the event placed none. Tiles wholly outside ``[first, last)``
-        are discarded. A tile that intersects that interval but does not
-        belong to ``bands`` is an error rather than being silently discarded.
-        ``bands`` must be the band scale of one window length.
+        are discarded. A tile that intersects that interval but lies in no
+        row of ``bands`` is an error rather than being silently discarded.
     :raises ValueError: if the grid is empty or the bin width is not positive.
     """
     if not bin_seconds > 0.0:
@@ -112,7 +120,7 @@ def render(cloud, bands, first, last, bin_seconds):
     # few ulps to either side of the integer it represents. Snap only at that
     # floating-point scale: otherwise `ceil` can invent a column and a tile can
     # occupy two bins when its support is exactly one bin wide.
-    time_roundoff = 8.0 * np.spacing(max(abs(float(first)), abs(float(last))))
+    time_roundoff = _WM["time_roundoff_ulps"] * np.spacing(max(abs(float(first)), abs(float(last))))
     n_bins = int(np.ceil(((last - first) - time_roundoff) / bin_seconds))
     if n_bins < 1:
         raise ValueError(
@@ -142,18 +150,14 @@ def render(cloud, bands, first, last, bin_seconds):
     stop = np.ceil((t_hi - first - time_roundoff) / bin_seconds).astype(int)
     in_time = (stop > 0) & (start < n_bins)
 
-    row = np.searchsorted(bands[:, 0], f_lo, side="right") - 1
-    clipped_row = np.clip(row, 0, max(len(bands) - 1, 0))
-    in_band = ((row >= 0) & (row < len(bands))
-               & np.isclose(bands[clipped_row, 0], f_lo)
-               & np.isclose(bands[clipped_row, 1], f_hi))
+    row = ladder_rows(f_lo, f_hi, bands)
+    in_band = row >= 0
     missing = in_time & ~in_band
     if missing.any():
         at = int(np.flatnonzero(missing)[0])
         raise ValueError(
             f"tile {at} intersects the time grid but its band "
-            f"({f_lo[at]!r}, {f_hi[at]!r}) is absent from bands; bands must "
-            "be the scale of one window length")
+            f"({f_lo[at]!r}, {f_hi[at]!r}) lies in no row of bands")
 
     inside = in_time & in_band
     if not inside.any():

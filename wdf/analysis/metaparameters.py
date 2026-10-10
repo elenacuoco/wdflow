@@ -22,6 +22,10 @@ from wdf.analysis.wavelets import (
     coeff_time_bounds,
     tile_frequency,
 )
+from wdf.config.constants import UNIFORM_VARIANCE_DIVISOR
+from wdf.config.defaults import defaults
+
+_D = defaults("metaparameters")
 
 META_FEATURES = [
     "gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration", "duration90",
@@ -104,7 +108,7 @@ def energy_quantile(lo, hi, energy, quantiles):
 
 
 def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
-                  gps: float = 0.0) -> dict:
+                  gps: float = 0.0, wave=None) -> dict:
     """Derive an event's parameters from its surviving wavelet coefficients.
 
     :type index: array-like
@@ -120,6 +124,10 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     :type gps: float
     :param gps: GPS time of the analysis window's first sample, which the
         returned times are absolute against.
+    :type wave: str or None
+    :param wave: the basis that produced the coefficients, which fixes where
+        an index sits in the plane (`wdf.analysis.wavelets`); None is the
+        pyramid.
     :return: dict -- `gpsStart`, `gpsCentroid`, `tSpread`, `gpsPeak`,
         `duration`, `snrPeak`, `freqMin`, `freqMean`, `freqMax`;
         all `nan` when no coefficient survived.
@@ -135,8 +143,8 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     if total <= 0.0:
         return _empty()
 
-    t_lo, t_hi = coeff_time_bounds(int(n_coeff), float(fs))
-    f_lo, f_hi = coeff_freq_bands(int(n_coeff), float(fs))
+    t_lo, t_hi = coeff_time_bounds(int(n_coeff), float(fs), wave)
+    f_lo, f_hi = coeff_freq_bands(int(n_coeff), float(fs), wave)
     t_lo, t_hi = t_lo[index], t_hi[index]
     f_lo, f_hi = f_lo[index], f_hi[index]
     t_mid = 0.5 * (t_lo + t_hi)
@@ -146,7 +154,7 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     # spread: uniformly distributed energy over a width w has variance w^2/12.
     # It matters where the tiles differ in width, which within one window is
     # what a transient spread across octaves produces.
-    variance = float(energy @ ((t_mid - centroid) ** 2 + (t_hi - t_lo) ** 2 / 12.0))
+    variance = float(energy @ ((t_mid - centroid) ** 2 + (t_hi - t_lo) ** 2 / UNIFORM_VARIANCE_DIVISOR))
     spread = np.sqrt(max(variance / total, 0.0))
 
     loudest = int(np.argmax(magnitude))
@@ -157,10 +165,10 @@ def meta_features(index, value, n_coeff: int, fs: float, sigma: float,
     # The support is what a marginal coefficient can stretch without carrying
     # energy; these follow the energy instead. The frequency quantiles are taken
     # in log frequency, the coordinate the dyadic tiling is uniform in.
-    t05, t95 = energy_quantile(t_lo, t_hi, energy, (0.05, 0.95))
+    t05, t95 = energy_quantile(t_lo, t_hi, energy, _D["energy_quantiles"])
     logf05, logf95 = energy_quantile(
         np.log(np.maximum(f_lo, np.finfo(float).tiny)), np.log(f_hi), energy,
-        (0.05, 0.95))
+        _D["energy_quantiles"])
     return dict(
         gpsStart=gps + start,
         gpsCentroid=gps + centroid,

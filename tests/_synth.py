@@ -7,18 +7,40 @@ import numpy as np
 import pandas as pd
 import pytest
 
+def packets_or_skip():
+    """Skip the calling test unless the installed py4tsa searches packet bases.
+
+    A py4tsa without `WDF2Classify.SetBases` has no wavelet-packet transform,
+    and a test that needs one is skipped, not failed, as for a missing core.
+    """
+    tsa = pytest.importorskip("py4tsa.tsa")
+    if not hasattr(tsa.WDF2Classify, "SetBases"):
+        pytest.skip("the installed py4tsa has no wavelet-packet bases")
+
+
 def forward(samples, wave):
-    """One window's wavelet coefficients, untouched by thresholding."""
+    """One window's wavelet coefficients, untouched by thresholding.
+
+    `wave` is a mother for its pyramid, or a mother followed by ``P`` and a
+    depth for that packet level, which needs a py4tsa with packet bases.
+    """
     # Imported here rather than at module scope so that the generators below,
     # which fabricate trigger tables and need nothing compiled, stay usable
     # without it. A caller that does need the transform is skipped, not failed.
     pytest.importorskip("py4tsa")
     from py4tsa.tsa import WaveletTransform
+    from wdf.analysis.wavelets import mother_wavelet, packet_depth
     from wdf.structures.array2SeqView import array2SeqView
 
+    depth = packet_depth(wave)
+    if depth:
+        packets_or_skip()
+    mother = getattr(WaveletTransform, mother_wavelet(wave))
     view = array2SeqView(0.0, 1.0, len(samples))
     view = view.Fill(0.0, np.asarray(samples, dtype=float).copy())
-    WaveletTransform(len(samples), getattr(WaveletTransform, wave)).Forward(view)
+    transform = (WaveletTransform(len(samples), mother, depth) if depth
+                 else WaveletTransform(len(samples), mother))
+    transform.Forward(view)
     return np.array([view.GetY(0, i) for i in range(len(samples))])
 
 

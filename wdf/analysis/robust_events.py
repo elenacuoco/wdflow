@@ -26,7 +26,13 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 from wdf.analysis.detectors import network_light_travel_time
-from wdf.analysis.pairs import cross_pairs, interval_pairs, neighbour_pairs
+from wdf.analysis.pairs import interval_pairs, neighbour_pairs
+from wdf.config.constants import SECONDS_PER_DAY
+from wdf.config.defaults import defaults
+
+_CLUSTER = defaults("robust_events.cluster")
+_COINCIDENCE = defaults("robust_events.coincidence")
+_FAR = defaults("robust_events.far")
 
 EPS = np.finfo(float).tiny
 
@@ -40,7 +46,7 @@ EPS = np.finfo(float).tiny
 #: `wdf.analysis.timing`), and no stage here writes it. The last is the energy
 #: centroid, which two detectors do not agree on. Every one of them is a
 #: property of one event, so a time slide carries it with the event.
-INSTANT_COLUMNS = ("gpsEnvelope", "gpsPeak", "gpsCentroid")
+INSTANT_COLUMNS = _COINCIDENCE["instant_columns"]
 
 
 def _first_existing(frame: pd.DataFrame, names: Iterable[str], default=None):
@@ -62,7 +68,7 @@ def _numeric(frame: pd.DataFrame, names: Iterable[str], default=np.nan) -> np.nd
 def clean_triggers_robust(
     triggers: pd.DataFrame,
     segment_bounds: tuple[float, float] | None = None,
-    edge_margin_s: float = 0.0,
+    edge_margin_s: float = _CLUSTER["edge_margin_s"],
 ) -> pd.DataFrame:
     """Remove only non-finite, non-physical and segment-edge triggers.
 
@@ -216,10 +222,10 @@ class _UnionFind:
 
 @dataclass
 class ClusterConfig:
-    max_missing_windows: int = 1
-    minimum_frequency_overlap: float = 0.0
-    maximum_log_energy_jump: float = 3.0
-    edge_margin_s: float = 0.0
+    max_missing_windows: int = _CLUSTER["max_missing_windows"]
+    minimum_frequency_overlap: float = _CLUSTER["minimum_frequency_overlap"]
+    maximum_log_energy_jump: float = _CLUSTER["maximum_log_energy_jump"]
+    edge_margin_s: float = _CLUSTER["edge_margin_s"]
 
 
 def cluster_detector_triggers(
@@ -262,9 +268,10 @@ def cluster_detector_triggers(
 
     stride = stride_seconds(parameters)
     # The window origins sit on an exact grid, so this is a count of windows
-    # rather than a tolerance: half a stride of slack keeps the comparison
-    # clear of rounding without ever reaching the next window.
-    time_eps = stride * (1.5 + int(config.max_missing_windows))
+    # rather than a tolerance: one stride to the next window plus half a stride
+    # of slack (`adjacency_strides`) keeps the comparison clear of rounding
+    # without ever reaching the window after it.
+    time_eps = stride * (_CLUSTER["adjacency_strides"] + int(config.max_missing_windows))
     uf = _UnionFind(len(cleaned))
     log_energy = np.log(energy)
 
@@ -469,21 +476,25 @@ class CoincidenceConfig:
         multiple when given.
     """
 
-    light_travel_time_s: float | None = None
-    timing_jitter_s: float = 0.0035
-    timing_sigma: float = 3.0
-    minimum_frequency_overlap: float = 0.0
-    minimum_time_overlap: float = 0.0
-    maximum_tolerance_travel_times: float = 2.5
-    maximum_tolerance_s: float | None = None
-    time_weight: float = 1.0
-    frequency_weight: float = 1.0
+    light_travel_time_s: float | None = _COINCIDENCE["light_travel_time_s"]
+    timing_jitter_s: float = _COINCIDENCE["timing_jitter_s"]
+    timing_sigma: float = _COINCIDENCE["timing_sigma"]
+    minimum_frequency_overlap: float = _COINCIDENCE["minimum_frequency_overlap"]
+    minimum_time_overlap: float = _COINCIDENCE["minimum_time_overlap"]
+    maximum_tolerance_travel_times: float = _COINCIDENCE["maximum_tolerance_travel_times"]
+    maximum_tolerance_s: float | None = _COINCIDENCE["maximum_tolerance_s"]
+    time_weight: float = _COINCIDENCE["time_weight"]
+    # The columns an event's instant is read from, in order of preference
+    # (`INSTANT_COLUMNS` by default); the first one an event table carries is
+    # used for the pair's dt.
+    instant_columns: tuple = INSTANT_COLUMNS
+    frequency_weight: float = _COINCIDENCE["frequency_weight"]
     # Amplitude ratio is not a shape mismatch: the same signal reaches two
     # detectors with amplitudes set by their antenna responses, routinely
     # differing by a factor of a few. Penalizing it makes the assignment prefer
     # a quieter, better-matched pair over the louder true one, so it is off by
     # default; the frequency term already carries the shape test.
-    morphology_weight: float = 0.0
+    morphology_weight: float = _COINCIDENCE["morphology_weight"]
 
     def travel_time(self, ifos=None) -> float:
         """The largest arrival-time difference this pair's geometry allows.
@@ -639,8 +650,8 @@ class IndexedCoincidenceFinder:
         # detectors at different projected amplitudes place it differently and
         # the difference lands in dt, where it is indistinguishable from
         # geometry.
-        lt = _numeric(left, INSTANT_COLUMNS)
-        rt = _numeric(right, INSTANT_COLUMNS)
+        lt = _numeric(left, self.config.instant_columns)
+        rt = _numeric(right, self.config.instant_columns)
         ls = _numeric(left, ("tSpread",), default=0.0)
         rs = _numeric(right, ("tSpread",), default=0.0)
         ls = np.where(np.isfinite(ls), ls, 0.0)
@@ -759,7 +770,7 @@ class IndexedCoincidenceFinder:
             if not finite.any():
                 continue
 
-            penalty = float(np.nanmax(cost[finite]) + 1e6)
+            penalty = float(np.nanmax(cost[finite]) + _COINCIDENCE["assignment_penalty"])
             row_index, col_index = linear_sum_assignment(np.where(finite, cost, penalty))
 
             for a, b in zip(row_index, col_index):
@@ -785,8 +796,8 @@ class IndexedCoincidenceFinder:
         sb = _numeric(right, ("EnWDF", "snrMax"), default=0.0)[j]
         # The same clock the admissibility used, so a candidate's recorded dt
         # is the quantity it was admitted and penalised on.
-        ta = _numeric(left, INSTANT_COLUMNS)[i]
-        tb = _numeric(right, INSTANT_COLUMNS)[j]
+        ta = _numeric(left, self.config.instant_columns)[i]
+        tb = _numeric(right, self.config.instant_columns)[j]
 
         out = pd.DataFrame({
             f"index_{left_ifo}": i,
@@ -850,9 +861,9 @@ class FARConfig:
         only the phase it starts at.
     """
 
-    n_slides: int = 100
-    min_shift_s: float | None = 4.0
-    seed: int = 1
+    n_slides: int = _FAR["n_slides"]
+    min_shift_s: float | None = _FAR["min_shift_s"]
+    seed: int = _FAR["seed"]
 
 
 class TimeSlideFAR:
@@ -1014,7 +1025,7 @@ class TimeSlideFAR:
             extent = _numeric(frame, ("duration",), default=0.0)
             extent = extent[np.isfinite(extent)]
             if extent.size:
-                correlated = max(correlated, float(np.quantile(extent, 0.99)))
+                correlated = max(correlated, float(np.quantile(extent, _FAR["correlated_extent_quantile"])))
         floor = correlated if admission is None else max(admission, correlated)
         least = floor if stated is None else float(stated)
         if admission is not None and least < admission:
@@ -1128,7 +1139,7 @@ class TimeSlideFAR:
                 * float(segment_duration_s))
             out["background_livetime_s"] = total_livetime
             out["far_hz"] = 1.0 / max(total_livetime, EPS)
-            out["far_per_day"] = out["far_hz"] * 86400.0
+            out["far_per_day"] = out["far_hz"] * SECONDS_PER_DAY
             out["fap"] = -np.expm1(-out["far_hz"] * float(segment_duration_s))
             return out
 
@@ -1151,7 +1162,7 @@ class TimeSlideFAR:
         out["n_background_ge"] = n_ge
         out["background_livetime_s"] = total_livetime
         out["far_hz"] = far_hz
-        out["far_per_day"] = far_hz * 86400.0
+        out["far_per_day"] = far_hz * SECONDS_PER_DAY
         out["fap"] = -np.expm1(-far_hz * float(segment_duration_s))
 
         return out.sort_values(

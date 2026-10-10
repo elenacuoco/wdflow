@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import numpy as np
 
-PAIR_BLOCK = 4096
+from wdf.config.defaults import defaults
+
+_D = defaults("pairs")
+
+#: Rows of the first index laid out per block of pairs (`[pairs] pair_block`).
+PAIR_BLOCK = _D["pair_block"]
 
 
 def _blocks(start, stop, block):
@@ -100,7 +105,7 @@ def interval_pairs(left_lo, left_hi, right_anchor, right_reach=0.0,
 # few million pairs and a map of a few thousand cells that is tens of
 # gigabytes, on any device. The rows are therefore gathered a block at a time,
 # and only the numbers survive the block.
-PAIRED_BLOCK = 200_000
+PAIRED_BLOCK = _D["paired_block"]
 
 
 def _paired_device(prefer_gpu):

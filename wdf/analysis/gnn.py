@@ -35,6 +35,7 @@ from wdf.analysis.network_graph import (
     TriggerGraph,
     TriggerGraphBuilder,
 )
+from wdf.config.defaults import defaults
 
 try:
     import torch
@@ -45,6 +46,10 @@ except ImportError as _e:  # pragma: no cover
     raise ImportError(
         "wdfLib.gnn requires torch and torch_geometric. Install with: pip install -e '.[gnn]'"
     ) from _e
+
+_COINCIDENCE = defaults("gnn.coincidence")
+_DETECTOR = defaults("gnn.detector")
+_LABELS = defaults("gnn.labels")
 
 class _CandidateData(Data):
     """`Data` with a second, separate edge set (`cross_edge_index`/
@@ -121,8 +126,8 @@ class GNNCoincidenceScorer(nn.Module):
     """Intra-detector message passing (`_IntraMessagePassing`), then an
     edge-classification head scores cross-detector candidate edges."""
 
-    def __init__(self, node_dim: int, hidden: int = 16, seed: int = 0,
-                 device: str | None = None, cross_edge_dim: int = 2, profile_dim: int = 0):
+    def __init__(self, node_dim: int, hidden: int = _COINCIDENCE["hidden"],
+                 seed: int = _COINCIDENCE["seed"], device: str | None = None, cross_edge_dim: int = 2, profile_dim: int = 0):
         """
         :type node_dim: int
         :param node_dim: width of a node's feature vector, i.e.
@@ -269,9 +274,10 @@ class GNNCoincidenceScorer(nn.Module):
     def fit(
         self,
         examples: list[tuple],
-        epochs: int = 100,
-        lr: float = 1e-2,
+        epochs: int = _COINCIDENCE["epochs"],
+        lr: float = _COINCIDENCE["lr"],
         batch_size: int | None = None,
+        pos_weight: float | None = None,
     ) -> list[float]:
         """examples: `(graph, labels)` or `(graph, labels, mask)` per segment,
         labels a 0/1 array aligned with `graph.cross_edges` (1 = real
@@ -291,6 +297,12 @@ class GNNCoincidenceScorer(nn.Module):
         segments at once. Default (None) puts every segment in one batch per
         epoch (full-batch training), the common case when `examples` is the
         whole training set for one run, not a huge out-of-core dataset.
+
+        `pos_weight` multiplies the loss of the positive edges
+        (`BCEWithLogitsLoss(pos_weight=...)`): with many more negatives than
+        positives, e.g. accidental pairs from time slides, a weight of about
+        n_negative / n_positive keeps the positives from being swamped. None
+        (default) weighs every edge alike.
         Returns the per-epoch loss history.
         """
         datas = [_to_pyg_data(example[0], example[1],
@@ -303,7 +315,13 @@ class GNNCoincidenceScorer(nn.Module):
         chunk_size = batch_size or len(datas)
 
         opt = torch.optim.Adam(self.parameters(), lr=lr)
-        loss_fn = nn.BCEWithLogitsLoss()
+        if pos_weight is None:
+            loss_fn = nn.BCEWithLogitsLoss()
+        else:
+            if not float(pos_weight) > 0.0:
+                raise ValueError("pos_weight must be positive")
+            loss_fn = nn.BCEWithLogitsLoss(
+                pos_weight=torch.tensor([float(pos_weight)], dtype=torch.float32, device=self.device))
         history = []
         for _ in range(epochs):
             opt.zero_grad()
@@ -352,8 +370,9 @@ class DetectorEdgeScorer(nn.Module):
     plane and not only how close they are.
     """
 
-    def __init__(self, node_dim: int, edge_dim: int, hidden: int = 32,
-                 layers: int = 2, seed: int = 0, device: str | None = None):
+    def __init__(self, node_dim: int, edge_dim: int, hidden: int = _DETECTOR["hidden"],
+                 layers: int = _DETECTOR["layers"], seed: int = _DETECTOR["seed"],
+                 device: str | None = None):
         """
         :type node_dim: int
         :param node_dim: width of `DetectorGraph.node_features`.
@@ -434,7 +453,8 @@ class DetectorEdgeScorer(nn.Module):
         table["edge_score"] = probability
         return table
 
-    def fit(self, examples: list[tuple], epochs: int = 100, lr: float = 1e-2) -> list[float]:
+    def fit(self, examples: list[tuple], epochs: int = _DETECTOR["epochs"],
+            lr: float = _DETECTOR["lr"]) -> list[float]:
         """Fit on labelled edges.
 
         :param examples: `(graph, labels)` or `(graph, labels, mask)` per
@@ -486,7 +506,8 @@ class DetectorEdgeScorer(nn.Module):
         return history
 
 
-def edge_labels_from_injections(graph, injection_times, tolerance_s: float = 0.5):
+def edge_labels_from_injections(graph, injection_times,
+                                tolerance_s: float = _LABELS["tolerance_s"]):
     """Label each edge by whether its two triggers share an injection.
 
     A trigger belongs to the injection whose time falls inside its window,

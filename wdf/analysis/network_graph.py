@@ -29,6 +29,7 @@ from wdf.analysis.robust_events import (
     IndexedCoincidenceFinder,
     _coefficient_energy,
 )
+from wdf.config.defaults import defaults
 
 
 # A node is described by the signed wavelet coefficients of its cluster on a
@@ -40,6 +41,8 @@ from wdf.analysis.robust_events import (
 # carried alongside so that the displacement found is an absolute one.
 # The grid's width is the detector stage's, imported rather than restated: two
 # constants for the shape of one object drift apart.
+
+_D = defaults("network.graph")
 
 # What a candidate edge carries: the arrival-time difference, the agreement
 # between the two wavegrams, the shared fraction of band and of time support,
@@ -241,12 +244,12 @@ class TriggerGraphBuilder:
 
     def __init__(
         self,
-        intra_ifo_window_s: float = 5.0,
+        intra_ifo_window_s: float = _D["intra_ifo_window_s"],
         coincidence: "CoincidenceConfig | None" = None,
         ifos: list[str] | None = None,
         wavegram_time_bins: int = WAVEGRAM_TIME_BINS,
-        match_wavegrams: bool = True,
-        match_gate: str = "admitted",
+        match_wavegrams: bool = _D["match_wavegrams"],
+        match_gate: str = _D["match_gate"],
     ):
         """
         :type intra_ifo_window_s: float
@@ -484,7 +487,7 @@ class TriggerGraphBuilder:
         profile_extent = np.zeros(len(comparison_clouds))
         profile_half = np.zeros(len(comparison_clouds), dtype=np.int64)
         profile_windows = []
-        empty = tuple(np.zeros(0) for _ in range(6))
+        empty = (np.zeros(0),) * 6
         # The windows are the only expensive thing here: one rendering per
         # event, on the finest bin the ladder holds. A builder that will not
         # compare them has no reason to build them, so a study that does not
@@ -814,7 +817,7 @@ class TriggerGraphBuilder:
 
 
 
-def edge_labels_from_injections(graph, injection_times, window_s: float = 0.5):
+def edge_labels_from_injections(graph, injection_times, window_s: float = _D["label_window_s"]):
     """Label each candidate edge by whether both its events are one injection.
 
     A pair is a positive when the two detectors' events each cover the same

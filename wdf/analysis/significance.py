@@ -18,7 +18,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from wdf.config.constants import SECONDS_PER_DAY
+from wdf.config.defaults import defaults
+
 from .coincidence import CoincidenceFinder
+
+_D = defaults("significance")
 
 
 class BackgroundEstimator:
@@ -27,10 +32,10 @@ class BackgroundEstimator:
     def __init__(
         self,
         coincidence_finder: CoincidenceFinder,
-        n_slides: int = 200,
-        min_shift_s: float = 1.0,
-        max_shift_s: float | None = None,
-        seed: int = 0,
+        n_slides: int = _D["n_slides"],
+        min_shift_s: float = _D["min_shift_s"],
+        max_shift_s: float | None = _D["max_shift_s"],
+        seed: int = _D["seed"],
     ):
         """
         :type coincidence_finder: CoincidenceFinder
@@ -176,7 +181,7 @@ class BackgroundEstimator:
         result = dict(fap=fap, n_background_ge=n_ge, n_background=n_background,
                       n_slides=self.n_slides)
         if segment_duration_s is not None:
-            result["far_per_day"] = fap / (segment_duration_s / 86400.0)
+            result["far_per_day"] = fap / (segment_duration_s / SECONDS_PER_DAY)
         return result
 
     def rank_candidates(
@@ -236,7 +241,7 @@ class BackgroundEstimator:
         # denominator here.
         out["fap"] = (1 + n_ge) / (1 + len(bg_sorted))
         if segment_duration_s is not None:
-            out["far_per_day"] = out["fap"] / (segment_duration_s / 86400.0)
+            out["far_per_day"] = out["fap"] / (segment_duration_s / SECONDS_PER_DAY)
         return out.sort_values("fap", kind="stable").reset_index(drop=True)
 
 

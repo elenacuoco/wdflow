@@ -24,6 +24,16 @@ def test_inverse_transform_round_trips():
     assert inverse_transform(forward(x, WAVE), WAVE) == pytest.approx(x, rel=1e-3, abs=1e-6)
 
 
+def test_inverse_transform_round_trips_a_packet_level():
+    from _synth import packets_or_skip
+
+    packets_or_skip()
+    x = np.random.default_rng(2).standard_normal(1024)
+    coefficients = forward(x, "Coif1P6")
+    assert not np.allclose(coefficients, forward(x, "Coif1"))
+    assert inverse_transform(coefficients, "Coif1P6") == pytest.approx(x, rel=1e-3, abs=1e-6)
+
+
 def test_stitching_recovers_the_signal_it_was_cut_from():
     """The step regions tile the span, so the pieces reassemble the original."""
     rng = np.random.default_rng(1)

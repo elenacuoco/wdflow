@@ -8,14 +8,29 @@ from __future__ import annotations
 
 import numpy as np
 
+from wdf.config.defaults import defaults
+
+_MOCK = defaults("mock")
+_CBC = defaults("mock.waveforms.cbc")
+_TRACK = defaults("mock.waveforms.cbc_track")
+_GAUSSIAN = defaults("mock.waveforms.gaussian")
+_SINE_GAUSSIAN = defaults("mock.waveforms.sine_gaussian")
+_BLIP = defaults("mock.waveforms.blip")
+_CHIRPLIKE = defaults("mock.waveforms.chirplike")
+_SCATTERED = defaults("mock.waveforms.scattered_light")
+_CCSN = defaults("mock.waveforms.ccsn")
+
 CBC_CLASSES = ("bbh", "bhns", "bns")
 GLITCH_CLASSES = ("gaussian", "sine_gaussian", "blip", "chirplike", "scattered_light")
 
 
-def cbc_polarisations(mass1, mass2, spin1z=0.0, spin2z=0.0, distance=100.0,
-                      inclination=0.0, f_lower=20.0, sample_rate=2048,
-                      approximant="IMRPhenomD"):
+def cbc_polarisations(mass1, mass2, spin1z=0.0, spin2z=0.0, distance=_CBC["distance"],
+                      inclination=_CBC["inclination"], f_lower=_CBC["f_lower"],
+                      sample_rate=_MOCK["sample_rate"], approximant=_CBC["approximant"]):
     """Plus and cross polarisations of a compact-binary coalescence.
+
+    Defaults: ``[mock.waveforms.cbc]`` and ``[mock] sample_rate`` of
+    wdf/config/defaults.toml.
 
     :type mass1: float
     :param mass1: primary mass, solar masses.
@@ -45,8 +60,8 @@ def cbc_polarisations(mass1, mass2, spin1z=0.0, spin2z=0.0, distance=100.0,
                            f_lower=f_lower)
 
 
-def cbc_track(hp, hc, sample_rate, start_offset, n_points=64,
-              amplitude_floor=0.1):
+def cbc_track(hp, hc, sample_rate, start_offset, n_points=_TRACK["n_points"],
+              amplitude_floor=_TRACK["amplitude_floor"]):
     """The time-frequency track of a compact binary, as its truth.
 
     The instantaneous frequency is read from the two polarisations together,
@@ -98,8 +113,9 @@ def cbc_track(hp, hc, sample_rate, start_offset, n_points=64,
     amplitude = np.hypot(hp, hc)
     peak = int(np.argmax(amplitude))
     # Generators pad with zeros, and the phase of zero is noise: the track
-    # begins where the signal does, at a thousandth of the peak.
-    begin = int(np.argmax(amplitude > 1e-3 * amplitude[peak]))
+    # begins where the signal does, at `[mock.waveforms.cbc_track]
+    # onset_fraction` of the peak.
+    begin = int(np.argmax(amplitude > _TRACK["onset_fraction"] * amplitude[peak]))
     after = np.nonzero(amplitude[peak:] < amplitude_floor * amplitude[peak])[0]
     end = peak + (int(after[0]) if after.size else amplitude.size - peak)
 
@@ -112,7 +128,7 @@ def cbc_track(hp, hc, sample_rate, start_offset, n_points=64,
              + (begin + np.arange(frequency.size) + 0.5) * delta_t)
     frequency = np.maximum.accumulate(frequency)
 
-    f_low = max(float(frequency[0]), 1e-3)
+    f_low = max(float(frequency[0]), _TRACK["min_frequency"])
     grid = np.geomspace(f_low, float(frequency[-1]), int(n_points))
     # First crossing of each grid frequency; a flat stretch of the running
     # maximum is resolved to where it begins.
@@ -121,8 +137,9 @@ def cbc_track(hp, hc, sample_rate, start_offset, n_points=64,
     return times[index], grid
 
 
-def gaussian(sigma_t=0.005, sample_rate=2048, n_sigma=6.0):
-    """Gaussian pulse.
+def gaussian(sigma_t=_GAUSSIAN["sigma_t"], sample_rate=_MOCK["sample_rate"],
+             n_sigma=_GAUSSIAN["n_sigma"]):
+    """Gaussian pulse. Defaults: ``[mock.waveforms.gaussian]``.
 
     :type sigma_t: float
     :param sigma_t: Gaussian width, seconds.
@@ -136,8 +153,9 @@ def gaussian(sigma_t=0.005, sample_rate=2048, n_sigma=6.0):
     return np.exp(-0.5 * (t / sigma_t) ** 2)
 
 
-def sine_gaussian(f0=150.0, q=12.0, sample_rate=2048, n_tau=4.0):
-    """Sine-Gaussian burst.
+def sine_gaussian(f0=_SINE_GAUSSIAN["f0"], q=_SINE_GAUSSIAN["q"], sample_rate=_MOCK["sample_rate"],
+                  n_tau=_SINE_GAUSSIAN["n_tau"]):
+    """Sine-Gaussian burst. Defaults: ``[mock.waveforms.sine_gaussian]``.
 
     :type f0: float
     :param f0: central frequency, Hz.
@@ -154,8 +172,11 @@ def sine_gaussian(f0=150.0, q=12.0, sample_rate=2048, n_tau=4.0):
     return np.exp(-0.5 * (t / tau) ** 2) * np.sin(2.0 * np.pi * f0 * t)
 
 
-def blip(f0=250.0, q=3.0, asymmetry=3.0, sample_rate=2048, n_tau=6.0):
+def blip(f0=_BLIP["f0"], q=_BLIP["q"], asymmetry=_BLIP["asymmetry"], sample_rate=_MOCK["sample_rate"],
+         n_tau=_BLIP["n_tau"]):
     """Blip: a short, broadband burst with a fast rise and a slower decay.
+
+    Defaults: ``[mock.waveforms.blip]``.
 
     :type f0: float
     :param f0: central frequency, Hz.
@@ -175,8 +196,12 @@ def blip(f0=250.0, q=3.0, asymmetry=3.0, sample_rate=2048, n_tau=6.0):
     return np.exp(-0.5 * (t / width) ** 2) * np.sin(2.0 * np.pi * f0 * t)
 
 
-def chirplike(f_start=40.0, f_end=400.0, duration=0.5, sample_rate=2048):
+def chirplike(f_start=_CHIRPLIKE["f_start"], f_end=_CHIRPLIKE["f_end"], duration=_CHIRPLIKE["duration"],
+              sample_rate=_MOCK["sample_rate"]):
     """Frequency sweep under a Gaussian envelope, mimicking a chirping artefact.
+
+    The envelope's width is ``[mock.waveforms.chirplike] envelope_width`` of
+    the duration; the other defaults are in the same table.
 
     :type f_start: float
     :param f_start: frequency at the start of the sweep, Hz.
@@ -191,12 +216,15 @@ def chirplike(f_start=40.0, f_end=400.0, duration=0.5, sample_rate=2048):
     t = np.arange(0.0, duration, 1.0 / sample_rate)
     rate = (f_end - f_start) / duration
     phase = 2.0 * np.pi * (f_start * t + 0.5 * rate * t ** 2)
-    envelope = np.exp(-0.5 * ((t - 0.5 * duration) / (0.25 * duration)) ** 2)
+    envelope = np.exp(-0.5 * ((t - 0.5 * duration) / (_CHIRPLIKE["envelope_width"] * duration)) ** 2)
     return envelope * np.sin(phase)
 
 
-def scattered_light(f_peak=35.0, arch_period=1.0, n_arches=4, sample_rate=2048):
+def scattered_light(f_peak=_SCATTERED["f_peak"], arch_period=_SCATTERED["arch_period"],
+                    n_arches=_SCATTERED["n_arches"], sample_rate=_MOCK["sample_rate"]):
     """Scattered-light artefact: repeated low-frequency arches.
+
+    Defaults: ``[mock.waveforms.scattered_light]``.
 
     The instantaneous frequency follows `f_peak * |sin(pi t / arch_period)|`,
     which traces the arch shape these artefacts show in a spectrogram.
@@ -235,6 +263,8 @@ GLITCH_GENERATORS = {
 # radiates differently along each. Both are drawn, since neither is known in
 # advance for a real source.
 CCSN_FILE_PATTERN = "*_strains_*.txt"
+# The columns of a catalogue file, in order.
+CCSN_COLUMNS = ("time", "h_plus", "h_cross")
 
 
 def ccsn_catalogue(directory):
@@ -270,8 +300,8 @@ def ccsn_catalogue(directory):
     return found
 
 
-def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
-                       taper_seconds=0.02):
+def ccsn_polarisations(path, sample_rate=_MOCK["sample_rate"], high_pass_hz=_CCSN["high_pass_hz"],
+                       taper_seconds=_CCSN["taper_seconds"]):
     """Plus and cross polarisations of one core-collapse supernova model.
 
     The file carries the time steps the simulation took, which are neither
@@ -281,7 +311,8 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
     the band, where it would be indistinguishable from signal. The series is
     therefore put first on a uniform grid fine enough to resolve the steps the
     simulation actually took, band limited there, and only then read off at the
-    requested rate.
+    requested rate. The filters' orders and the low pass's edge are those of
+    ``[mock.waveforms.ccsn]``, with the defaults of the arguments.
 
     The overall scale is discarded, as for every generator here: the injection
     code rescales to a requested signal-to-noise ratio, so only the shape and
@@ -332,7 +363,7 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
     from wdf.filtering import sosfiltfilt
 
     table = np.loadtxt(path)
-    if table.ndim != 2 or table.shape[1] < 3 or table.shape[0] < 2:
+    if table.ndim != 2 or table.shape[1] < len(CCSN_COLUMNS) or table.shape[0] < 2:
         raise ValueError(
             f"{path} must hold at least two rows of (time, h_plus, h_cross)")
 
@@ -356,7 +387,8 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
         # Below the target Nyquist, with the transition band inside it: what
         # leaving it in would add is power folded to a frequency it was never
         # emitted at.
-        sos = butter(8, 0.45 * sample_rate / (0.5 * fine_rate),
+        sos = butter(_CCSN["anti_alias_order"],
+                     _CCSN["anti_alias_fraction_of_rate"] * sample_rate / (0.5 * fine_rate),
                      btype="lowpass", output="sos")
         columns = [sosfiltfilt(sos, column) for column in columns]
 
@@ -364,7 +396,7 @@ def ccsn_polarisations(path, sample_rate=2048, high_pass_hz=10.0,
         # Above the memory and below anything a detector responds to, applied
         # on the fine grid so the same filter serves whatever rate is asked
         # for. Zero phase, so the bounce stays where the simulation put it.
-        sos = butter(4, float(high_pass_hz) / (0.5 * fine_rate),
+        sos = butter(_CCSN["high_pass_order"], float(high_pass_hz) / (0.5 * fine_rate),
                      btype="highpass", output="sos")
         columns = [sosfiltfilt(sos, column) for column in columns]
 

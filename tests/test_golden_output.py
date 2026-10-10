@@ -41,18 +41,28 @@ DERIVED_COLUMNS = ["gpsStart", "gpsCentroid", "tSpread", "gpsPeak", "duration",
 # Symlet 4/8, Coiflet 1/2. All orthonormal. The biorthogonal B-spline family
 # (Bspline*/BsplineC*) and a plain (non-wavelet-packet) DCT both remain
 # excluded -- see WDF2Classify.cpp for why.
+# The long orthonormal mothers p4TSA added later (feature/long-wavelets; four
+# of them, Coif3, DaubC24, Sym12, Coif5, are in its default list there) and the
+# local cosine bases (feature/cosine-packets) are orthonormal too.
 ORTHONORMAL_WAVES = {
     "Haar",
     "DaubC4", "DaubC8", "DaubC12", "DaubC16", "DaubC20",
     "Sym4", "Sym8",
     "Coif1", "Coif2",
+    "DaubC24", "DaubC32", "DaubC40", "Sym10", "Sym12", "Sym16", "Sym20", "Coif3", "Coif4", "Coif5",
 }
+
+
+# The competition the fixtures were written with: p4TSA's default list before
+# feature/long-wavelets changed it. Pinned, so that the fixtures test the
+# pipeline and not which list the installed core defaults to.
+GOLDEN_BASES = "Haar,DaubC4,DaubC8,DaubC12,DaubC16,DaubC20,Sym4,Sym8,Coif1,Coif2"
 
 
 @pytest.mark.parametrize("rule, fixture", rules())
 def test_segment_process_matches_golden_output(tmp_outdir, rule, fixture):
     golden = pd.read_parquet(fixture)
-    result = run_segment_process(tmp_outdir, rule=rule)
+    result = run_segment_process(tmp_outdir, rule=rule, Bases=GOLDEN_BASES)
 
     assert len(result) == len(golden), (
         f"trigger count changed: {len(result)} vs golden {len(golden)}. "
@@ -92,7 +102,7 @@ def test_the_golden_coefficients_are_reproduced(tmp_outdir, rule, fixture):
     nothing about the pipeline.
     """
     golden = pd.read_parquet(fixture)
-    result = run_segment_process(tmp_outdir, rule=rule)
+    result = run_segment_process(tmp_outdir, rule=rule, Bases=GOLDEN_BASES)
     ulp = float(np.finfo(np.float32).eps)
 
     for row, (index, value) in enumerate(zip(golden.wt_index, golden.wt_value)):

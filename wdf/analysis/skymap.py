@@ -24,6 +24,11 @@ from __future__ import annotations
 import numpy as np
 
 from wdf.analysis.detectors import DETECTOR_VERTEX, SPEED_OF_LIGHT
+from wdf.config.constants import (GPS_EPOCH_GMST_RAD, HALF_TURN_DEG, SECONDS_PER_DAY,
+                                  SIDEREAL_PER_SOLAR_DAY, SPHERE_SOLID_ANGLE_OVER_PI)
+from wdf.config.defaults import defaults
+
+_D = defaults("skymap")
 
 # Days per sidereal day, and the Greenwich sidereal time at the GPS epoch. The
 # rotation is what turns a baseline fixed in the Earth into one fixed on the sky.
@@ -34,8 +39,8 @@ from wdf.analysis.detectors import DETECTOR_VERTEX, SPEED_OF_LIGHT
 # look like an error: it rotates every sky map by one angle and leaves every
 # internal consistency check passing, while biasing every arrival-time
 # prediction the map is built from.
-_GPS_EPOCH_GMST_RAD = 1.8272328613543891
-_SIDEREAL_RATE = 2.0 * np.pi * 1.0027379093508615 / 86400.0
+_GPS_EPOCH_GMST_RAD = GPS_EPOCH_GMST_RAD
+_SIDEREAL_RATE = 2.0 * np.pi * SIDEREAL_PER_SOLAR_DAY / SECONDS_PER_DAY
 
 
 def greenwich_sidereal_angle(gps) -> np.ndarray:
@@ -90,7 +95,7 @@ def arrival_delay(ra, dec, gps, ifo_a: str, ifo_b: str) -> np.ndarray:
     return source_direction(ra, dec, gps) @ baseline / SPEED_OF_LIGHT
 
 
-def sky_grid(n_ra: int = 360, n_dec: int = 180):
+def sky_grid(n_ra: int = _D["n_ra"], n_dec: int = _D["n_dec"]):
     """A grid over the sky, uniform in right ascension and in sine declination.
 
     Uniform in the sine so that every cell subtends the same solid angle, which
@@ -107,7 +112,7 @@ def sky_grid(n_ra: int = 360, n_dec: int = 180):
     return np.meshgrid(ra, dec)
 
 
-def localise(arrivals, spreads, n_ra: int = 360, n_dec: int = 180):
+def localise(arrivals, spreads, n_ra: int = _D["n_ra"], n_dec: int = _D["n_dec"]):
     """The sky positions consistent with a set of measured arrival times.
 
     A network of `n` detectors measures `n - 1` independent arrival-time
@@ -176,7 +181,7 @@ def localise(arrivals, spreads, n_ra: int = 360, n_dec: int = 180):
     return ra, dec, weight / total if total > 0 else weight
 
 
-def credible_area(weight, level: float = 0.9) -> float:
+def credible_area(weight, level: float = _D["credible_level"]) -> float:
     """Solid angle of the smallest region holding `level` of the weight.
 
     :param weight: a normalised sky map, as `localise` returns.
@@ -187,11 +192,11 @@ def credible_area(weight, level: float = 0.9) -> float:
     weight = np.asarray(weight, dtype=float)
     ordered = np.sort(weight.reshape(-1))[::-1]
     inside = np.searchsorted(np.cumsum(ordered), float(level)) + 1
-    cell = 4.0 * np.pi / weight.size
-    return float(inside * cell * (180.0 / np.pi) ** 2)
+    cell = SPHERE_SOLID_ANGLE_OVER_PI * np.pi / weight.size
+    return float(inside * cell * (HALF_TURN_DEG / np.pi) ** 2)
 
 
-def contains(ra_true, dec_true, ra, dec, weight, level: float = 0.9) -> bool:
+def contains(ra_true, dec_true, ra, dec, weight, level: float = _D["credible_level"]) -> bool:
     """Whether the true position falls in the `level` credible region.
 
     Over many injections the fraction for which this is true is the check the

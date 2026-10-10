@@ -27,7 +27,8 @@ TEST_PARAMS = dict(
 )
 
 
-def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None, **overrides):
+def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None, worker_class=None,
+                        **overrides):
     """Runs the real wdfUnitDSWorker.segmentProcess over the small synthetic
     noise fixture and returns the resulting trigger DataFrame. Shared by the
     golden-output regression test and the len-equivalence test.
@@ -35,6 +36,7 @@ def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None, **over
     :param rule: the rule for the coefficients of a window, a
         `py4tsa.tsa.WaveletThreshold.WaveletThresholding`; None for the
         worker's default.
+    :param worker_class: the worker to run, `wdfUnitDSWorker` when None.
     :param overrides: run parameters set on top of `TEST_PARAMS`.
     """
     from wdf.config.Parameters import Parameters
@@ -61,7 +63,7 @@ def run_segment_process(tmp_outdir, whitening_extra_size=None, rule=None, **over
     par.resampling = int(par.sampling / par.ResamplingFactor)
     del strInfo, info
 
-    worker = wdfUnitDSWorker(par)
+    worker = (worker_class or wdfUnitDSWorker)(par)
     for segment in par.segments:
         if rule is None:
             worker.segmentProcess(segment)

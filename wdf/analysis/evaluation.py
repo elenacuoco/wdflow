@@ -14,9 +14,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from wdf.config.defaults import defaults
+
+_D = defaults("evaluation")
+
 
 def temporal_split(frame: pd.DataFrame, time_column: str = "gps_candidate",
-                   train_fraction: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+                   train_fraction: float = _D["train_fraction"]) -> tuple[np.ndarray, np.ndarray]:
     """Split a candidate list in two along time.
 
     Splitting at random is not enough when the rows are candidate edges of a
@@ -145,7 +149,7 @@ def efficiency_at_far(foreground_scores, background_scores, n_injections: int,
 
 def compare_statistics(foreground: pd.DataFrame, background: pd.DataFrame,
                        statistics, n_injections: int, livetime_days: float,
-                       far_targets=(1.0, 1.0 / 7.0)) -> pd.DataFrame:
+                       far_targets=_D["far_targets"]) -> pd.DataFrame:
     """Efficiency of several ranking statistics at the same false-alarm rates.
 
     Every statistic is read from both frames, so foreground and background are

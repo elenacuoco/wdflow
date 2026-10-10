@@ -13,7 +13,7 @@ LABEL org.opencontainers.image.title="wdflow"
 LABEL org.opencontainers.image.description="WDF: un-modelled transient search in the wavelet domain"
 LABEL org.opencontainers.image.source="https://github.com/elenacuoco/wdflow"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
-LABEL org.opencontainers.image.version="1.3.0"
+LABEL org.opencontainers.image.version="1.4.0"
 
 ARG WITH_TORCH=0
 
