@@ -30,6 +30,7 @@ ARFitLevelRatio = 4.0           # largest octave power over white (and smallest,
 ARFitOwnLevelCheck = false      # also require each octave's power through the stretch's own new model within ARFitOwnLevelRatio of white (first fit, refits, sub-stretches)
 ARFitOwnLevelRatio = 4.0        # largest octave power over white (and smallest, 1 / it) through the new model; default ARFitLevelRatio
 ARModelsFrom = ""               # path of another run's ARModels-<ifo>-Search<name>.h5: apply its noise models at its switch times, no fit of its own (e.g. an injection run reusing its background run); "" = fit as above
+GlitchAtomsFrom = ""            # path of an offline run's GlitchAtoms-Search<name>.csv (M4, same rate): its atoms are subtracted from the conditioned samples before the fits, the whitening and the search; offline information, so the run is not online (OnlineRun false in parametersUsed); "" = nothing subtracted
 ARWarmup = 3000                 # samples of past the new filter runs over before it whitens (at least ARorder)
 
 # ---- the WDF search (no glitch subtraction, no gating: glitches are labelled, not removed)

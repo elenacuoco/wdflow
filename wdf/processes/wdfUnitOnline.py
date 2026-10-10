@@ -52,6 +52,19 @@ The chain, block by block of `len` seconds:
    same stretch (a background and an injection run) whiten with one model
    history. Each model was fitted on data before its switch time, so the run
    stays causal, at the same latency.
+
+   With `GlitchAtomsFrom` set to the ``GlitchAtoms`` file of an offline run
+   (`wdf.processes.wdfUnitOffline`, M4) the worker subtracts those atoms
+   from its conditioned samples, block by block, before everything else:
+   the model fits, the whitening, the census, the search and the ridge all
+   see the cleaned stream. The atoms are evaluated at the worker's rate
+   (`GlitchModel.evaluate`), which must be the rate they were fitted at.
+   They were fitted offline on the whole segment, so a run with them is not
+   an online run: it records ``OnlineRun`` false, the file, the number of
+   atoms (``GlitchAtomsLoaded``) and of conditioned blocks they reached
+   (``GlitchAtomsBlocks``). Its outputs depend on the input after their
+   emission only through the atoms; unset (the default), nothing is
+   subtracted.
 3. **The search:** `wdf` at each window of the schedule, with `Bases`,
    `MinFrequency`, `ThresholdRule`, `BlockLength`, `BlockLambda` and
    `BlockRemainder` from the parameters. **No glitch subtraction and no
@@ -539,6 +552,7 @@ class wdfUnitOnline:
         if par.ARFitExcludePad < 0:
             raise ValueError("ARFitExcludePad must not be negative")
         self._model = None
+        self._atoms = None
         if par.ARWarmup < par.ARorder:
             raise ValueError(f"ARWarmup {par.ARWarmup} samples is shorter than the model's order "
                              f"{par.ARorder}: the filter's state would not be set by real data")
@@ -759,6 +773,32 @@ class wdfUnitOnline:
         par.ARModelsReused = len(models)
         logging.info(f"online: {len(models)} noise models reused from {path}; no fit is made")
         return models
+
+    def _load_glitch_atoms(self):
+        """`GlitchAtomsFrom`: the glitch model of an offline run's
+        ``GlitchAtoms`` file, checked against this run's rate; None when
+        unset."""
+        import pandas as pd
+
+        from wdf.processes.glitch_subtraction import Atom, GlitchModel
+
+        par = self.par
+        path = str(getattr(par, "GlitchAtomsFrom", None) or _ON["GlitchAtomsFrom"])
+        par.GlitchAtomsFrom = path
+        par.OnlineRun = not path
+        if not path:
+            return None
+        atoms = [Atom(**row) for row in pd.read_csv(path).to_dict("records")]
+        rate = float(par.resampling)
+        for atom in atoms:
+            if abs(atom.rate - rate) > 1e-9 * rate:
+                raise ValueError(f"GlitchAtomsFrom {path} holds atoms fitted at {atom.rate} Hz; "
+                                 f"this run conditions to {rate} Hz")
+        par.GlitchAtomsLoaded = len(atoms)
+        par.GlitchAtomsBlocks = 0
+        logging.warning(f"online: {len(atoms)} glitch atoms of an offline run subtracted from the "
+                        f"conditioned stream ({path}); this run is not an online run")
+        return GlitchModel(atoms)
 
     def _filter_of(self, ar, now):
         """The whitening filter of a model in this mode (no warm-up)."""
@@ -1081,7 +1121,20 @@ class wdfUnitOnline:
     def _condition(self, ds, raw, t):
         """The conditioned samples a read releases and the time of the first:
         at once in the causal band-pass, one block late in the zero-phase one
-        (None while its future is arriving)."""
+        (None while its future is arriving). With `GlitchAtomsFrom`, the
+        atoms that reach them are subtracted."""
+        y, start = self._band_pass(ds, raw, t)
+        if y is None or self._atoms is None:
+            return y, start
+        model = self._atoms.evaluate(start, float(self.par.resampling), len(y))
+        if model is None:
+            return y, start
+        self.par.GlitchAtomsBlocks += 1
+        return np.asarray(y, dtype=float) - model, start
+
+    @staticmethod
+    def _band_pass(ds, raw, t):
+        """`_condition` without the atoms: the band-pass and decimation."""
         if ds.phase == "causal":
             return ds.process_array(raw, t)
         from wdf.processes.BandPassDownSampling import SV_to_array
@@ -1259,6 +1312,7 @@ class wdfUnitOnline:
         self.result = OnlineResult()
         self._model, self._first_tried, self._sub_tried = None, [], []
         self._reused = self._load_reused()
+        self._atoms = self._load_glitch_atoms()
         rate = float(par.resampling)
         ds = BandPassDownSampling(par)
         par.BandPassFilter, par.BandPassPassband = ds.family, list(ds.passband())

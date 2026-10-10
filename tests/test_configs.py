@@ -239,3 +239,34 @@ def test_every_key_has_a_default_or_is_required(path):
         if defaults:
             assert any(_kind(value) == _kind(d) for d in defaults), \
                 f"{key} = {value!r}; its default is {held[key]}"
+
+
+C20 = os.path.join(ROOT, "configs", "offline_c20.toml")
+
+
+def test_the_offline_c20_configuration_is_the_offline_one_from_20_hz():
+    """configs/offline_c20.toml is offline_default.toml with the C20 search band, ridge
+    map and input rate, its keys commented and read, and it builds its worker."""
+    off, c20 = load_config(CONFIGS["offline"], "H1"), load_config(C20, "H1")
+    a, b = vars(off), vars(c20)
+    assert {k for k in set(a) | set(b) if a.get(k) != b.get(k)} == {
+        "ConfigFile", "SearchName", "run", "sampling", "MinFrequency", "RidgeLowFrequency",
+        "RidgeBasis"}
+    assert (c20.sampling, c20.MinFrequency, c20.RidgeLowFrequency, c20.RidgeBasis) == \
+        (4096, 20.0, 20.0, "LocalCos64")
+    assert load_config(C20, "V1").ZeroPhaseDuration == 32.0
+    for key, line in assignments(C20):
+        assert "#" in line, f"{key} has no comment"
+        if key not in LAYOUT:
+            assert re.search(rf"[\"']{key}[\"']|\.{key}\b", SOURCE), f"nothing reads {key}"
+
+
+def test_the_offline_c20_worker_builds_at_2048_hz():
+    pytest.importorskip("py4tsa")
+    from wdf.analysis.ridge_tracking import RidgeSettings
+    from wdf.processes.wdfUnitOffline import wdfUnitOffline
+
+    worker = wdfUnitOffline(load_config(C20, "L1", channel="L1:X", file="x.gwf"))
+    assert worker.par.SearchName == "offline_c20" and float(worker.par.resampling) == 2048.0
+    rs = RidgeSettings.from_parameters(worker.par, float(worker.par.resampling))
+    assert rs.edges()[0] == 20.0

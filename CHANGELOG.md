@@ -559,6 +559,36 @@ key of `wdf/config/defaults.toml` table by table. It is generated from the
 defaults file and the configurations (`docs/generate_configuration.py`), and
 a test fails when it is stale.
 
+#### The online worker on samples cleaned by an offline run's M4 atoms
+
+`wdfUnitOnline` takes `GlitchAtomsFrom`, the path of an offline run's
+`GlitchAtoms-Search<name>.csv`. Its atoms are evaluated at the worker's rate
+(`GlitchModel.evaluate`) and subtracted from the conditioned samples, block by
+block, before the model fits, the whitening, the census, the search and the
+ridge; a file at another rate is refused. The atoms are offline information,
+so `parametersUsed` records `OnlineRun` false with `GlitchAtomsLoaded` and
+`GlitchAtomsBlocks`. Unset (the default, in the three online configurations)
+nothing is subtracted and the outputs are those of the online run, bit for
+bit (tested); with a file, the subtraction equals the atoms laid on the
+conditioned samples outside the worker, and no output within the declared
+latency depends on the input or on an atom after it (tested).
+
+#### A shipped offline configuration from 20 Hz: `configs/offline_c20.toml`
+
+`configs/offline_default.toml` with `MinFrequency` and `RidgeLowFrequency`
+at 20 Hz, `RidgeBasis` "LocalCos64", `sampling` 4096 and `SearchName` and
+`run` "offline_c20". It is a column of the configuration reference, and a
+test checks that it differs from `offline_default.toml` in these keys only.
+
+#### The offline follow-up procedure
+
+`docs/design/online-offline.md` describes the offline follow-up of a
+stretch: `offline_network` with `configs/offline_c20.toml` (census,
+coincidence protection, M4 fit, per-detector and network ridges at zero lag),
+then the online worker with `GlitchAtomsFrom`, each output and how to read
+it, the limit of the coincidence protection, and what the library does not
+provide yet. The configuration reference links to it.
+
 ### Changed
 
 #### All analysis defaults now live in `wdf/config/defaults.toml`

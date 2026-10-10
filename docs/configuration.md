@@ -18,152 +18,158 @@ same file. "unset" is a default the code derives, as the meaning states;
 Units: samples are samples of the decimated stream; "fraction of Nyquist"
 is a fraction of the Nyquist frequency of that stream; "-" is dimensionless.
 
+The flows these configurations run, and the offline follow-up of a stretch
+with `configs/offline_c20.toml`, are described in
+[Online and offline](design/online-offline.md).
+
 ## Keys of the shipped configurations
 
 Default is the value of every table of the defaults file holding the key
 (a key read by several stages has one default per stage); the meaning is the
-shipped configurations' comment. The four columns that follow are the shipped configurations, a value set per
+shipped configurations' comment. The five columns that follow are the shipped configurations, a value set per
 detector given as `H1/L1/V1`; -- is a key the file does not set.
 
-| Key | Default | Unit | online | online zero-phase | online zero-phase track | offline | Meaning |
-|---|---|---|---|---|---|---|---|
-| `SearchName` | `"online"` (`[worker.online.causal]`)<br>`"online_zerophase"` (`[worker.online.zerophase]`)<br>`"AllSky"` (`[alerts]`) | name | `"online"` | `"online_zerophase"` | `"online_zerophase_track"` | `"offline"` | name in every output file, so that two searches never overwrite each other |
-| `run` | required |  | `"online"` | `"online_zerophase"` | `"online_zerophase_track"` | `"offline"` | output subfolder under outdir |
-| `outdir` | required |  | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | output root; override per run |
-| `ResamplingFactor` | `1` | - | `2` | `2` | `2` | `2` | decimation factor: 4096 Hz GWOSC strain -> 2048 Hz (use 8 for 16384 Hz) |
-| `len` | required |  | `1.0` | `1.0` | `1.0` | `120.0` | read block, s: the latency granularity of every output |
-| `BandPassFilter` | `"cheby2"` | name | `"butterworth"` | `"butterworth"` | `"butterworth"` | `"butterworth"` | high-pass and low-pass Butterworth cascade, no zeros inside the band |
-| `BandPassPhase` | `"zero"` (`[worker.offline]`)<br>`"causal"` (`[worker.online.causal]`)<br>`"zero"` (`[worker.online.zerophase]`)<br>`"zero"` (`[bandpass]`) | name | `"causal"` | `"zero"` | `"zero"` | `"zero"` | forward only with the state carried across blocks (sosfilt), no read-ahead |
-| `LowFrequencyCut` | `4.0` | Hz | `8.0` | `8.0` | `8.0` | `8.0` | high-pass corner, Hz |
-| `HighPassOrder` | `4` | count | `4` | `4` | `4` | `4` | high-pass order |
-| `LowPassCornerFraction` | `0.87890625` | fraction of Nyquist | `0.87890625` | `0.87890625` | `0.87890625` | `0.87890625` | low-pass corner as a fraction of the decimated Nyquist (900 Hz at 2048 Hz) |
-| `AliasAttenuationDB` | `50.0` | dB | `50.0` | `50.0` | `50.0` | `50.0` | required \|H\| attenuation at resampling - corner; sets the (causal, higher) low-pass order |
-| `ARorder` | required |  | 3000/3000/16000 | 3000/3000/16000 | 3000/3000/16000 | 3000/3000/16000 | autoregressive order, samples; V1 overrides below |
-| `learn` | required |  | 300/300/600 | 300/300/600 | 300/300/600 | 300/300/600 | fit stretch, s, ending ARFitGap before the model starts whitening; V1 overrides below |
-| `ARFitGap` | `0.0` | s | `0.0` | `0.0` | `0.0` | -- | s between the fit stretch's end and the start of its use |
-| `ARFitContext` | `20.0` | s | `5.0` | `5.0` | `5.0` | `5.0` | band-pass settling read before the first fit stretch, s |
-| `ARRefitInterval` | `0.0` | s | `1800.0` | `1800.0` | `1800.0` | -- | refit from the past every this many s (0 = never) |
-| `ARFitQuality` | `true` | bool | `true` | `true` | `true` | -- | choose each fit stretch from the past by the quality rule: no census transient reaching GlitchTrigger; for a refit, octave power through the current model within ARFitLevelRatio of white |
-| `ARFitCandidates` | `3` | count | `3` | `3` | `3` | -- | stretches tried: a refit goes back ARFitStep at a time and keeps the current model if none passes; the first fit waits ARFitStep at a time, then takes the least loud |
-| `ARFitStep` | unset | s | `150.0` | `150.0` | `150.0` | -- | s between two candidate stretches (learn / 2) |
-| `ARFitLevelRatio` | `4.0` | - | `4.0` | `4.0` | `4.0` | -- | largest octave power over white (and smallest, 1 / it) of a refit's stretch through the current model |
-| `ARFitOwnLevelCheck` | `false` | bool | `false` | `false` | `false` | -- | also require each octave's power through the stretch's own new model within ARFitOwnLevelRatio of white (first fit, refits, sub-stretches) |
-| `ARFitOwnLevelRatio` | unset | - | `4.0` | `4.0` | `4.0` | -- | largest octave power over white (and smallest, 1 / it) through the new model; default ARFitLevelRatio |
-| `ARModelsFrom` | `""` | path | `""` | `""` | `""` | -- | path of another run's ARModels-<ifo>-Search<name>.h5: apply its noise models at its switch times, no fit of its own (e.g. an injection run reusing its background run); "" = fit as above |
-| `ARWarmup` | unset | samples | 3000/3000/16000 | 3000/3000/16000 | 3000/3000/16000 | -- | samples of past the new filter runs over before it whitens (at least ARorder) |
-| `window` | required |  | `1024` | `1024` | `1024` | `1024` | analysis window, samples (0.5 s at 2048 Hz) |
-| `overlap` | required |  | `256` | `256` | `256` | `256` | overlap of consecutive windows, samples |
-| `threshold` | required |  | `5.0` | `5.0` | `5.0` | `5.0` | EnWDF threshold of a window |
-| `ThresholdRule` | `"block"` | name | `"block"` | `"block"` | `"block"` | `"block"` | rule for a window's coefficients: block (Cai), dohonojohnston or cuoco |
-| `BlockLength` | `0` | count | `0` | `0` | `0` | `0` | block rule's L, coefficients; 0 = round(ln window) = 7 at 1024 |
-| `BlockLambda` | unset | - | `4.505` | `4.505` | `4.505` | `4.505` | block rule's lambda (calibrated for L about 7) |
-| `BlockRemainder` | unset | name | `"merge"` | `"merge"` | `"merge"` | `"merge"` | a run's short remainder joins the block before it |
-| `MinFrequency` | unset | Hz | `16.0` | `16.0` | `16.0` | `16.0` | coefficients whose tile lies at or below 16 Hz leave sigma, the block rule and EnWDF |
-| `Bases` | unset | name | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | wavelet competition of each window |
-| `GlitchLabel` | `"census"` | name | `"census"` | `"census"` | `"census"` | -- | label of a trigger (kept either way): "census" = "glitch" when its window meets a transient of the causal census of the whitened stream; "bases" = won by GlitchLabelBases |
-| `GlitchLabelBases` | `["Haar", "DaubC4"]` | name | `["Haar", "DaubC4"]` | `["Haar", "DaubC4"]` | `["Haar", "DaubC4"]` | -- | with GlitchLabel = "bases": a trigger won by one of these bases is labelled "glitch" |
-| `GlitchTrigger` | `13.64` | - | `13.64` | `13.64` | `13.64` | `13.64` | census: smallest peak of a transient, robust sigma of each octave from GlitchCensusLow (default MinFrequency) |
-| `GlitchFlag` | `6.0` | - | `6.0` | `6.0` | `6.0` | `6.0` | census: level of a transient's samples, robust sigma |
-| `GlitchMergeGap` | `0.25` | s | `0.25` | `0.25` | `0.25` | `0.25` | census: largest gap inside one transient, s |
-| `GlitchSeedPad` | `0.1` | s | `0.1` | `0.1` | `0.1` | `0.1` | census: s added on each side of a transient's extent (broadband and octaves from 4 x GlitchCensusLow) |
-| `GlitchCensusMemory` | `64.0` | s | `64.0` | `64.0` | `64.0` | -- | census: s of past each octave's robust sigma is measured on |
-| `GlitchCensusMinimum` | `8.0` | s | `8.0` | `8.0` | `8.0` | -- | census: s of past needed before the census starts |
-| `Ridge` | `false` (`[worker.offline]`)<br>`true` (`[worker.online]`) | bool | `true` | `true` | `true` | `true` | streaming ridge, past only |
-| `RidgeBasis` | `"LocalCos128"` | name | `"LocalCos128"` | `"LocalCos128"` | `"LocalCos64"` | `"LocalCos128"` | dense window coefficients of the map: 62.5 ms x 8 Hz tiles at 2048 Hz |
-| `RidgeWindow` | unset | samples | `1024` | `1024` | `1024` | `1024` | map window, samples |
-| `RidgeOverlap` | unset | samples | `256` | `256` | `256` | `256` | map overlap, samples; each window's central 768 samples are used |
-| `RidgeDechirpAlphas` | `[]` | Hz/s | `[]` | `[]` | `[]` | `[]` | dechirped local cosine sweeps, Hz/s; empty = none (not in the default) |
-| `RidgeSlot` | `0.03125` | s | `0.03125` | `0.03125` | `0.03125` | `0.03125` | slot, s (1/32 s) |
-| `RidgeOctaveStep` | `0.25` | octaves | `0.25` | `0.25` | `0.25` | `0.25` | state width, octaves |
-| `RidgeLowFrequency` | unset | Hz | `16.0` | `16.0` | `16.0` | `16.0` | lowest state edge, Hz |
-| `RidgeBackground` | `256.0` | s | `256.0` | `256.0` | `256.0` | `256.0` | rolling background strictly behind the current slot, s |
-| `RidgeBackgroundUpdate` | `8.0` | s | `8.0` | `8.0` | `8.0` | `8.0` | background update period, s |
-| `RidgeBackgroundMinimum` | `64.0` | s | `64.0` | `64.0` | `64.0` | `64.0` | past background needed before a slot is scored, s |
-| `RidgeBackgroundClip` | `5.0` | - | `5.0` | `5.0` | `5.0` | `5.0` | background sigma clipping, standard deviations |
-| `RidgeBackgroundIterations` | `3` | count | `3` | `3` | `3` | `3` | clipping iterations |
-| `RidgeLambda` | unset | 1/octave | `0.502` | `0.502` | `0.502` | `0.502` | penalty per octave beyond the allowance: 1 / (2.262 - 0.27), ridge v2 |
-| `RidgeAllowance` | `0.27` | octaves | `0.27` | `0.27` | `0.27` | `0.27` | free move per slot, octaves (fastest inspiral sweep, IMRPhenomD Mc 1-30) |
-| `RidgeDrift` | unset | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | per-cell drift b: calibrated once on the past background |
-| `RidgeXDrop` | unset | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | episode X-drop: calibrated with b |
-| `RidgeThreshold` | `0.0` | - | `0.0` | `0.0` | `0.0` | `0.0` | smallest candidate score emitted; no false-alarm calibration exists yet |
-| `RidgeMaxSlots` | unset | count | `512` | `512` | `512` | `512` | longest path, slots (16 s): bounds the ring buffers |
-| `RidgeWaveformStates` | `1` | count | `1` | `1` | `1` | `1` | states added on each side of the path for its waveform |
-| `RidgeCalibrationSeeds` | `2000` | count | `2000` | `2000` | `2000` | `2000` | random starts of the drift calibration |
-| `RidgeCalibrationSteps` | `64` | count | `64` | `64` | `64` | `64` | slots each start is followed |
-| `RidgeCalibrationKept` | `2.0` | count | `2.0` | `2.0` | `2.0` | `2.0` | largest median extension into noise, slots |
-| `RidgeCalibrationGridStep` | `0.05` | - | `0.05` | `0.05` | `0.05` | `0.05` | step of the drifts tried, from 0 |
-| `RidgeCalibrationGridMax` | `3.0` | - | `3.0` | `3.0` | `3.0` | `3.0` | largest drift tried |
-| `RidgeXDropSlots` | `8` | count | `8` | `8` | `8` | `8` | span of the drop, slots |
-| `RidgeXDropPercentile` | `99.0` | percent | `99.0` | `99.0` | `99.0` | `99.0` | noise percentile that sets X |
-| `Reconstruction` | `"wavegram"` | name | `"wavegram"` | `"wavegram"` | `"track"` | `"wavegram"` | stage 2: "wavegram" or "track"; "track" also makes the worker write TrackEvents/TrackWaveforms |
-| `Coincidence` | `"wavegram"` | name | `"wavegram"` | `"wavegram"` | `"track"` | `"wavegram"` | stage 3: "wavegram" or "track", the same as Reconstruction |
-| `Scorer` | `"classic"` | name | `"classic"` | `"classic"` | `"classic"` | `"classic"` | stage 4: "classic" (NetworkRankColumn) or "gnn" (GNNModel, column gnn_logit) |
-| `GNNModel` | unset | path | `""` | `""` | `""` | `""` | path of a saved GNNCoincidenceScorer; required by Scorer = "gnn" |
-| `NetworkRankColumn` | `"network_morphology"` (`[network.wavegram]`)<br>`"track_statistic"` (`[network.track]`) | name | `"network_morphology"` | `"network_morphology"` | `"track_statistic"` | `"network_morphology"` | candidate-table column the classic scorer ranks on: coherent tile energy \|tile_coherence\|; "network_enwdf" = hypot of the two EnWDF; "track_statistic" on the track path |
-| `NetworkComparisonBin` | `2.0` | - | `2.0` | `2.0` | `2.0` | `2.0` | comparison map bin, in units of the network's longest light travel time; 0 = none |
-| `NetworkEventInstant` | `"peak"` | name | `"peak"` | `"peak"` | `"peak"` | `"peak"` | wavegram path: an event's instant for gps_candidate and the pair's dt: "peak" (loudest tile), "centroid" (EnWDF-weighted), "envelope" (analytic-envelope peak of the reconstruction), "coarse" (peak as candidate time; the assignment does not weigh dt) |
-| `NetworkEnvelopeWidth` | `"window"` | s | `"window"` | `"window"` | `"window"` | `"window"` | wavegram path: search width of "envelope" about gpsPeak: "window" = the event's analysis window, or s |
-| `NetworkLagCut` | `"none"` | name | `"none"` | `"none"` | `"none"` | `"none"` | wavegram path: lag of the two stitched reconstructions (arrival_time_difference): "none", "cut" (\|lag\| <= the pair's window) or "penalty" (rank x 1/(1+(excess/scale)^2)) |
-| `NetworkLagWindow` | `"coincidence"` | name | `"coincidence"` | `"coincidence"` | `"coincidence"` | `"coincidence"` | wavegram path: the pair's lag window: "coincidence" = the classical coincidence's tolerance (CoincidenceConfig.timing_tolerance, the events' tSpread); "travel_plus_tolerance" = light travel + NetworkLagTolerance |
-| `NetworkLagTolerance` | `0.01` | s | `0.01` | `0.01` | `0.01` | `0.01` | wavegram path: s added to the light travel time with NetworkLagWindow = "travel_plus_tolerance" |
-| `NetworkLagScale` | `"window"` | s | `"window"` | `"window"` | `"window"` | `"window"` | wavegram path: scale of the lag penalty: "window" = the pair's own window, or s |
-| `NetworkLagSearch` | unset | s | `0.25` | `0.25` | `0.25` | `0.25` | wavegram path: half-width of the lag search, s |
-| `NetworkGlitchVeto` | `"none"` | name | `"none"` | `"none"` | `"none"` | `"none"` | wavegram path, with the detectors' census: a census transient with none in the other detector within light travel + NetworkGlitchTolerance is a single-detector glitch (glitch_single_ifo): "none" = report, "veto" = drop the pair, "penalty" = rank x NetworkGlitchFactor |
-| `NetworkGlitchTolerance` | `0.01` | s | `0.01` | `0.01` | `0.01` | `0.01` | wavegram path: s added to the light travel time for two transients to be coincident |
-| `NetworkGlitchFactor` | `0.1` | - | `0.1` | `0.1` | `0.1` | `0.1` | wavegram path: rank factor of a single-detector glitch with "penalty" |
-| `NetworkPenaltySpace` | `"auto"` | name | `"auto"` | `"auto"` | `"auto"` | `"auto"` | wavegram path: how a penalty acts on the ranking column: "multiply" (statistic x factor, non-negative statistics), "log-odds" (logit + log factor) or "auto" (log-odds with Scorer = "gnn", multiply otherwise) |
-| `NetworkSlides` | `0` | count | `0` | `0` | `0` | `0` | time slides of the background (0 = no background, no FAR) |
-| `NetworkSlideStep` | `4.0` | s | `4.0` | `4.0` | `4.0` | `4.0` | step between two slides, s |
-| `NetworkMemory` | `64.0` | s | `64.0` | `64.0` | `64.0` | `64.0` | s of detector outputs NetworkStream holds online |
-| `TrackLookback` | `4.0` | s | `4.0` | `4.0` | `4.0` | `4.0` | track path: s of map searched before a seed's window |
-| `TrackHorizon` | `1.0` | s | `1.0` | `1.0` | `1.0` | `1.0` | track path: s of map after it; adds to the declared latency online (TrackLatency_s) |
-| `TrackBasis` | unset | name | `"LocalCos128"` | `"LocalCos128"` | `"LocalCos64"` | `"LocalCos128"` | track path: waveform basis, LocalCos64 \| LocalCos128 \| CosinePackets<m> (best basis, segments from m samples) |
-| `TrackSeedStates` | `1` | count | `1` | `1` | `1` | `1` | track path: states either side of the seed's loudest tile the track must pass |
-| `TrackPacketCost` | `"entropy"` | name | `"entropy"` | `"entropy"` | `"entropy"` | `"entropy"` | track path: cosine-packet best-basis cost, l1 \| entropy \| wdfUniversal \| wdfBlock |
-| `TrackOverlapPolicy` | `"drop"` | name | `"drop"` | `"drop"` | `"supersede"` | `"drop"` | track path, online: a track of a later drain sharing map cells with an emitted track: "drop" = discarded (seeds counted absorbed); "supersede" = emitted in their place when its score is higher, with their seeds and their ids in track_supersedes |
-| `TrackOverlapMemory` | `256` | count | `256` | `256` | `256` | `256` | track path, online: the most recently emitted tracks a later track is checked against for overlap |
-| `TrackEventInstant` | `"peak"` | name | `"peak"` | `"peak"` | `"peak"` | `"peak"` | track path: the event's instant gpsPeak (candidate time, pair dt): "peak" = peak of the waveform's envelope; "end" = end of the track's last slot |
-| `TrackLambda` | `3.7` | 1/octave | `3.7` | `3.7` | `3.7` | `3.7` | track path: penalty per octave of a move beyond the allowance (stiff, as ridge v1) |
-| `TrackMcRange` | `[1.0, 30.0]` | Msun | `[1.0, 30.0]` | `[1.0, 30.0]` | `[1.0, 30.0]` | `[1.0, 30.0]` | track path: chirp masses (solar, detector frame) whose largest one-slot sweep from the lower state is the allowance |
-| `TrackAllowanceMax` | `0.27` | octaves | `0.27` | `0.27` | `0.27` | `0.27` | track path: largest allowance, octaves per slot (bounds it near coalescence); symmetric up and down |
-| `TrackDrift` | `"calibrate"` | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | track path: per-cell drift of the track's alignment; calibrated on the background with the track's penalty |
-| `TrackXDrop` | `"calibrate"` | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | track path: X-drop of the track's alignment; calibrated with TrackDrift |
-| `TrackCalibrationQuantile` | `90.0` | percent | `90.0` | `90.0` | `90.0` | `90.0` | track path: percentile of the slots a track runs on into noise held at RidgeCalibrationKept by the drift calibration |
-| `TrackCalibrationSeeds` | `500` | count | `500` | `500` | `500` | `500` | track path: random starts of the track's drift calibration on the background (the map's takes RidgeCalibrationSeeds) |
-| `TrackTimingJitter` | `0.0035` | s | `0.0035` | `0.0035` | `0.0035` | `0.0035` | track path: s added to the light travel time for the lag search and the f(t) comparison |
-| `TrackFrequencyTolerance` | `0.5` | octaves | `0.5` | `0.5` | `0.5` | `0.5` | track path: largest \|d log2 f\| between two compatible tracks, octaves |
-| `TrackMinCommonFraction` | `0.5` | - | `0.5` | `0.5` | `0.5` | `0.5` | track path, admission (a): least fraction of the SHORTER track over which the two f(t) agree within TrackFrequencyTolerance |
-| `TrackMinCommonCycles` | `2.0` | count | `2.0` | `2.0` | `2.0` | `2.0` | track path, admission (a): least cycles at the tracks' frequency over that time (coherence needs cycles: 50 ms at 40 Hz, 10 ms at 200 Hz) |
-| `TrackMinCommonDuration` | `0.0` | s | `0.0` | `0.0` | `0.0` | `0.0` | track path, admission (a): optional absolute floor on that time, s (0 = none) |
-| `TrackSlotTolerance` | `0.0` | - | `0.0` | `0.0` | `0.5` | `0.0` | track path, admission (a): fraction of a slot by which a slot centre may lie outside the other track's centre range and still be compared (0 = exact boundary, the comparison then depends on the two slot grids' alignment: zero lag aligned, time slides not; 0.5 reads both alike) |
-| `TrackCommonRule` | `"all"` | name | `"all"` | `"all"` | `"all"` | `"all"` | track path, admission (a): "all" = fraction, cycles and duration minima all hold; "duration-or-fraction" = the cycles, and the fraction or the absolute duration (when TrackMinCommonDuration > 0) |
-| `TrackLagSearch` | `0.1` | s | `0.1` | `0.1` | `0.1` | `0.1` | track path: half-width of the coherence's lag search, s, or "physical" (= light travel time + TrackTimingJitter); admission (b) needs \|lag\| <= light travel time + TrackTimingJitter |
-| `TrackCoherenceMin` | `"none"` | - | `"none"` | `"none"` | `"none"` | `"none"` | track path, admission (c): "none" = no coherence cut, the coherence ranks (track_statistic) and the FAR decides; a number = least \|Gamma\|; "calibrate" = TrackCoherencePercentile of \|Gamma\| on the run's time-slid pairs |
-| `TrackCoherencePercentile` | `99.0` | percent | `99.0` | `99.0` | `99.0` | `99.0` | track path: noise percentile of the calibration (TrackCoherenceMin = "calibrate") |
-| `TrackCalibrationSlides` | `100` | count | `100` | `100` | `100` | `100` | track path: time slides of the calibration (step NetworkSlideStep) |
-| `TrackCalibrationMinimum` | `20` | count | `20` | `20` | `20` | `20` | track path: slid pairs passing (a) and (b) needed; fewer = every slid pair the classical rule forms |
-| `TrackGraphBasis` | `"LocalCos64"` | name | `"LocalCos64"` | `"LocalCos64"` | `"LocalCos64"` | `"LocalCos64"` | track path with Scorer = "gnn": basis of the node maps drawn from the waveforms |
-| `WhiteningMode` | `"causal"` | name | -- | `"zerophase"` | `"zerophase"` | -- | TruncatedWhitening with a fixed read-ahead; "causal" = the online prediction-error filter |
-| `ZeroPhaseFilter` | `"root"` (`[worker]`)<br>`"truncated"` (`[worker.online.zerophase]`) | name | -- | `"truncated"` | `"truncated"` | `"truncated"` | TruncatedWhitening: the model's inverse ASD truncated to ZeroPhaseDuration (fixed support, fixed latency) |
-| `ZeroPhaseDuration` | unset | s | -- | --/--/32.0 | --/--/32.0 | --/--/32.0 | truncation of the whitening filter, s; reads ahead half of it, 8 s; V1 overrides below |
-| `HoldOutsideBand` | `false` | bool | -- | `false` | `false` | `false` | whiten the full band (the whitening also inverts the band-pass), as offline |
-| `AREstimationOffset` | `50.0` | s | -- | -- | -- | `50.0` | fit stretch start, s after the segment start (a quiet stretch: choose per segment) |
-| `preWhite` | required |  | -- | -- | -- | `4` | warm-up, s (lengthened automatically to the whitening's latency) |
-| `WhiteningModel` | `"burg"` | name | -- | -- | -- | `"burg"` | the whitening is built from the Burg AR model |
-| `GlitchSubtraction` | `false` | bool | -- | -- | -- | `true` | subtract whitened sine-Gaussians fitted to the loud transients |
-| `GlitchQs` | `[1.0, 2.0, 4.0, 8.0, 16.0]` | - | -- | -- | -- | `[1.0, 2.0, 4.0, 8.0, 16.0]` | quality factors of the atom bank |
-| `GlitchFrequencyCount` | `40` | count | -- | -- | -- | `40` | bank frequencies, log-spaced from LowFrequencyCut |
-| `GlitchTopFraction` | `0.83984375` | fraction of Nyquist | -- | -- | -- | `0.83984375` | top bank frequency over the decimated Nyquist (860 Hz at 2048 Hz) |
-| `GlitchAtomCutTau` | `5.0` | - | -- | -- | -- | `5.0` | atoms cut at this many tau on each side |
-| `GlitchCensusLow` | unset | Hz | -- | -- | -- | `16.0` | lowest census octave, Hz (= MinFrequency) |
-| `GlitchExtentLow` | unset | Hz | -- | -- | -- | `64.0` | lowest octave a transient's extent is read from, Hz (skips the whitening's memory) |
-| `GlitchStopSNR` | `6.0` | - | -- | -- | -- | `6.0` | the pursuit stops when the best atom is below this whitened SNR |
-| `GlitchMaxAtoms` | `100` | count | -- | -- | -- | `100` | ... or after this many atoms per seed |
-| `GlitchOctaveOrder` | `8` | count | -- | -- | -- | `8` | Butterworth order of the census's octave filters |
-| `GlitchCleanFitStretch` | `true` | bool | -- | -- | -- | `true` | the AR fit stretch is cleaned by M4 and refitted when it holds a transient |
-| `GlitchProtectCoincident` | `true` | bool | -- | -- | -- | `true` | a seed in two or more detectors within light travel + jitter is NOT subtracted |
-| `GlitchCoincidenceJitter` | `0.01` | s | -- | -- | -- | `0.01` | added to the light travel time, s |
-| `RidgeWaveforms` | `10` | count | -- | -- | -- | `10` | candidates whose waveform energy is computed |
+| Key | Default | Unit | online | online zero-phase | online zero-phase track | offline | offline C20 | Meaning |
+|---|---|---|---|---|---|---|---|---|
+| `SearchName` | `"online"` (`[worker.online.causal]`)<br>`"online_zerophase"` (`[worker.online.zerophase]`)<br>`"AllSky"` (`[alerts]`) | name | `"online"` | `"online_zerophase"` | `"online_zerophase_track"` | `"offline"` | `"offline_c20"` | name in every output file, so that two searches never overwrite each other |
+| `run` | required |  | `"online"` | `"online_zerophase"` | `"online_zerophase_track"` | `"offline"` | `"offline_c20"` | output subfolder under outdir |
+| `outdir` | required |  | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | output root; override per run |
+| `ResamplingFactor` | `1` | - | `2` | `2` | `2` | `2` | `2` | decimation factor: 4096 Hz GWOSC strain -> 2048 Hz (use 8 for 16384 Hz) |
+| `len` | required |  | `1.0` | `1.0` | `1.0` | `120.0` | `120.0` | read block, s: the latency granularity of every output |
+| `BandPassFilter` | `"cheby2"` | name | `"butterworth"` | `"butterworth"` | `"butterworth"` | `"butterworth"` | `"butterworth"` | high-pass and low-pass Butterworth cascade, no zeros inside the band |
+| `BandPassPhase` | `"zero"` (`[worker.offline]`)<br>`"causal"` (`[worker.online.causal]`)<br>`"zero"` (`[worker.online.zerophase]`)<br>`"zero"` (`[bandpass]`) | name | `"causal"` | `"zero"` | `"zero"` | `"zero"` | `"zero"` | forward only with the state carried across blocks (sosfilt), no read-ahead |
+| `LowFrequencyCut` | `4.0` | Hz | `8.0` | `8.0` | `8.0` | `8.0` | `8.0` | high-pass corner, Hz |
+| `HighPassOrder` | `4` | count | `4` | `4` | `4` | `4` | `4` | high-pass order |
+| `LowPassCornerFraction` | `0.87890625` | fraction of Nyquist | `0.87890625` | `0.87890625` | `0.87890625` | `0.87890625` | `0.87890625` | low-pass corner as a fraction of the decimated Nyquist (900 Hz at 2048 Hz) |
+| `AliasAttenuationDB` | `50.0` | dB | `50.0` | `50.0` | `50.0` | `50.0` | `50.0` | required \|H\| attenuation at resampling - corner; sets the (causal, higher) low-pass order |
+| `ARorder` | required |  | 3000/3000/16000 | 3000/3000/16000 | 3000/3000/16000 | 3000/3000/16000 | 3000/3000/16000 | autoregressive order, samples; V1 overrides below |
+| `learn` | required |  | 300/300/600 | 300/300/600 | 300/300/600 | 300/300/600 | 300/300/600 | fit stretch, s, ending ARFitGap before the model starts whitening; V1 overrides below |
+| `ARFitGap` | `0.0` | s | `0.0` | `0.0` | `0.0` | -- | -- | s between the fit stretch's end and the start of its use |
+| `ARFitContext` | `20.0` | s | `5.0` | `5.0` | `5.0` | `5.0` | `5.0` | band-pass settling read before the first fit stretch, s |
+| `ARRefitInterval` | `0.0` | s | `1800.0` | `1800.0` | `1800.0` | -- | -- | refit from the past every this many s (0 = never) |
+| `ARFitQuality` | `true` | bool | `true` | `true` | `true` | -- | -- | choose each fit stretch from the past by the quality rule: no census transient reaching GlitchTrigger; for a refit, octave power through the current model within ARFitLevelRatio of white |
+| `ARFitCandidates` | `3` | count | `3` | `3` | `3` | -- | -- | stretches tried: a refit goes back ARFitStep at a time and keeps the current model if none passes; the first fit waits ARFitStep at a time, then takes the least loud |
+| `ARFitStep` | unset | s | `150.0` | `150.0` | `150.0` | -- | -- | s between two candidate stretches (learn / 2) |
+| `ARFitLevelRatio` | `4.0` | - | `4.0` | `4.0` | `4.0` | -- | -- | largest octave power over white (and smallest, 1 / it) of a refit's stretch through the current model |
+| `ARFitOwnLevelCheck` | `false` | bool | `false` | `false` | `false` | -- | -- | also require each octave's power through the stretch's own new model within ARFitOwnLevelRatio of white (first fit, refits, sub-stretches) |
+| `ARFitOwnLevelRatio` | unset | - | `4.0` | `4.0` | `4.0` | -- | -- | largest octave power over white (and smallest, 1 / it) through the new model; default ARFitLevelRatio |
+| `ARModelsFrom` | `""` | path | `""` | `""` | `""` | -- | -- | path of another run's ARModels-<ifo>-Search<name>.h5: apply its noise models at its switch times, no fit of its own (e.g. an injection run reusing its background run); "" = fit as above |
+| `GlitchAtomsFrom` | `""` | path | `""` | `""` | `""` | -- | -- | path of an offline run's GlitchAtoms-Search<name>.csv (M4, same rate): its atoms are subtracted from the conditioned samples before the fits, the whitening and the search; offline information, so the run is not online (OnlineRun false in parametersUsed); "" = nothing subtracted |
+| `ARWarmup` | unset | samples | 3000/3000/16000 | 3000/3000/16000 | 3000/3000/16000 | -- | -- | samples of past the new filter runs over before it whitens (at least ARorder) |
+| `window` | required |  | `1024` | `1024` | `1024` | `1024` | `1024` | analysis window, samples (0.5 s at 2048 Hz) |
+| `overlap` | required |  | `256` | `256` | `256` | `256` | `256` | overlap of consecutive windows, samples |
+| `threshold` | required |  | `5.0` | `5.0` | `5.0` | `5.0` | `5.0` | EnWDF threshold of a window |
+| `ThresholdRule` | `"block"` | name | `"block"` | `"block"` | `"block"` | `"block"` | `"block"` | rule for a window's coefficients: block (Cai), dohonojohnston or cuoco |
+| `BlockLength` | `0` | count | `0` | `0` | `0` | `0` | `0` | block rule's L, coefficients; 0 = round(ln window) = 7 at 1024 |
+| `BlockLambda` | unset | - | `4.505` | `4.505` | `4.505` | `4.505` | `4.505` | block rule's lambda (calibrated for L about 7) |
+| `BlockRemainder` | unset | name | `"merge"` | `"merge"` | `"merge"` | `"merge"` | `"merge"` | a run's short remainder joins the block before it |
+| `MinFrequency` | unset | Hz | `16.0` | `16.0` | `16.0` | `16.0` | `20.0` | coefficients whose tile lies at or below 16 Hz leave sigma, the block rule and EnWDF |
+| `Bases` | unset | name | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | `["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]` | wavelet competition of each window |
+| `GlitchLabel` | `"census"` | name | `"census"` | `"census"` | `"census"` | -- | -- | label of a trigger (kept either way): "census" = "glitch" when its window meets a transient of the causal census of the whitened stream; "bases" = won by GlitchLabelBases |
+| `GlitchLabelBases` | `["Haar", "DaubC4"]` | name | `["Haar", "DaubC4"]` | `["Haar", "DaubC4"]` | `["Haar", "DaubC4"]` | -- | -- | with GlitchLabel = "bases": a trigger won by one of these bases is labelled "glitch" |
+| `GlitchTrigger` | `13.64` | - | `13.64` | `13.64` | `13.64` | `13.64` | `13.64` | census: smallest peak of a transient, robust sigma of each octave from GlitchCensusLow (default MinFrequency) |
+| `GlitchFlag` | `6.0` | - | `6.0` | `6.0` | `6.0` | `6.0` | `6.0` | census: level of a transient's samples, robust sigma |
+| `GlitchMergeGap` | `0.25` | s | `0.25` | `0.25` | `0.25` | `0.25` | `0.25` | census: largest gap inside one transient, s |
+| `GlitchSeedPad` | `0.1` | s | `0.1` | `0.1` | `0.1` | `0.1` | `0.1` | census: s added on each side of a transient's extent (broadband and octaves from 4 x GlitchCensusLow) |
+| `GlitchCensusMemory` | `64.0` | s | `64.0` | `64.0` | `64.0` | -- | -- | census: s of past each octave's robust sigma is measured on |
+| `GlitchCensusMinimum` | `8.0` | s | `8.0` | `8.0` | `8.0` | -- | -- | census: s of past needed before the census starts |
+| `Ridge` | `false` (`[worker.offline]`)<br>`true` (`[worker.online]`) | bool | `true` | `true` | `true` | `true` | `true` | streaming ridge, past only |
+| `RidgeBasis` | `"LocalCos128"` | name | `"LocalCos128"` | `"LocalCos128"` | `"LocalCos64"` | `"LocalCos128"` | `"LocalCos64"` | dense window coefficients of the map: 62.5 ms x 8 Hz tiles at 2048 Hz |
+| `RidgeWindow` | unset | samples | `1024` | `1024` | `1024` | `1024` | `1024` | map window, samples |
+| `RidgeOverlap` | unset | samples | `256` | `256` | `256` | `256` | `256` | map overlap, samples; each window's central 768 samples are used |
+| `RidgeDechirpAlphas` | `[]` | Hz/s | `[]` | `[]` | `[]` | `[]` | `[]` | dechirped local cosine sweeps, Hz/s; empty = none (not in the default) |
+| `RidgeSlot` | `0.03125` | s | `0.03125` | `0.03125` | `0.03125` | `0.03125` | `0.03125` | slot, s (1/32 s) |
+| `RidgeOctaveStep` | `0.25` | octaves | `0.25` | `0.25` | `0.25` | `0.25` | `0.25` | state width, octaves |
+| `RidgeLowFrequency` | unset | Hz | `16.0` | `16.0` | `16.0` | `16.0` | `20.0` | lowest state edge, Hz |
+| `RidgeBackground` | `256.0` | s | `256.0` | `256.0` | `256.0` | `256.0` | `256.0` | rolling background strictly behind the current slot, s |
+| `RidgeBackgroundUpdate` | `8.0` | s | `8.0` | `8.0` | `8.0` | `8.0` | `8.0` | background update period, s |
+| `RidgeBackgroundMinimum` | `64.0` | s | `64.0` | `64.0` | `64.0` | `64.0` | `64.0` | past background needed before a slot is scored, s |
+| `RidgeBackgroundClip` | `5.0` | - | `5.0` | `5.0` | `5.0` | `5.0` | `5.0` | background sigma clipping, standard deviations |
+| `RidgeBackgroundIterations` | `3` | count | `3` | `3` | `3` | `3` | `3` | clipping iterations |
+| `RidgeLambda` | unset | 1/octave | `0.502` | `0.502` | `0.502` | `0.502` | `0.502` | penalty per octave beyond the allowance: 1 / (2.262 - 0.27), ridge v2 |
+| `RidgeAllowance` | `0.27` | octaves | `0.27` | `0.27` | `0.27` | `0.27` | `0.27` | free move per slot, octaves (fastest inspiral sweep, IMRPhenomD Mc 1-30) |
+| `RidgeDrift` | unset | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | per-cell drift b: calibrated once on the past background |
+| `RidgeXDrop` | unset | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | episode X-drop: calibrated with b |
+| `RidgeThreshold` | `0.0` | - | `0.0` | `0.0` | `0.0` | `0.0` | `0.0` | smallest candidate score emitted; no false-alarm calibration exists yet |
+| `RidgeMaxSlots` | unset | count | `512` | `512` | `512` | `512` | `512` | longest path, slots (16 s): bounds the ring buffers |
+| `RidgeWaveformStates` | `1` | count | `1` | `1` | `1` | `1` | `1` | states added on each side of the path for its waveform |
+| `RidgeCalibrationSeeds` | `2000` | count | `2000` | `2000` | `2000` | `2000` | `2000` | random starts of the drift calibration |
+| `RidgeCalibrationSteps` | `64` | count | `64` | `64` | `64` | `64` | `64` | slots each start is followed |
+| `RidgeCalibrationKept` | `2.0` | count | `2.0` | `2.0` | `2.0` | `2.0` | `2.0` | largest median extension into noise, slots |
+| `RidgeCalibrationGridStep` | `0.05` | - | `0.05` | `0.05` | `0.05` | `0.05` | `0.05` | step of the drifts tried, from 0 |
+| `RidgeCalibrationGridMax` | `3.0` | - | `3.0` | `3.0` | `3.0` | `3.0` | `3.0` | largest drift tried |
+| `RidgeXDropSlots` | `8` | count | `8` | `8` | `8` | `8` | `8` | span of the drop, slots |
+| `RidgeXDropPercentile` | `99.0` | percent | `99.0` | `99.0` | `99.0` | `99.0` | `99.0` | noise percentile that sets X |
+| `Reconstruction` | `"wavegram"` | name | `"wavegram"` | `"wavegram"` | `"track"` | `"wavegram"` | `"wavegram"` | stage 2: "wavegram" or "track"; "track" also makes the worker write TrackEvents/TrackWaveforms |
+| `Coincidence` | `"wavegram"` | name | `"wavegram"` | `"wavegram"` | `"track"` | `"wavegram"` | `"wavegram"` | stage 3: "wavegram" or "track", the same as Reconstruction |
+| `Scorer` | `"classic"` | name | `"classic"` | `"classic"` | `"classic"` | `"classic"` | `"classic"` | stage 4: "classic" (NetworkRankColumn) or "gnn" (GNNModel, column gnn_logit) |
+| `GNNModel` | unset | path | `""` | `""` | `""` | `""` | `""` | path of a saved GNNCoincidenceScorer; required by Scorer = "gnn" |
+| `NetworkRankColumn` | `"network_morphology"` (`[network.wavegram]`)<br>`"track_statistic"` (`[network.track]`) | name | `"network_morphology"` | `"network_morphology"` | `"track_statistic"` | `"network_morphology"` | `"network_morphology"` | candidate-table column the classic scorer ranks on: coherent tile energy \|tile_coherence\|; "network_enwdf" = hypot of the two EnWDF; "track_statistic" on the track path |
+| `NetworkComparisonBin` | `2.0` | - | `2.0` | `2.0` | `2.0` | `2.0` | `2.0` | comparison map bin, in units of the network's longest light travel time; 0 = none |
+| `NetworkEventInstant` | `"peak"` | name | `"peak"` | `"peak"` | `"peak"` | `"peak"` | `"peak"` | wavegram path: an event's instant for gps_candidate and the pair's dt: "peak" (loudest tile), "centroid" (EnWDF-weighted), "envelope" (analytic-envelope peak of the reconstruction), "coarse" (peak as candidate time; the assignment does not weigh dt) |
+| `NetworkEnvelopeWidth` | `"window"` | s | `"window"` | `"window"` | `"window"` | `"window"` | `"window"` | wavegram path: search width of "envelope" about gpsPeak: "window" = the event's analysis window, or s |
+| `NetworkLagCut` | `"none"` | name | `"none"` | `"none"` | `"none"` | `"none"` | `"none"` | wavegram path: lag of the two stitched reconstructions (arrival_time_difference): "none", "cut" (\|lag\| <= the pair's window) or "penalty" (rank x 1/(1+(excess/scale)^2)) |
+| `NetworkLagWindow` | `"coincidence"` | name | `"coincidence"` | `"coincidence"` | `"coincidence"` | `"coincidence"` | `"coincidence"` | wavegram path: the pair's lag window: "coincidence" = the classical coincidence's tolerance (CoincidenceConfig.timing_tolerance, the events' tSpread); "travel_plus_tolerance" = light travel + NetworkLagTolerance |
+| `NetworkLagTolerance` | `0.01` | s | `0.01` | `0.01` | `0.01` | `0.01` | `0.01` | wavegram path: s added to the light travel time with NetworkLagWindow = "travel_plus_tolerance" |
+| `NetworkLagScale` | `"window"` | s | `"window"` | `"window"` | `"window"` | `"window"` | `"window"` | wavegram path: scale of the lag penalty: "window" = the pair's own window, or s |
+| `NetworkLagSearch` | unset | s | `0.25` | `0.25` | `0.25` | `0.25` | `0.25` | wavegram path: half-width of the lag search, s |
+| `NetworkGlitchVeto` | `"none"` | name | `"none"` | `"none"` | `"none"` | `"none"` | `"none"` | wavegram path, with the detectors' census: a census transient with none in the other detector within light travel + NetworkGlitchTolerance is a single-detector glitch (glitch_single_ifo): "none" = report, "veto" = drop the pair, "penalty" = rank x NetworkGlitchFactor |
+| `NetworkGlitchTolerance` | `0.01` | s | `0.01` | `0.01` | `0.01` | `0.01` | `0.01` | wavegram path: s added to the light travel time for two transients to be coincident |
+| `NetworkGlitchFactor` | `0.1` | - | `0.1` | `0.1` | `0.1` | `0.1` | `0.1` | wavegram path: rank factor of a single-detector glitch with "penalty" |
+| `NetworkPenaltySpace` | `"auto"` | name | `"auto"` | `"auto"` | `"auto"` | `"auto"` | `"auto"` | wavegram path: how a penalty acts on the ranking column: "multiply" (statistic x factor, non-negative statistics), "log-odds" (logit + log factor) or "auto" (log-odds with Scorer = "gnn", multiply otherwise) |
+| `NetworkSlides` | `0` | count | `0` | `0` | `0` | `0` | `0` | time slides of the background (0 = no background, no FAR) |
+| `NetworkSlideStep` | `4.0` | s | `4.0` | `4.0` | `4.0` | `4.0` | `4.0` | step between two slides, s |
+| `NetworkMemory` | `64.0` | s | `64.0` | `64.0` | `64.0` | `64.0` | `64.0` | s of detector outputs NetworkStream holds online |
+| `TrackLookback` | `4.0` | s | `4.0` | `4.0` | `4.0` | `4.0` | `4.0` | track path: s of map searched before a seed's window |
+| `TrackHorizon` | `1.0` | s | `1.0` | `1.0` | `1.0` | `1.0` | `1.0` | track path: s of map after it; adds to the declared latency online (TrackLatency_s) |
+| `TrackBasis` | unset | name | `"LocalCos128"` | `"LocalCos128"` | `"LocalCos64"` | `"LocalCos128"` | `"LocalCos128"` | track path: waveform basis, LocalCos64 \| LocalCos128 \| CosinePackets<m> (best basis, segments from m samples) |
+| `TrackSeedStates` | `1` | count | `1` | `1` | `1` | `1` | `1` | track path: states either side of the seed's loudest tile the track must pass |
+| `TrackPacketCost` | `"entropy"` | name | `"entropy"` | `"entropy"` | `"entropy"` | `"entropy"` | `"entropy"` | track path: cosine-packet best-basis cost, l1 \| entropy \| wdfUniversal \| wdfBlock |
+| `TrackOverlapPolicy` | `"drop"` | name | `"drop"` | `"drop"` | `"supersede"` | `"drop"` | `"drop"` | track path, online: a track of a later drain sharing map cells with an emitted track: "drop" = discarded (seeds counted absorbed); "supersede" = emitted in their place when its score is higher, with their seeds and their ids in track_supersedes |
+| `TrackOverlapMemory` | `256` | count | `256` | `256` | `256` | `256` | `256` | track path, online: the most recently emitted tracks a later track is checked against for overlap |
+| `TrackEventInstant` | `"peak"` | name | `"peak"` | `"peak"` | `"peak"` | `"peak"` | `"peak"` | track path: the event's instant gpsPeak (candidate time, pair dt): "peak" = peak of the waveform's envelope; "end" = end of the track's last slot |
+| `TrackLambda` | `3.7` | 1/octave | `3.7` | `3.7` | `3.7` | `3.7` | `3.7` | track path: penalty per octave of a move beyond the allowance (stiff, as ridge v1) |
+| `TrackMcRange` | `[1.0, 30.0]` | Msun | `[1.0, 30.0]` | `[1.0, 30.0]` | `[1.0, 30.0]` | `[1.0, 30.0]` | `[1.0, 30.0]` | track path: chirp masses (solar, detector frame) whose largest one-slot sweep from the lower state is the allowance |
+| `TrackAllowanceMax` | `0.27` | octaves | `0.27` | `0.27` | `0.27` | `0.27` | `0.27` | track path: largest allowance, octaves per slot (bounds it near coalescence); symmetric up and down |
+| `TrackDrift` | `"calibrate"` | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | track path: per-cell drift of the track's alignment; calibrated on the background with the track's penalty |
+| `TrackXDrop` | `"calibrate"` | - | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | `"calibrate"` | track path: X-drop of the track's alignment; calibrated with TrackDrift |
+| `TrackCalibrationQuantile` | `90.0` | percent | `90.0` | `90.0` | `90.0` | `90.0` | `90.0` | track path: percentile of the slots a track runs on into noise held at RidgeCalibrationKept by the drift calibration |
+| `TrackCalibrationSeeds` | `500` | count | `500` | `500` | `500` | `500` | `500` | track path: random starts of the track's drift calibration on the background (the map's takes RidgeCalibrationSeeds) |
+| `TrackTimingJitter` | `0.0035` | s | `0.0035` | `0.0035` | `0.0035` | `0.0035` | `0.0035` | track path: s added to the light travel time for the lag search and the f(t) comparison |
+| `TrackFrequencyTolerance` | `0.5` | octaves | `0.5` | `0.5` | `0.5` | `0.5` | `0.5` | track path: largest \|d log2 f\| between two compatible tracks, octaves |
+| `TrackMinCommonFraction` | `0.5` | - | `0.5` | `0.5` | `0.5` | `0.5` | `0.5` | track path, admission (a): least fraction of the SHORTER track over which the two f(t) agree within TrackFrequencyTolerance |
+| `TrackMinCommonCycles` | `2.0` | count | `2.0` | `2.0` | `2.0` | `2.0` | `2.0` | track path, admission (a): least cycles at the tracks' frequency over that time (coherence needs cycles: 50 ms at 40 Hz, 10 ms at 200 Hz) |
+| `TrackMinCommonDuration` | `0.0` | s | `0.0` | `0.0` | `0.0` | `0.0` | `0.0` | track path, admission (a): optional absolute floor on that time, s (0 = none) |
+| `TrackSlotTolerance` | `0.0` | - | `0.0` | `0.0` | `0.5` | `0.0` | `0.0` | track path, admission (a): fraction of a slot by which a slot centre may lie outside the other track's centre range and still be compared (0 = exact boundary, the comparison then depends on the two slot grids' alignment: zero lag aligned, time slides not; 0.5 reads both alike) |
+| `TrackCommonRule` | `"all"` | name | `"all"` | `"all"` | `"all"` | `"all"` | `"all"` | track path, admission (a): "all" = fraction, cycles and duration minima all hold; "duration-or-fraction" = the cycles, and the fraction or the absolute duration (when TrackMinCommonDuration > 0) |
+| `TrackLagSearch` | `0.1` | s | `0.1` | `0.1` | `0.1` | `0.1` | `0.1` | track path: half-width of the coherence's lag search, s, or "physical" (= light travel time + TrackTimingJitter); admission (b) needs \|lag\| <= light travel time + TrackTimingJitter |
+| `TrackCoherenceMin` | `"none"` | - | `"none"` | `"none"` | `"none"` | `"none"` | `"none"` | track path, admission (c): "none" = no coherence cut, the coherence ranks (track_statistic) and the FAR decides; a number = least \|Gamma\|; "calibrate" = TrackCoherencePercentile of \|Gamma\| on the run's time-slid pairs |
+| `TrackCoherencePercentile` | `99.0` | percent | `99.0` | `99.0` | `99.0` | `99.0` | `99.0` | track path: noise percentile of the calibration (TrackCoherenceMin = "calibrate") |
+| `TrackCalibrationSlides` | `100` | count | `100` | `100` | `100` | `100` | `100` | track path: time slides of the calibration (step NetworkSlideStep) |
+| `TrackCalibrationMinimum` | `20` | count | `20` | `20` | `20` | `20` | `20` | track path: slid pairs passing (a) and (b) needed; fewer = every slid pair the classical rule forms |
+| `TrackGraphBasis` | `"LocalCos64"` | name | `"LocalCos64"` | `"LocalCos64"` | `"LocalCos64"` | `"LocalCos64"` | `"LocalCos64"` | track path with Scorer = "gnn": basis of the node maps drawn from the waveforms |
+| `WhiteningMode` | `"causal"` | name | -- | `"zerophase"` | `"zerophase"` | -- | -- | TruncatedWhitening with a fixed read-ahead; "causal" = the online prediction-error filter |
+| `ZeroPhaseFilter` | `"root"` (`[worker]`)<br>`"truncated"` (`[worker.online.zerophase]`) | name | -- | `"truncated"` | `"truncated"` | `"truncated"` | `"truncated"` | TruncatedWhitening: the model's inverse ASD truncated to ZeroPhaseDuration (fixed support, fixed latency) |
+| `ZeroPhaseDuration` | unset | s | -- | --/--/32.0 | --/--/32.0 | --/--/32.0 | --/--/32.0 | truncation of the whitening filter, s; reads ahead half of it, 8 s; V1 overrides below |
+| `HoldOutsideBand` | `false` | bool | -- | `false` | `false` | `false` | `false` | whiten the full band (the whitening also inverts the band-pass), as offline |
+| `AREstimationOffset` | `50.0` | s | -- | -- | -- | `50.0` | `50.0` | fit stretch start, s after the segment start (a quiet stretch: choose per segment) |
+| `preWhite` | required |  | -- | -- | -- | `4` | `4` | warm-up, s (lengthened automatically to the whitening's latency) |
+| `WhiteningModel` | `"burg"` | name | -- | -- | -- | `"burg"` | `"burg"` | the whitening is built from the Burg AR model |
+| `GlitchSubtraction` | `false` | bool | -- | -- | -- | `true` | `true` | subtract whitened sine-Gaussians fitted to the loud transients |
+| `GlitchQs` | `[1.0, 2.0, 4.0, 8.0, 16.0]` | - | -- | -- | -- | `[1.0, 2.0, 4.0, 8.0, 16.0]` | `[1.0, 2.0, 4.0, 8.0, 16.0]` | quality factors of the atom bank |
+| `GlitchFrequencyCount` | `40` | count | -- | -- | -- | `40` | `40` | bank frequencies, log-spaced from LowFrequencyCut |
+| `GlitchTopFraction` | `0.83984375` | fraction of Nyquist | -- | -- | -- | `0.83984375` | `0.83984375` | top bank frequency over the decimated Nyquist (860 Hz at 2048 Hz) |
+| `GlitchAtomCutTau` | `5.0` | - | -- | -- | -- | `5.0` | `5.0` | atoms cut at this many tau on each side |
+| `GlitchCensusLow` | unset | Hz | -- | -- | -- | `16.0` | `16.0` | lowest census octave, Hz (= MinFrequency) |
+| `GlitchExtentLow` | unset | Hz | -- | -- | -- | `64.0` | `64.0` | lowest octave a transient's extent is read from, Hz (skips the whitening's memory) |
+| `GlitchStopSNR` | `6.0` | - | -- | -- | -- | `6.0` | `6.0` | the pursuit stops when the best atom is below this whitened SNR |
+| `GlitchMaxAtoms` | `100` | count | -- | -- | -- | `100` | `100` | ... or after this many atoms per seed |
+| `GlitchOctaveOrder` | `8` | count | -- | -- | -- | `8` | `8` | Butterworth order of the census's octave filters |
+| `GlitchCleanFitStretch` | `true` | bool | -- | -- | -- | `true` | `true` | the AR fit stretch is cleaned by M4 and refitted when it holds a transient |
+| `GlitchProtectCoincident` | `true` | bool | -- | -- | -- | `true` | `true` | a seed in two or more detectors within light travel + jitter is NOT subtracted |
+| `GlitchCoincidenceJitter` | `0.01` | s | -- | -- | -- | `0.01` | `0.01` | added to the light travel time, s |
+| `RidgeWaveforms` | `10` | count | -- | -- | -- | `10` | `10` | candidates whose waveform energy is computed |
+| `sampling` | required |  | -- | -- | -- | -- | `4096` | input sampling rate, Hz (GWOSC strain; override with ResamplingFactor for another rate) |
 
 ## The defaults file
 
@@ -245,6 +251,7 @@ default of a library argument or setting of the module the table is named after.
 | `ARFitMinimumLearn` | unset | s | shortest sub-stretch a fit accepts; unset: ARFitMinimumLearnFraction * learn |
 | `ARFitMinimumLearnFraction` | `0.5` | - | shortest sub-stretch as a fraction of learn, when ARFitMinimumLearn is unset |
 | `ARModelsFrom` | `""` | path | model history of another run to reuse instead of fitting; empty: fit the models |
+| `GlitchAtomsFrom` | `""` | path | GlitchAtoms file of an offline run whose atoms are subtracted from the conditioned samples (the run is then not online); empty: nothing subtracted |
 | `frame_contiguity_tolerance_s` | `1e-06` | s | largest gap between two frame reads still read as contiguous (numerical setting) |
 
 ### `[worker.online.causal]`

@@ -7,7 +7,7 @@ the run's `parametersUsed` file.
 | | online, causal | online, zero phase | offline |
 |---|---|---|---|
 | worker | `wdfUnitOnline` | `wdfUnitOnline`, `WhiteningMode = "zerophase"` | `wdfUnitOffline` |
-| configuration | `configs/online_default.toml` | `configs/online_zerophase_default.toml` (track path: `configs/online_zerophase_track.toml`) | `configs/offline_default.toml` |
+| configuration | `configs/online_default.toml` | `configs/online_zerophase_default.toml` (track path: `configs/online_zerophase_track.toml`) | `configs/offline_default.toml` (from 20 Hz: `configs/offline_c20.toml`) |
 | band-pass | Butterworth, causal (`sosfilt`, state carried) | Butterworth, zero phase (`sosfiltfilt`), as offline; `BandPassPhase = "causal"` also allowed | Butterworth, zero phase (`sosfiltfilt`) |
 | low-pass order | the smallest that meets `AliasAttenuationDB` on `\|H\|` | the same rule on `\|H\|^2` | the same rule on `\|H\|^2` |
 | whitening | AR prediction-error filter, causal | `ZeroPhaseFilter`, "truncated" 16 s, as offline | `ZeroPhaseFilter`, "truncated" 16 s |
@@ -820,6 +820,95 @@ module reads the two lists as written and recomputes no background.
 | `TrackCalibrationSeeds` | 500 | random starts of the track's drift calibration |
 | `TrackLightTravelTime` | from the detectors | overrides the light travel time |
 | `TrackGraphBasis` | "LocalCos64" | basis of the node maps the GNN reads on the track path |
+
+## The offline follow-up of a stretch
+
+The offline follow-up searches one stretch of several detectors with the
+offline worker, then runs the online worker again on the samples that M4
+cleaned. `configs/offline_c20.toml` is `configs/offline_default.toml` with
+`MinFrequency` and `RidgeLowFrequency` at 20 Hz, `RidgeBasis` "LocalCos64",
+`sampling` 4096 (GWOSC strain) and its own `SearchName` and `run`,
+"offline_c20". The steps:
+
+1. **Configure every detector.** For each detector,
+   `load_config("configs/offline_c20.toml", ifo=..., file=..., channel=...,
+   outdir=...)`. The `[detectors.V1]` table sets V1's `ARorder`, `learn`
+   and `ZeroPhaseDuration`.
+2. **Run the network.** `offline_network({ifo: parameters}, (gpsStart,
+   gpsEnd))` runs, in this order:
+   - the census of every detector (`wdfUnitOffline.census`): the
+     transients of the whitened stream whose census peak reaches
+     `GlitchTrigger`, written as `GlitchCensus-Search<name>.csv`;
+   - the coincidence protection: each detector receives the other
+     detectors' census files (`GlitchCoincidenceSeeds`), and
+     `protect_coincident` marks its seeds;
+   - the M4 fit of every seed that is not protected (`fit_seeds`): a
+     matching pursuit of whitened sine-Gaussians within `centre ±
+     half_width`. The atoms are subtracted from every conditioned block
+     before the whitening, and the search and the per-detector offline
+     ridge run on the cleaned stream;
+   - the network ridge: `offline_ridge` on the cell-wise minimum of the
+     detectors' z maps (`combine_min`), with the first detector's ridge
+     settings, its drift and X-drop calibrated on that combined map.
+3. **Run the online worker on the cleaned samples.** Load the online
+   configuration of the search (for example
+   `configs/online_zerophase_track.toml`) for one detector with
+   `GlitchAtomsFrom` set to that detector's `GlitchAtoms-Search<name>.csv`,
+   and run `segmentProcess`. The worker subtracts the atoms from its
+   conditioned samples before its model fits, its whitening, its census, its
+   search and its ridge. The atoms are evaluated at the worker's output rate,
+   which must be the rate they were fitted at (`resampling`, 2048 Hz from
+   4096 Hz in both files); a file at another rate is refused. The atoms
+   describe the offline worker's conditioned stream, so they fit the online
+   worker's stream when the two band-passes agree, as the zero-phase
+   Butterworth of `configs/online_zerophase_default.toml`,
+   `configs/online_zerophase_track.toml` and `configs/offline_c20.toml`
+   do. The atoms were fitted on the whole stretch, so a run with them is not
+   an online run: its `parametersUsed` records `OnlineRun` false,
+   `GlitchAtomsFrom`, `GlitchAtomsLoaded` (atoms read) and
+   `GlitchAtomsBlocks` (conditioned blocks they reached). Every other
+   output keeps its declared latency: altering the input after a time t
+   changes no output emitted at or before t (causal mode) or of data time at
+   or before `t - Latency_s` (zero-phase mode), and neither does an atom
+   that starts after t (tested). Without `GlitchAtomsFrom` the run is the
+   online run, output for output (tested).
+
+The outputs, under `<outdir>/<run>/`:
+
+| file | where | what it holds |
+|---|---|---|
+| `GlitchCensus-Search<name>.csv` | `<ifo>/<channel>_<gpsStart>/` | the detector's census seeds: `centre`, `half_width`, `extent`, `peak`, `first`, `last` (GPS of the census transient) |
+| `GlitchSeeds-Search<name>.csv` | the same | the same seeds after protection and fit: `protected`, `coincident_with` (the detectors whose seeds overlap), `fitted`, `atoms` (atoms fitted to the seed) |
+| `GlitchAtoms-Search<name>.csv` | the same | one row per atom: `centre`, `frequency`, `q`, `alpha`, `beta`, `snr`, `rate`, `half_length`; the file `GlitchAtomsFrom` reads |
+| `RidgeCandidates-Search<name>.csv` | the same | the detector's offline ridge candidates: `t_start`, `t_end`, `score`, `z_sum`, `f_start`, `f_end`, `n_slots`, `extended`, the path (`slots`, `states`) and, for the first `RidgeWaveforms`, `waveform_energy` |
+| `RidgeCells-Search<name>.npz` | the same | the cell map `X`, its z `Z`, `origin`, `slot`, the state `edges`, the `drift` and `xdrop` used |
+| `parametersUsed-*-Search<name>.json` | the same | every value used, with `GlitchProtection` ("on", "OFF (single detector: ...)" or "off"), `GlitchProtectionDetectors`, `GlitchSeeds`, `GlitchSeedsProtected`, `GlitchAtoms` (count), `RidgeDriftUsed`, `RidgeXDropUsed` |
+| `NetworkRidgeCandidates-Search<name>.csv` | `network/<gpsStart>/` | the network ridge's candidates, the columns of `RidgeCandidates`, at zero lag only |
+
+The online run on the cleaned samples writes the outputs of the online worker
+in its own `outdir`, named with its own `SearchName`.
+
+To read them: a seed with `protected` true was left in the data; one with
+`fitted` true had its atoms subtracted. A ridge candidate's `score` is its
+local-alignment score on the z map, its path the slots and states it
+crosses; `f_start` and `f_end` are the geometric centres of its first and last states.
+A network candidate's z in each cell is the smallest of the detectors' z, so
+a candidate needs power in every detector at the same slots and states.
+
+**The limit of the protection.** `protect_coincident` protects a seed only
+when another detector has a census seed, a transient whose census peak
+reaches `GlitchTrigger`, whose span from `first` to `last` overlaps the
+seed's own, each widened by the light travel time between the two detectors
+plus `GlitchCoincidenceJitter`. A gravitational wave weaker than
+`GlitchTrigger` in the other detectors leaves no seed there, so a loud glitch
+of one detector over it is not protected: when the glitch's census transient
+covers the signal, the pursuit fits atoms within its `centre ± half_width` to
+what that window holds, the signal included.
+
+**What the library does not provide yet.** The offline ridges, per detector
+and network, have no background and no false-alarm rate: `RidgeThreshold` is
+a floor on the score, not a calibrated cut. There is no stage that projects a
+track or a ridge candidate of one detector onto another detector's stream.
 
 ## Units
 

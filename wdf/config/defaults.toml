@@ -76,6 +76,7 @@ ARFitExcludePad = "<unset>"  # [s] margin excluded around a census transient in 
 ARFitMinimumLearn = "<unset>"  # [s] shortest sub-stretch a fit accepts; unset: ARFitMinimumLearnFraction * learn
 ARFitMinimumLearnFraction = 0.5  # [-] shortest sub-stretch as a fraction of learn, when ARFitMinimumLearn is unset
 ARModelsFrom = ""  # [path] model history of another run to reuse instead of fitting; empty: fit the models
+GlitchAtomsFrom = ""  # [path] GlitchAtoms file of an offline run whose atoms are subtracted from the conditioned samples (the run is then not online); empty: nothing subtracted
 frame_contiguity_tolerance_s = 1e-6  # [s] largest gap between two frame reads still read as contiguous (numerical setting)
 
 [worker.online.causal]
