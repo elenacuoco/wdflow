@@ -10,8 +10,6 @@ on:
   pull_request:
     branches: [master]
     paths: ["Dockerfile", ".dockerignore", "pyproject.toml"]
-  schedule:
-    - cron: "0 7 * * 1"
   workflow_dispatch:
 
 jobs:
