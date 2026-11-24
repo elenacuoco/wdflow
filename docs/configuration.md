@@ -36,6 +36,7 @@ detector given as `H1/L1/V1`; -- is a key the file does not set.
 | `outdir` | required |  | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | `"./wdf_output/"` | output root; override per run |
 | `ResamplingFactor` | `1` | - | `2` | `2` | `2` | `2` | `2` | decimation factor: 4096 Hz GWOSC strain -> 2048 Hz (use 8 for 16384 Hz) |
 | `len` | required |  | `1.0` | `1.0` | `1.0` | `120.0` | `120.0` | read block, s: the latency granularity of every output |
+| `preWhite` | required |  | `4` | `4` | `4` | `4` | `4` | warm-up whitened and discarded before the search starts: online preWhite blocks of len (AnalysisStart = first model + preWhite * len), offline preWhite s |
 | `BandPassFilter` | `"cheby2"` | name | `"butterworth"` | `"butterworth"` | `"butterworth"` | `"butterworth"` | `"butterworth"` | high-pass and low-pass Butterworth cascade, no zeros inside the band |
 | `BandPassPhase` | `"zero"` (`[worker.offline]`)<br>`"causal"` (`[worker.online.causal]`)<br>`"zero"` (`[worker.online.zerophase]`)<br>`"zero"` (`[bandpass]`) | name | `"causal"` | `"zero"` | `"zero"` | `"zero"` | `"zero"` | forward only with the state carried across blocks (sosfilt), no read-ahead |
 | `LowFrequencyCut` | `4.0` | Hz | `8.0` | `8.0` | `8.0` | `8.0` | `8.0` | high-pass corner, Hz |
@@ -153,7 +154,6 @@ detector given as `H1/L1/V1`; -- is a key the file does not set.
 | `ZeroPhaseDuration` | unset | s | -- | --/--/32.0 | --/--/32.0 | --/--/32.0 | --/--/32.0 | truncation of the whitening filter, s; reads ahead half of it, 8 s; V1 overrides below |
 | `HoldOutsideBand` | `false` | bool | -- | `false` | `false` | `false` | `false` | whiten the full band (the whitening also inverts the band-pass), as offline |
 | `AREstimationOffset` | `50.0` | s | -- | -- | -- | `50.0` | `50.0` | fit stretch start, s after the segment start (a quiet stretch: choose per segment) |
-| `preWhite` | required |  | -- | -- | -- | `4` | `4` | warm-up, s (lengthened automatically to the whitening's latency) |
 | `WhiteningModel` | `"burg"` | name | -- | -- | -- | `"burg"` | `"burg"` | the whitening is built from the Burg AR model |
 | `GlitchSubtraction` | `false` | bool | -- | -- | -- | `true` | `true` | subtract whitened sine-Gaussians fitted to the loud transients |
 | `GlitchQs` | `[1.0, 2.0, 4.0, 8.0, 16.0]` | - | -- | -- | -- | `[1.0, 2.0, 4.0, 8.0, 16.0]` | `[1.0, 2.0, 4.0, 8.0, 16.0]` | quality factors of the atom bank |

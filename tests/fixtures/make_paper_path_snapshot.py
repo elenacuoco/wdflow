@@ -39,7 +39,8 @@ def parameters(ifo, outdir, **kw):
                LowFrequencyCut=12.0, BandPassFilter="butterworth", MinFrequency=16.0,
                BlockRemainder="merge", ARRefitInterval=0.0, ARFitContext=5.0,
                RidgeBackground=64.0, RidgeBackgroundMinimum=32.0, WhiteningMode="zerophase",
-               ZeroPhaseDuration=8.0, outdir=outdir + "/", run="snapshot")
+               ZeroPhaseDuration=8.0, outdir=outdir + "/", run="snapshot",
+               preWhite=0)  # the snapshot was taken with no warm-up before the search
     par.update(kw)
     return Parameters(**par)
 

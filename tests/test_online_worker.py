@@ -20,7 +20,7 @@ def parameters(**kw):
                channel="H1:TEST", itf="H1", ARorder=60, learn=20, len=1.0, LowFrequencyCut=12.0,
                BandPassFilter="butterworth", MinFrequency=16.0, BlockRemainder="merge",
                ARRefitInterval=30.0, ARFitContext=5.0, RidgeBackground=64.0,
-               RidgeBackgroundMinimum=32.0)
+               RidgeBackgroundMinimum=32.0, preWhite=2)
     par.update(kw)
     return Parameters(**par)
 
