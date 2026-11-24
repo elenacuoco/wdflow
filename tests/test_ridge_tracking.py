@@ -266,3 +266,60 @@ def test_the_calibration_and_the_boxes_run_with_max_down():
     assert G[0, 0] < 10.0                # 20 -> 2 is forbidden
     Zs[2, 2] = -4.0
     assert _greedy_gains(Zs, np.array([3]), 1, s.penalty(), 0.0, direction=-1)[0, 0] == -4.0
+
+
+# ================================================================ RidgeCalibration
+@pytest.fixture(scope="module")
+def white_z():
+    """The z map of 128 s of white noise."""
+    s, _ = settings()
+    x = np.random.default_rng(0).standard_normal(int(SECONDS * FS))
+    return background_z(stream_cells(x, T0, FS, s)[0], s)
+
+
+def noise_paths(Z, s):
+    b, x = calibrate_drift(Z, s)
+    found, _ = offline_ridge(Z, T0, replace(s, drift=b, xdrop=x))
+    return b, x, np.array([c.slots.size for c in found])
+
+
+def test_the_calibration_defaults_to_the_greedy_extension(white_z):
+    from wdf.analysis.ridge_tracking import calibrate_with
+
+    s, par = settings()
+    assert s.calibration == "greedy" and par.RidgeCalibration == "greedy"
+    assert calibrate_drift(white_z, s) == calibrate_with(white_z, s, "greedy", s.calibration_seeds)
+    with pytest.raises(ValueError):
+        settings(RidgeCalibration="dp")
+
+
+def test_the_path_calibration_agrees_with_the_greedy_one_on_a_symmetric_penalty(white_z):
+    """On white noise, unset RidgeMaxDown: greedy b = 2.80, path b = 2.85."""
+    (greedy, _), (path, _) = (calibrate_drift(white_z, settings()[0]),
+                              calibrate_drift(white_z, settings(RidgeCalibration="path")[0]))
+    assert greedy == pytest.approx(2.80) and path == pytest.approx(2.85)
+
+
+def test_the_path_calibration_keeps_the_paths_short_with_max_down(white_z):
+    """RidgeMaxDown = 1 on white noise: the greedy calibration gives b = 1.75
+    and the alignment's paths run on for thousands of slots (median 1754);
+    the path calibration gives b = 2.10 and paths as short as the symmetric
+    ridge's (median 5 slots, against 4, longest 94)."""
+    s = settings(RidgeMaxDown=1)[0]
+    b_greedy, _, greedy = noise_paths(white_z, s)
+    b_path, _, path = noise_paths(white_z, replace(s, calibration="path"))
+    _, _, symmetric = noise_paths(white_z, settings()[0])
+    assert b_greedy == pytest.approx(1.75) and np.median(greedy) > 1000
+    assert b_path == pytest.approx(2.10)
+    assert np.median(path) <= np.median(symmetric) + 1 and path.max() <= 4 / s.slot_s
+
+
+def test_the_track_calibration_is_the_path_calibration_at_its_quantile(white_z):
+    from wdf.analysis.ridge_tracking import calibrate_with
+    from wdf.analysis.track_reconstruction import TrackSettings, calibrate_track_drift
+
+    ts = TrackSettings.from_parameters(SimpleNamespace(window=1024, overlap=256, MinFrequency=16.0),
+                                       FS)
+    rs = ts.ridge
+    assert calibrate_track_drift(white_z, rs) == calibrate_with(
+        white_z, rs, "path", rs.track_calibration_seeds, quantile=rs.kept_quantile)

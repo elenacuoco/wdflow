@@ -380,6 +380,7 @@ default of a library argument or setting of the module the table is named after.
 | `RidgeCalibrationKept` | `2.0` | count | largest median extension into noise the calibrated drift allows, slots |
 | `RidgeCalibrationGridStep` | `0.05` | - | step of the drifts the calibration tries, from 0 |
 | `RidgeCalibrationGridMax` | `3.0` | - | largest drift the calibration tries |
+| `RidgeCalibration` | `"greedy"` | name | score the drift calibration follows from random starts into noise: "greedy", the greedy extension; "path", the local alignment itself (its dynamic programming and penalty, RidgeMaxDown included), to take with RidgeMaxDown |
 | `RidgeXDropSlots` | `8` | count | span over which the X-drop is measured, slots |
 | `RidgeXDropPercentile` | `99.0` | percent | percentile of the noise drops that sets the X-drop |
 | `RidgeMaxDown` | unset | count | largest move down in frequency between consecutive slots, states of RidgeOctaveStep; larger moves down are forbidden (also in the track's penalty). Chirp-oriented option, breaks the up/down symmetry; unset: no limit (symmetric) |

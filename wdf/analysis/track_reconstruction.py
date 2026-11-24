@@ -59,9 +59,9 @@ import pandas as pd
 
 from wdf.analysis.detector_graph import DETECTOR_EVENT_COLUMNS
 from wdf.analysis.ridge import RIDGE_FEATURES, event_ridge_features
-from wdf.analysis.ridge_tracking import (RidgeSettings, calibrate_drift, dense_coefficients,
-                                         offline_ridge, ridge_waveform, tile_geometry,
-                                         window_sigma)
+from wdf.analysis.ridge_tracking import (RidgeSettings, calibrate_drift, calibrate_with,
+                                         dense_coefficients, offline_ridge, ridge_waveform,
+                                         tile_geometry, window_sigma)
 from wdf.config import constants
 from wdf.config.constants import (EIGHT_THIRDS, FIVE_THIRDS, INSPIRAL_RATE_COEFFICIENT,
                                   MAD_GAUSSIAN, PERCENT, THREE_EIGHTHS)
@@ -565,7 +565,8 @@ def calibrate_track_drift(Z, settings, seed=1):
 
     As `calibrate_drift`, with the alignment the track uses (the best path
     over every state sequence from a start, `anchored_path`) in place of the
-    greedy extension: from `track_calibration_seeds` random starts
+    greedy extension (`calibrate_with` with ``"path"``): from
+    `track_calibration_seeds` random starts
     (`TrackCalibrationSeeds`) in the background, at the start's loudest state, the best score after k
     slots is followed for `calibration_steps` slots. X is the
     `xdrop_percentile` of its largest drop within `xdrop_slots` slots, and b
@@ -577,37 +578,9 @@ def calibrate_track_drift(Z, settings, seed=1):
 
     :return: tuple -- (b, X).
     """
-    Z = np.asarray(Z, dtype=float)
-    Z = Z[np.all(np.isfinite(Z), axis=1)]
-    steps = settings.calibration_steps
-    if len(Z) < steps + 2:
-        raise ValueError(f"{len(Z)} slots of background cannot calibrate the drift over {steps}")
-    rng = np.random.default_rng(seed)
-    starts = rng.integers(0, len(Z) - steps - 1, settings.track_calibration_seeds)
-    pen = settings.penalty()
-    s0 = np.argmax(Z[starts], axis=1)
-    result = None
-    for b in settings.calibration_grid:
-        H = np.full((starts.size, Z.shape[1]), -np.inf)
-        H[np.arange(starts.size), s0] = 0.0
-        best = np.zeros((starts.size, steps + 1))
-        for k in range(1, steps + 1):
-            H = Z[starts + k] - b + (H[:, :, None] - pen[None]).max(axis=1)
-            best[:, k] = H.max(axis=1)
-        drops = np.zeros(starts.size)
-        for d in range(1, settings.xdrop_slots + 1):
-            drops = np.maximum(drops, (best[:, :-d] - best[:, d:]).max(axis=1))
-        X = float(np.percentile(drops, settings.xdrop_percentile))
-        peak = np.maximum.accumulate(best, axis=1)
-        stopped = best < peak - X
-        stop = np.where(stopped.any(1), stopped.argmax(1), best.shape[1])
-        masked = np.where(np.arange(best.shape[1])[None, :] < stop[:, None], best, -np.inf)
-        kept = np.argmax(masked, axis=1)
-        result = (float(b), X)
-        if np.percentile(kept, getattr(settings, "kept_quantile", _TRR["kept_quantile"])) \
-                <= settings.calibration_kept:
-            break
-    return result
+    return calibrate_with(Z, settings, "path", settings.track_calibration_seeds,
+                          quantile=getattr(settings, "kept_quantile", _TRR["kept_quantile"]),
+                          seed=seed)
 
 
 def calibrated(settings, Z):
