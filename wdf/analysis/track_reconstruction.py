@@ -21,7 +21,9 @@ The chain:
    X-drop, followed backward and forward from the cell (`anchored_path`).
    Seeds whose triggers overlap in time and band are one seed group, and two
    tracks that share a cell are merged. The penalty is symmetric in the
-   direction of the sweep: a falling track scores as a rising one.
+   direction of the sweep: a falling track scores as a rising one, unless
+   `RidgeMaxDown` is set, which forbids a move down by more than that many
+   states and makes the track a chirp-oriented option (off by default).
 3. **Waveform** (`track_waveform`): the coefficients under the track's cells,
    widened by `RidgeWaveformStates` states, in the basis `TrackBasis`:
    ``LocalCos<M>`` (the map's own coefficients when it is the map's basis,
@@ -116,7 +118,8 @@ class TrackRidgeSettings(RidgeSettings):
     `mc_range` makes in one slot from the LOWER of the two states' centres
     (`chirp_allowance`), at most `allowance_max`. The allowance depends on
     the pair of states only, not on the direction of the move, so the
-    penalty is symmetric: a falling track costs as a rising one. A sweep
+    penalty is symmetric: a falling track costs as a rising one (unless
+    `max_down`, `RidgeMaxDown`, is set: `RidgeSettings.limit_down`). A sweep
     grows with the chirp mass, so the top of the range bounds it over the
     range. `lam` is the stiff penalty beyond the allowance (`TrackLambda`).
 
@@ -149,10 +152,12 @@ class TrackRidgeSettings(RidgeSettings):
                           self.allowance_max)
 
     def penalty(self):
-        """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c(f))``."""
+        """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c(f))``,
+        infinite for a move down by more than `max_down` states
+        (`RidgeMaxDown`, `RidgeSettings.limit_down`)."""
         centre = np.log2(self.edges()[:-1]) + 0.5 * self.octave_step
-        return self.lam * np.maximum(0.0, np.abs(centre[:, None] - centre[None, :])
-                                     - self.allowances())
+        return self.limit_down(self.lam * np.maximum(0.0, np.abs(centre[:, None] - centre[None, :])
+                                                     - self.allowances()))
 
 
 # ================================================================ settings

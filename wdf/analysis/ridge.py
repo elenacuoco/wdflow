@@ -16,7 +16,10 @@ the search instead of a check on it.
 For the same reason the descriptors are **symmetric in the direction of the
 sweep**. A track that falls scores exactly as one that rises. Preferring rising
 frequency would encode a compact binary, and an unmodelled search that does that
-has stopped being unmodelled.
+has stopped being unmodelled. The one exception is an option of the path of
+`wdf.analysis.ridge_tracking`, off by default: `RidgeMaxDown` forbids the path
+a move down in frequency by more than that many states between slots, which
+makes it chirp-oriented. The descriptors here stay symmetric either way.
 
 Frequency is treated in its logarithm throughout, the coordinate the dyadic
 tiling is uniform in, so a slope is octaves per second and means the same thing

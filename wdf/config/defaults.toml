@@ -188,6 +188,7 @@ RidgeCalibrationGridStep = 0.05  # [-] step of the drifts the calibration tries,
 RidgeCalibrationGridMax = 3.0  # [-] largest drift the calibration tries
 RidgeXDropSlots = 8  # [count] span over which the X-drop is measured, slots
 RidgeXDropPercentile = 99.0  # [percent] percentile of the noise drops that sets the X-drop
+RidgeMaxDown = "<unset>"  # [count] largest move down in frequency between consecutive slots, states of RidgeOctaveStep; larger moves down are forbidden (also in the track's penalty). Chirp-oriented option, breaks the up/down symmetry; unset: no limit (symmetric)
 cell_frequency_floor = 0.001  # [Hz] floor of a tile's frequency edges before their log2 (numerical guard)
 box_starts_every = 4  # [count] box_scores: boxes of a duration start every duration / this
 

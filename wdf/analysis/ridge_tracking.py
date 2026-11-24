@@ -25,7 +25,12 @@ The chain, the same offline and online:
 4. **Path.** A local alignment (Smith-Waterman) over the rows: each cell
    scores ``z - b``, ``b`` the drift that keeps a path from growing in noise,
    and a move between slots costs ``lam * max(0, |d log2 f| - c)``, symmetric
-   up and down, with the free allowance ``c`` (`StreamingRidge`). Scores
+   up and down, with the free allowance ``c`` (`StreamingRidge`). With
+   `RidgeMaxDown` set, a move down in frequency by more than that many states
+   is forbidden (infinite cost) and the penalty is no longer symmetric: this
+   makes the path a chirp-oriented option, which prefers a rising track over
+   a falling one and so departs from the symmetry `wdf.analysis.ridge` states
+   for an unmodelled search. It is off by default (unset: no limit). Scores
    start anew wherever they would fall below zero. An episode is the run of
    slots from where the best path starts growing to where its score drops
    `xdrop` below its maximum; its candidate is the path that reached the
@@ -111,6 +116,9 @@ class RidgeSettings:
         (`RidgeXDropSlots`).
     :param xdrop_percentile: percentile of the noise drops that sets X
         (`RidgeXDropPercentile`).
+    :param max_down: largest move down in frequency between consecutive
+        slots, states (`RidgeMaxDown`); a larger move down is forbidden. None
+        (unset) is no limit, the symmetric penalty. A chirp-oriented option.
     """
 
     slot_s: float
@@ -140,6 +148,7 @@ class RidgeSettings:
     calibration_max: float
     xdrop_slots: int
     xdrop_percentile: float
+    max_down: object = None
 
     #: The run parameter each field is read from.
     KEYS = dict(slot_s="RidgeSlot", octave_step="RidgeOctaveStep", f_low="RidgeLowFrequency",
@@ -154,7 +163,7 @@ class RidgeSettings:
                 calibration_steps="RidgeCalibrationSteps", calibration_kept="RidgeCalibrationKept",
                 calibration_step="RidgeCalibrationGridStep",
                 calibration_max="RidgeCalibrationGridMax", xdrop_slots="RidgeXDropSlots",
-                xdrop_percentile="RidgeXDropPercentile")
+                xdrop_percentile="RidgeXDropPercentile", max_down="RidgeMaxDown")
 
     #: Defaults, from the ``[ridge]`` table of wdf/config/defaults.toml. The
     #: penalty `lam` is ``1 / (ridge_merger_octaves - RidgeAllowance)`` unless
@@ -175,7 +184,8 @@ class RidgeSettings:
                     calibration_kept=_R["RidgeCalibrationKept"],
                     calibration_step=_R["RidgeCalibrationGridStep"],
                     calibration_max=_R["RidgeCalibrationGridMax"],
-                    xdrop_slots=_R["RidgeXDropSlots"], xdrop_percentile=_R["RidgeXDropPercentile"])
+                    xdrop_slots=_R["RidgeXDropSlots"], xdrop_percentile=_R["RidgeXDropPercentile"],
+                    max_down=_R["RidgeMaxDown"])
 
     @classmethod
     def from_parameters(cls, par, rate):
@@ -205,6 +215,12 @@ class RidgeSettings:
         d = cls.DEFAULTS
         slot = float(get("slot_s", d["slot_s"]))
         drift, xdrop = get("drift", d["drift"]), get("xdrop", d["xdrop"])
+        max_down = get("max_down", d["max_down"])
+        if max_down is not None:
+            if float(max_down) != int(max_down) or int(max_down) < 0:
+                raise ValueError(f"RidgeMaxDown {max_down!r}: a whole number of states, not "
+                                 "negative, or unset")
+            max_down = int(max_down)
         out = cls(
             slot_s=slot,
             octave_step=float(get("octave_step", d["octave_step"])),
@@ -235,7 +251,8 @@ class RidgeSettings:
             calibration_step=float(get("calibration_step", d["calibration_step"])),
             calibration_max=float(get("calibration_max", d["calibration_max"])),
             xdrop_slots=int(get("xdrop_slots", d["xdrop_slots"])),
-            xdrop_percentile=float(get("xdrop_percentile", d["xdrop_percentile"])))
+            xdrop_percentile=float(get("xdrop_percentile", d["xdrop_percentile"])),
+            max_down=max_down)
         for field, key in cls.KEYS.items():
             value = getattr(out, field)
             if field in ("drift", "xdrop") and value is None:
@@ -265,9 +282,27 @@ class RidgeSettings:
         return np.round(np.arange(count + 1) * self.calibration_step, 10)
 
     def penalty(self):
-        """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c)``."""
+        """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c)``,
+        infinite for a move down by more than `max_down` states
+        (`limit_down`)."""
         centre = np.log2(self.edges()[:-1]) + 0.5 * self.octave_step
-        return self.lam * np.maximum(0.0, np.abs(centre[:, None] - centre[None, :]) - self.allowance)
+        return self.limit_down(
+            self.lam * np.maximum(0.0, np.abs(centre[:, None] - centre[None, :]) - self.allowance))
+
+    def limit_down(self, pen):
+        """`pen` (``[from, to]``, states by increasing frequency) with the
+        moves down by more than `max_down` states made infinite; `pen`
+        itself when `max_down` is None.
+
+        Rows are the state at the earlier slot and columns the state at the
+        later one, so the matrix is no longer symmetric: a path followed
+        backward in time indexes it transposed.
+        """
+        if self.max_down is None:
+            return pen
+        n = pen.shape[0]
+        drop = np.arange(n)[:, None] - np.arange(n)[None, :]
+        return np.where(drop > int(self.max_down), np.inf, pen)
 
     def slots(self, seconds):
         """A duration in slots, rounded."""
@@ -703,11 +738,13 @@ def combine_min(*zs):
 # ================================================================ drift calibration
 def _greedy_gains(Z, starts, steps, pen, b, direction=1):
     """Greedy extension gains from (start, argmax state), vectorised over
-    starts."""
+    starts. `pen` is ``[from, to]`` in time; backward (`direction` -1) the
+    current state is the later one, so the move costs ``pen[:, s]``."""
     s = np.argmax(Z[starts], axis=1)
     G = np.zeros((len(starts), steps))
     for k in range(steps):
-        v = Z[starts + direction * (k + 1)] - b - pen[s]
+        step = pen[s] if direction > 0 else pen[:, s].T
+        v = Z[starts + direction * (k + 1)] - b - step
         s = np.argmax(v, axis=1)
         G[:, k] = v[np.arange(len(starts)), s]
     return G
@@ -930,7 +967,9 @@ class StreamingRidge:
         return np.array(slots[::-1]), np.array(states[::-1])
 
     def _extend_back(self, k, s):
-        """Greedy backward extension into the held past, X-drop."""
+        """Greedy backward extension into the held past, X-drop. The move from
+        the earlier slot's state to `s` costs ``pen[:, s]`` (``[from, to]``
+        in time)."""
         st = self.settings
         rec, cum, best = [], 0.0, 0.0
         for _ in range(self.depth - 1):
@@ -940,7 +979,7 @@ class StreamingRidge:
             row = self.rows[self._slot(k)]
             if not np.all(np.isfinite(row)):
                 break
-            v = row - st.drift - self.pen[s]
+            v = row - st.drift - self.pen[:, s]
             s = int(np.argmax(v))
             cum += float(v[s])
             rec.append((k, s, cum))
