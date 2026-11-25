@@ -219,7 +219,7 @@ def check_bases(par, schedule):
 DETECTOR_TABLE = "detectors"
 #: The keys a run must give, which have no default: the data (`file`,
 #: `channel`, `sampling`, `gps`), the output (`outdir`, `run`), the read block
-#: `len`, the noise model (`ARorder`, `learn`, `preWhite` offline) and the
+#: `len`, the noise model (`ARorder`, `learn`, the warm-up `preWhite`) and the
 #: search (`window`, `overlap`, `threshold`). Every other key has its default in
 #: wdf/config/defaults.toml.
 REQUIRED_KEYS = ("file", "channel", "sampling", "gps", "outdir", "run", "len", "ARorder", "learn",

@@ -1,0 +1,64 @@
+# Offline WDF search with network events, on GWOSC strain: the zero-phase worker (wdf.processes.wdfUnitOnline,
+# WhiteningMode = "zerophase") run on each stretch with the noise models chosen before the search
+# (wdf.processes.noise_model, given as ARModelsFrom) and the M4 glitch atoms fitted on the stretch (GlitchAtomsFrom);
+# then stages 2-4 (wdf.analysis.network_driver.run_network) with the network events (wdf.analysis.network_events).
+# The procedure is in docs/design/online-offline.md ("The offline flavour: noise model and network events").
+# Load with wdf.config.Parameters.load_config("configs/offline_events.toml", ifo="H1", file=..., ...).
+# Every key not written here takes its default from wdf/config/defaults.toml.
+# Units: window and overlap in SAMPLES of the decimated stream; durations in seconds; frequencies in Hz.
+
+SearchName = "offline_events"   # name in every output file, so that two searches never overwrite each other
+run = "offline_events"          # output subfolder under outdir
+outdir = "./wdf_output/"        # output root; override per run
+sampling = 4096                 # input sampling rate, Hz (GWOSC strain)
+ResamplingFactor = 2            # decimation factor: 4096 Hz -> 2048 Hz
+len = 1.0                       # read block, s
+preWhite = 4                    # blocks of len whitened and discarded before the search (filter warm-up)
+
+# ---- band-pass and whitening
+BandPassFilter = "butterworth"  # high-pass and low-pass Butterworth cascade; the low-pass corner is the library's, 900 Hz at 2048 Hz
+LowFrequencyCut = 16.0          # high-pass corner, Hz
+HighPassOrder = 8               # high-pass order
+WhiteningMode = "zerophase"     # zero-phase whitening by a truncated filter built from the AR model
+ZeroPhaseDuration = 16.0        # length of the whitening filter, s
+ARorder = 4000                  # order of the AR model, samples
+learn = 300                     # length of the stretch an AR model is fitted on, s
+
+# ---- noise model, chosen before the search and given to the worker as ARModelsFrom
+NoiseModel = "quiet"            # first rule: the latest clean learn s before the stretch (every DQ bit good, no hardware injection, no transient second)
+NoiseModelFallback = ["piecewise", "spectral"]  # then the AR on the stretch's own pieces of learn s, then the frequency-domain rule; none passes: the detector is "failed" and left out of the network events
+NoiseLookback = 21600.0         # how far back the clean stretch may be, s (6 h)
+NoiseTransientRatio = 10.0      # a second whose power in a band exceeds this times the band's median is a transient
+NoiseSpectralSegment = 4.0      # Welch segment of the frequency-domain rule, s
+NoiseSpectralAverage = "median" # how the frequency-domain rule combines its periodograms
+NoiseCheckRange = [0.8, 1.25]   # the whitening check: the ASD of the whitened stream over white in every octave band lies in this range
+
+# ---- M4 glitch subtraction, fitted on the stretch and given to the worker as GlitchAtomsFrom
+GlitchSubtraction = true        # glitches fitted with sine-Gaussians and subtracted before the AR fits on the stretch and the search
+GlitchMaxAtoms = 300            # most sine-Gaussians fitted to one glitch
+
+# ---- the WDF search
+window = 512                    # analysis window, samples (0.25 s)
+overlap = 128                   # overlap of consecutive windows, samples
+threshold = 2.5                 # EnWDF of a window above which it is a trigger
+ThresholdRule = "block"         # rule for the coefficients of a window
+MinFrequency = 20.0             # lowest frequency searched, Hz
+Bases = ["Haar", "DaubC4", "DaubC8", "Sym4", "DaubC16", "Sym8", "Coif3", "DaubC24", "Sym12", "Coif5"]  # wavelet competition of each window
+
+# ---- stages 2-4 and the network events
+NetworkRankColumn = "network_morphology"  # ranking column of the classical candidates
+NetworkEventInstant = "envelope" # an event's instant: the envelope peak of its reconstruction
+NetworkLagCut = "cut"           # the classical pairs keep |lag of the reconstructions| within the pair's window
+NetworkEvents = true            # the network events: every detector event above EventThreshold is a reference, its reconstruction matched-filtered in the other detectors
+EventThreshold = 5.0            # EnWDF of the reconstruction of a reference
+NetworkEventsJitter = 0.01      # s added to the light travel time for the matched filter's lags
+
+# ---- per detector
+[detectors.H1]
+channel = "H1:GWOSC-4KHZ_R1_STRAIN"  # strain channel
+
+[detectors.L1]
+channel = "L1:GWOSC-4KHZ_R1_STRAIN"  # strain channel
+
+[detectors.V1]
+channel = "V1:GWOSC-4KHZ_R1_STRAIN"  # strain channel

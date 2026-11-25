@@ -63,6 +63,7 @@ ARFitGap = 0.0  # [s] gap between the end of a fit stretch and the time the mode
 ARFitContext = 20.0  # [s] band-pass settling read before the first fit stretch
 ARRefitInterval = 0.0  # [s] time between model refits; 0: one model for the whole segment
 ARWarmup = "<unset>"  # [samples] past samples that set the causal filter's state; unset: ARorder
+# preWhite (required, no default): [blocks of len] warm-up whitened and discarded before the search starts, which starts preWhite * len s after the first model takes over (AnalysisStart); 0: none
 ARFitQuality = true  # [bool] judge each candidate fit stretch with the quality rule (census and octave levels)
 ARFitCandidates = 3  # [count] stretches of the past a fit may be taken on
 ARFitStep = "<unset>"  # [s] spacing of the candidate stretches; unset: ARFitStepFraction * learn
@@ -146,6 +147,26 @@ GlitchMaxAtoms = 100  # [count] most atoms fitted to one seed
 GlitchProtectCoincident = true  # [bool] leave seeds coincident in two or more detectors unsubtracted
 GlitchCoincidenceJitter = 0.01  # [s] added to the light travel time between two detectors within which their seeds are coincident
 
+[noise_model]
+NoiseModel = "worker"  # [name] noise model of each detector and stretch: "worker" (the worker fits its own), or the first rule of wdf.processes.noise_model ("quiet", "piecewise", "spectral"), given to the worker as ARModelsFrom
+NoiseModelFallback = ["piecewise", "spectral"]  # [name] rules tried in order after NoiseModel when it finds no stretch or its whitening fails the check
+NoiseLookback = 21600.0  # [s] how far before the stretch the "quiet" rule looks for its fit stretch
+NoiseDQChannel = "{ifo}:GWOSC-4KHZ_R1_DQMASK"  # [name] data-quality mask channel read by the "quiet" rule ({ifo} filled in)
+NoiseInjectionChannel = "{ifo}:GWOSC-4KHZ_R1_INJMASK"  # [name] hardware-injection mask channel read by the "quiet" rule ({ifo} filled in)
+NoiseDQBits = 511  # [-] bits of the data-quality mask that must all be set for a second to be good (GWOSC: DATA, CBC_CAT1-3, BURST_CAT1-3, STOCH_CAT1, CW_CAT1)
+NoiseInjectionBits = 7  # [-] bits of the injection mask that must all be set (GWOSC: NO_CBC_HW_INJ, NO_BURST_HW_INJ, NO_DETCHAR_HW_INJ)
+NoiseTransientRatio = 10.0  # [-] a second whose power in a band exceeds this times the band's median over the stretch is a transient
+NoiseTransientOrder = 4  # [count] order of the Butterworth band filters of the transient test
+NoiseTransientTopFraction = 0.9  # [fraction of Nyquist] the transient test's band filters stop below this
+NoiseBands = "<unset>"  # [Hz] bands of the transient test and of the whitening check, [[low, high], ...]; unset: octaves from LowFrequencyCut, the last ending at NoiseBandTopFraction
+NoiseBandTopFraction = 0.9765625  # [fraction of Nyquist] top of the last band when NoiseBands is unset (1000 Hz at 2048 Hz)
+NoiseCheckRange = [0.8, 1.25]  # [-] a band passes the whitening check when the ASD of the whitened stream over white lies in this range
+NoiseCheckSegment = 4.0  # [s] Welch segment of the whitening check
+NoiseCheckAverage = "mean"  # [name] how the whitening check combines the Welch periodograms, "mean" or "median"
+NoiseSpectralSegment = "<unset>"  # [s] Welch segment of the "spectral" rule; unset: [whitening.zero_phase] spectrum_segment_s
+NoiseSpectralAverage = "<unset>"  # [name] how the "spectral" rule combines the periodograms; unset: [whitening.zero_phase] spectrum_average
+NoiseSpectralHold = "<unset>"  # [Hz] band outside which the "spectral" rule holds the spectrum flat, [low, high]; unset: [LowFrequencyCut, Nyquist]
+
 [census]
 GlitchOctaveOrder = 8  # [count] order of the Butterworth filters that split the whitened stream into octaves
 
@@ -185,8 +206,10 @@ RidgeCalibrationSteps = 64  # [count] slots each calibration start is followed f
 RidgeCalibrationKept = 2.0  # [count] largest median extension into noise the calibrated drift allows, slots
 RidgeCalibrationGridStep = 0.05  # [-] step of the drifts the calibration tries, from 0
 RidgeCalibrationGridMax = 3.0  # [-] largest drift the calibration tries
+RidgeCalibration = "greedy"  # [name] score the drift calibration follows from random starts into noise: "greedy", the greedy extension; "path", the local alignment itself (its dynamic programming and penalty, RidgeMaxDown included), to take with RidgeMaxDown
 RidgeXDropSlots = 8  # [count] span over which the X-drop is measured, slots
 RidgeXDropPercentile = 99.0  # [percent] percentile of the noise drops that sets the X-drop
+RidgeMaxDown = "<unset>"  # [count] largest move down in frequency between consecutive slots, states of RidgeOctaveStep; larger moves down are forbidden (also in the track's penalty). Chirp-oriented option, breaks the up/down symmetry; unset: no limit (symmetric)
 cell_frequency_floor = 0.001  # [Hz] floor of a tile's frequency edges before their log2 (numerical guard)
 box_starts_every = 4  # [count] box_scores: boxes of a duration start every duration / this
 
@@ -276,6 +299,18 @@ intra_ifo_window_s = 5.0  # [s] how far apart two events of one detector may be 
 match_wavegrams = true  # [bool] whether the renderings of a candidate pair are compared (wavegram match, correlation, coherent statistic)
 match_gate = "admitted"  # [name] pairs the wavegram match is asked of: "admitted" (every admitted pair) or "instant" (instants within the tolerance)
 label_window_s = 0.5  # [s] how far outside its own extent an event still covers an injection, for the edge labels
+
+[network_events]
+NetworkEvents = false  # [bool] run_network also builds the network events (wdf.analysis.network_events); needs the noise models and the whitened streams
+EventThreshold = 0.0  # [-] least EnWDF of a detector event's stitched reconstruction for it to be a reference of the network events; 0: every event
+NetworkEventsJitter = 0.01  # [s] added to the light travel time of a pair for the lags of the matched filter and the search for the other detector's own event
+NetworkEventsLagStep = 1  # [samples] step between two lags of the matched filter
+NetworkEventsSupportFraction = 0.1  # [-] an event's support is where the analytic envelope of its reconstruction is at least this fraction of its peak
+NetworkEventsOnTrackOctaves = 1.0  # [octaves] a reference tile's band is widened by this on each side for on_track
+NetworkEventsTemplateShort = 0.05  # [s] a node whose reference template is shorter than this is marked template_short
+NetworkEventsStreamBlocks = 3  # [count] conditioning blocks of len read beyond the stream on each side when it is rebuilt from the strain
+NetworkEventsStreamPad = 4.0  # [s] read beyond those blocks when the stream is rebuilt from the strain
+NetworkEventsStreamMargin = 2.0  # [s] stream kept beyond the searched span and the largest lag
 
 [robust_events.cluster]
 max_missing_windows = 1  # [count] windows that may be missing between two triggers of one cluster

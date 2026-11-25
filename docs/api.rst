@@ -52,6 +52,12 @@ wdf.processes.glitch_subtraction
 .. automodule:: wdf.processes.glitch_subtraction
    :members:
 
+wdf.processes.noise_model
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.processes.noise_model
+   :members:
+
 wdf.processes.census
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -335,6 +341,12 @@ wdf.analysis.network_driver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: wdf.analysis.network_driver
+   :members:
+
+wdf.analysis.network_events
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: wdf.analysis.network_events
    :members:
 
 wdf.analysis.hrss

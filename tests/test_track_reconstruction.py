@@ -231,6 +231,39 @@ def test_the_anchored_path_has_no_preferred_direction():
     assert up[0][0] <= 62 and up[0][-1] >= 117
 
 
+def test_max_down_reaches_the_track_penalty_and_the_anchored_path():
+    """RidgeMaxDown passes to the track's penalty; the anchored path, followed
+    back and forward from a cell, never moves down by more than it, and a
+    rising track is followed as without it (its planted cells)."""
+    from dataclasses import replace
+
+    free = replace(settings()[0].ridge, drift=1.0, xdrop=5.0)
+    ts, par = settings(RidgeMaxDown=1)
+    rs = replace(ts.ridge, drift=1.0, xdrop=5.0)
+    assert rs.max_down == 1 and par.RidgeMaxDown == 1
+    P, Q = rs.penalty(), free.penalty()
+    frm, to = np.indices(P.shape)
+    np.testing.assert_array_equal(P[frm - to <= 1], Q[frm - to <= 1])
+    assert np.all(np.isinf(P[frm - to > 1]))
+    rng = np.random.default_rng(1)
+    Z = rng.standard_normal((200, rs.n_states))
+    for k in range(60, 120):
+        Z[k, 2 + (k - 60) // 8] += 6.0
+    up = anchored_path(Z, 90, 2 + 30 // 8, rs)
+    ref = anchored_path(Z, 90, 2 + 30 // 8, free)
+    track = {(k, 2 + (k - 60) // 8) for k in range(62, 118)}
+    for slots, states, _ in (up, ref):
+        assert track <= set(zip(slots.tolist(), states.tolist()))
+    assert np.all(np.diff(up[1]) >= -1)
+    # The same track falling, two states a slot: neither side may follow it.
+    Z = rng.standard_normal((200, rs.n_states))
+    for i, k in enumerate(range(80, 91)):
+        Z[k, 22 - 2 * i] += 6.0
+    for k0 in (80, 85, 90):
+        slots, states, _ = anchored_path(Z, k0, 22 - 2 * (k0 - 80), rs)
+        assert np.all(np.diff(states) >= -1)
+
+
 def test_the_track_penalty_follows_the_chirp_scaling():
     """The allowance grows with frequency as an inspiral's sweep, is bounded
     by TrackAllowanceMax, and beyond it a move costs TrackLambda per octave."""

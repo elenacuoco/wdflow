@@ -32,7 +32,7 @@ OUTPUT = os.path.join(ROOT, "docs", "configuration.md")
 DEFAULTS = os.path.join(ROOT, "wdf", "config", "defaults.toml")
 #: The shipped configurations, in the column order of the page.
 CONFIGS = ("online_default", "online_zerophase_default", "online_zerophase_track", "offline_default",
-           "offline_c20")
+           "offline_c20", "offline_events")
 TABLE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
 ASSIGNMENT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=.*?#\s*(.*)$")
 UNIT = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
@@ -156,20 +156,21 @@ def generate():
         "Units: samples are samples of the decimated stream; \"fraction of Nyquist\"",
         "is a fraction of the Nyquist frequency of that stream; \"-\" is dimensionless.",
         "",
-        "The flows these configurations run, and the offline follow-up of a stretch",
-        "with `configs/offline_c20.toml`, are described in",
+        "The flows these configurations run, the offline follow-up of a stretch",
+        "with `configs/offline_c20.toml` and the offline flavour with network events",
+        "of `configs/offline_events.toml`, are described in",
         "[Online and offline](design/online-offline.md).",
         "",
         "## Keys of the shipped configurations",
         "",
         "Default is the value of every table of the defaults file holding the key",
         "(a key read by several stages has one default per stage); the meaning is the",
-        "shipped configurations' comment. The five columns that follow are the shipped configurations, a value set per",
+        "shipped configurations' comment. The six columns that follow are the shipped configurations, a value set per",
         "detector given as `H1/L1/V1`; -- is a key the file does not set.",
         "",
         "| Key | Default | Unit | online | online zero-phase | online zero-phase track | offline "
-        "| offline C20 | Meaning |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| offline C20 | offline events | Meaning |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for key in keys:
         where = holders.get(key, [])

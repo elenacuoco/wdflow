@@ -25,8 +25,16 @@ The chain, the same offline and online:
 4. **Path.** A local alignment (Smith-Waterman) over the rows: each cell
    scores ``z - b``, ``b`` the drift that keeps a path from growing in noise,
    and a move between slots costs ``lam * max(0, |d log2 f| - c)``, symmetric
-   up and down, with the free allowance ``c`` (`StreamingRidge`). Scores
-   start anew wherever they would fall below zero. An episode is the run of
+   up and down, with the free allowance ``c`` (`StreamingRidge`). With
+   `RidgeMaxDown` set, a move down in frequency by more than that many states
+   is forbidden (infinite cost) and the penalty is no longer symmetric: this
+   makes the path a chirp-oriented option, which prefers a rising track over
+   a falling one and so departs from the symmetry `wdf.analysis.ridge` states
+   for an unmodelled search. It is off by default (unset: no limit). Scores
+   start anew wherever they would fall below zero. b and the X-drop are
+   calibrated on the background (`calibrate_drift`), by default with the
+   greedy extension, with `RidgeCalibration = "path"` with the alignment
+   itself, the one to take with `RidgeMaxDown`. An episode is the run of
    slots from where the best path starts growing to where its score drops
    `xdrop` below its maximum; its candidate is the path that reached the
    maximum.
@@ -111,6 +119,12 @@ class RidgeSettings:
         (`RidgeXDropSlots`).
     :param xdrop_percentile: percentile of the noise drops that sets X
         (`RidgeXDropPercentile`).
+    :param max_down: largest move down in frequency between consecutive
+        slots, states (`RidgeMaxDown`); a larger move down is forbidden. None
+        (unset) is no limit, the symmetric penalty. A chirp-oriented option.
+    :param calibration: the score the drift calibration follows into noise
+        (`RidgeCalibration`): ``"greedy"``, the greedy extension, or
+        ``"path"``, the local alignment itself (`calibrate_drift`).
     """
 
     slot_s: float
@@ -140,6 +154,8 @@ class RidgeSettings:
     calibration_max: float
     xdrop_slots: int
     xdrop_percentile: float
+    max_down: object = None
+    calibration: str = "greedy"
 
     #: The run parameter each field is read from.
     KEYS = dict(slot_s="RidgeSlot", octave_step="RidgeOctaveStep", f_low="RidgeLowFrequency",
@@ -154,7 +170,8 @@ class RidgeSettings:
                 calibration_steps="RidgeCalibrationSteps", calibration_kept="RidgeCalibrationKept",
                 calibration_step="RidgeCalibrationGridStep",
                 calibration_max="RidgeCalibrationGridMax", xdrop_slots="RidgeXDropSlots",
-                xdrop_percentile="RidgeXDropPercentile")
+                xdrop_percentile="RidgeXDropPercentile", max_down="RidgeMaxDown",
+                calibration="RidgeCalibration")
 
     #: Defaults, from the ``[ridge]`` table of wdf/config/defaults.toml. The
     #: penalty `lam` is ``1 / (ridge_merger_octaves - RidgeAllowance)`` unless
@@ -175,7 +192,8 @@ class RidgeSettings:
                     calibration_kept=_R["RidgeCalibrationKept"],
                     calibration_step=_R["RidgeCalibrationGridStep"],
                     calibration_max=_R["RidgeCalibrationGridMax"],
-                    xdrop_slots=_R["RidgeXDropSlots"], xdrop_percentile=_R["RidgeXDropPercentile"])
+                    xdrop_slots=_R["RidgeXDropSlots"], xdrop_percentile=_R["RidgeXDropPercentile"],
+                    max_down=_R["RidgeMaxDown"], calibration=_R["RidgeCalibration"])
 
     @classmethod
     def from_parameters(cls, par, rate):
@@ -205,6 +223,15 @@ class RidgeSettings:
         d = cls.DEFAULTS
         slot = float(get("slot_s", d["slot_s"]))
         drift, xdrop = get("drift", d["drift"]), get("xdrop", d["xdrop"])
+        max_down = get("max_down", d["max_down"])
+        if max_down is not None:
+            if float(max_down) != int(max_down) or int(max_down) < 0:
+                raise ValueError(f"RidgeMaxDown {max_down!r}: a whole number of states, not "
+                                 "negative, or unset")
+            max_down = int(max_down)
+        calibration = str(get("calibration", d["calibration"]))
+        if calibration not in CALIBRATIONS:
+            raise ValueError(f"RidgeCalibration {calibration!r}: one of {CALIBRATIONS}")
         out = cls(
             slot_s=slot,
             octave_step=float(get("octave_step", d["octave_step"])),
@@ -235,7 +262,8 @@ class RidgeSettings:
             calibration_step=float(get("calibration_step", d["calibration_step"])),
             calibration_max=float(get("calibration_max", d["calibration_max"])),
             xdrop_slots=int(get("xdrop_slots", d["xdrop_slots"])),
-            xdrop_percentile=float(get("xdrop_percentile", d["xdrop_percentile"])))
+            xdrop_percentile=float(get("xdrop_percentile", d["xdrop_percentile"])),
+            max_down=max_down, calibration=calibration)
         for field, key in cls.KEYS.items():
             value = getattr(out, field)
             if field in ("drift", "xdrop") and value is None:
@@ -265,9 +293,27 @@ class RidgeSettings:
         return np.round(np.arange(count + 1) * self.calibration_step, 10)
 
     def penalty(self):
-        """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c)``."""
+        """``[from, to]`` cost of a move: ``lam * max(0, |d log2 f| - c)``,
+        infinite for a move down by more than `max_down` states
+        (`limit_down`)."""
         centre = np.log2(self.edges()[:-1]) + 0.5 * self.octave_step
-        return self.lam * np.maximum(0.0, np.abs(centre[:, None] - centre[None, :]) - self.allowance)
+        return self.limit_down(
+            self.lam * np.maximum(0.0, np.abs(centre[:, None] - centre[None, :]) - self.allowance))
+
+    def limit_down(self, pen):
+        """`pen` (``[from, to]``, states by increasing frequency) with the
+        moves down by more than `max_down` states made infinite; `pen`
+        itself when `max_down` is None.
+
+        Rows are the state at the earlier slot and columns the state at the
+        later one, so the matrix is no longer symmetric: a path followed
+        backward in time indexes it transposed.
+        """
+        if self.max_down is None:
+            return pen
+        n = pen.shape[0]
+        drop = np.arange(n)[:, None] - np.arange(n)[None, :]
+        return np.where(drop > int(self.max_down), np.inf, pen)
 
     def slots(self, seconds):
         """A duration in slots, rounded."""
@@ -703,35 +749,135 @@ def combine_min(*zs):
 # ================================================================ drift calibration
 def _greedy_gains(Z, starts, steps, pen, b, direction=1):
     """Greedy extension gains from (start, argmax state), vectorised over
-    starts."""
+    starts. `pen` is ``[from, to]`` in time; backward (`direction` -1) the
+    current state is the later one, so the move costs ``pen[:, s]``."""
     s = np.argmax(Z[starts], axis=1)
     G = np.zeros((len(starts), steps))
     for k in range(steps):
-        v = Z[starts + direction * (k + 1)] - b - pen[s]
+        step = pen[s] if direction > 0 else pen[:, s].T
+        v = Z[starts + direction * (k + 1)] - b - step
         s = np.argmax(v, axis=1)
         G[:, k] = v[np.arange(len(starts)), s]
     return G
+
+
+def _aligned_best(Z, starts, steps, pen, b):
+    """The alignment's best score after each slot from (start, argmax state),
+    vectorised over starts: ``H[k, s] = z[k, s] - b + max_s' H[k-1, s'] -
+    pen[s', s]``, the update of `StreamingRidge` from a single state at score
+    0, without the reset at zero (the score of the best path from the start
+    is followed below zero). `pen` is ``[from, to]`` in time.
+
+    :return: numpy.ndarray -- ``(starts, steps + 1)``, column 0 the start's 0.
+    """
+    s0 = np.argmax(Z[starts], axis=1)
+    H = np.full((len(starts), Z.shape[1]), -np.inf)
+    H[np.arange(len(starts)), s0] = 0.0
+    best = np.zeros((len(starts), steps + 1))
+    for k in range(1, steps + 1):
+        H = Z[starts + k] - b + (H[:, :, None] - pen[None]).max(axis=1)
+        best[:, k] = H.max(axis=1)
+    return best
 
 
 def _drops_and_kept(G, span):
     """The largest drop of the cumulative gain within `span` slots, and the
     slots kept up to the maximum before a drop of X, per start."""
     Cm = np.hstack([np.zeros((len(G), 1)), np.cumsum(G, 1)])
-    drops = np.zeros(len(G))
+    return Cm, _max_drops(Cm, span)
+
+
+def _max_drops(C, span):
+    """The largest drop of each row of `C` within `span` columns."""
+    drops = np.zeros(len(C))
     for d in range(1, span + 1):
-        drops = np.maximum(drops, (Cm[:, :-d] - Cm[:, d:]).max(1))
-    return Cm, drops
+        drops = np.maximum(drops, (C[:, :-d] - C[:, d:]).max(axis=1))
+    return drops
+
+
+#: The alignments `calibrate_drift` can follow into noise (`RidgeCalibration`).
+CALIBRATIONS = ("greedy", "path")
+
+
+def calibrate_with(Z, settings, method, seeds, quantile=None, seed=1):
+    """The drift b and the X-drop from noise, following `method` from random
+    starts.
+
+    From `seeds` random starts in the background, at the start's loudest
+    state, the score is followed for `calibration_steps` slots: ``"greedy"``,
+    the cumulative gain of the greedy extension (`_greedy_gains`, the
+    extension `offline_ridge` and `StreamingRidge` add to a path);
+    ``"path"``, the best score of the alignment itself after each slot
+    (`_aligned_best`, the update and penalty of `StreamingRidge`). X is the
+    `xdrop_percentile` of its largest drop within `xdrop_slots` slots, and b
+    the smallest drift of `calibration_grid` for which the `quantile`
+    percentile (None: the median) of the slots kept before a drop of X is at
+    most `calibration_kept`. Both take `penalty`, `RidgeMaxDown` included.
+
+    :type Z: numpy.ndarray
+    :param Z: z rows of noise, ``(slots, states)``; NaN rows are left out.
+    :type settings: RidgeSettings
+    :param settings: the calibration's settings.
+    :type method: str
+    :param method: ``"greedy"`` or ``"path"``.
+    :type seeds: int
+    :param seeds: number of random starts.
+    :type quantile: float or None
+    :param quantile: percentile of the slots kept held at
+        `calibration_kept`; None is the median.
+    :type seed: int
+    :param seed: of the random starts.
+    :return: tuple -- (b, X).
+    :raises ValueError: if the noise is shorter than one calibration span, or
+        `method` is unknown.
+    """
+    if method not in CALIBRATIONS:
+        raise ValueError(f"calibration {method!r}: one of {CALIBRATIONS}")
+    Z = np.asarray(Z, dtype=float)
+    Z = Z[np.all(np.isfinite(Z), axis=1)]
+    steps = settings.calibration_steps
+    if len(Z) < steps + 2:
+        raise ValueError(f"{len(Z)} slots of background cannot calibrate the drift over {steps}")
+    rng = np.random.default_rng(seed)
+    starts = rng.integers(0, len(Z) - steps - 1, int(seeds))
+    pen = settings.penalty()
+    result = None
+    for b in settings.calibration_grid:
+        if method == "greedy":
+            Cm, drops = _drops_and_kept(_greedy_gains(Z, starts, steps, pen, b), settings.xdrop_slots)
+        else:
+            Cm = _aligned_best(Z, starts, steps, pen, b)
+            drops = _max_drops(Cm, settings.xdrop_slots)
+        X = float(np.percentile(drops, settings.xdrop_percentile))
+        best = np.maximum.accumulate(Cm, axis=1)
+        stopped = Cm < best - X
+        stop = np.where(stopped.any(1), stopped.argmax(1), Cm.shape[1])
+        masked = np.where(np.arange(Cm.shape[1])[None, :] < stop[:, None], Cm, -np.inf)
+        kept = np.argmax(masked, axis=1)
+        result = (float(b), X)
+        held = np.median(kept) if quantile is None else np.percentile(kept, quantile)
+        if held <= settings.calibration_kept:
+            break
+    return result
 
 
 def calibrate_drift(Z, settings, seed=1):
-    """The drift b and the X-drop from noise, as ridge v2 fixes them.
+    """The drift b and the X-drop of the ridge from noise (`calibrate_with`).
 
     b is the smallest of `calibration_grid` (0 to `calibration_max` by
-    `calibration_step`) for which a greedy extension from
-    random starts into the background keeps, in median, at most
-    `calibration_kept` slots before a drop of X; X is the
-    `xdrop_percentile` of the largest drop of the cumulative gain within
-    `xdrop_slots` slots, at that b.
+    `calibration_step`) for which the score followed from
+    `calibration_seeds` random starts into the background keeps, in median,
+    at most `calibration_kept` slots before a drop of X; X is the
+    `xdrop_percentile` of the largest drop of that score within
+    `xdrop_slots` slots, at that b. The score followed is set by
+    `calibration` (`RidgeCalibration`): ``"greedy"`` (the default), the
+    greedy extension, as ridge v2 fixes b and X; ``"path"``, the best score
+    of the local alignment itself, the dynamic programming of
+    `StreamingRidge` with its penalty. The two agree while the penalty is
+    symmetric; with `RidgeMaxDown` the greedy walk climbs to the top states,
+    where it has fewer moves to choose from, and settles on a drift too
+    small for the alignment, whose paths then run on into the noise:
+    ``"path"`` holds the alignment's own paths at `calibration_kept`.
 
     :type Z: numpy.ndarray
     :param Z: z rows of noise, ``(slots, states)``; NaN rows are left out.
@@ -742,28 +888,8 @@ def calibrate_drift(Z, settings, seed=1):
     :return: tuple -- (b, X).
     :raises ValueError: if the noise is shorter than one calibration span.
     """
-    Z = np.asarray(Z, dtype=float)
-    Z = Z[np.all(np.isfinite(Z), axis=1)]
-    steps = settings.calibration_steps
-    if len(Z) < steps + 2:
-        raise ValueError(f"{len(Z)} slots of background cannot calibrate the drift over {steps}")
-    rng = np.random.default_rng(seed)
-    starts = rng.integers(0, len(Z) - steps - 1, settings.calibration_seeds)
-    pen = settings.penalty()
-    result = None
-    for b in settings.calibration_grid:
-        G = _greedy_gains(Z, starts, steps, pen, b)
-        Cm, drops = _drops_and_kept(G, settings.xdrop_slots)
-        X = float(np.percentile(drops, settings.xdrop_percentile))
-        best = np.maximum.accumulate(Cm, axis=1)
-        stopped = Cm < best - X
-        stop = np.where(stopped.any(1), stopped.argmax(1), Cm.shape[1])
-        masked = np.where(np.arange(Cm.shape[1])[None, :] < stop[:, None], Cm, -np.inf)
-        kept = np.argmax(masked, axis=1)
-        result = (float(b), X)
-        if np.median(kept) <= settings.calibration_kept:
-            break
-    return result
+    return calibrate_with(Z, settings, getattr(settings, "calibration", "greedy"),
+                          settings.calibration_seeds, seed=seed)
 
 
 # ================================================================ the path
@@ -930,7 +1056,9 @@ class StreamingRidge:
         return np.array(slots[::-1]), np.array(states[::-1])
 
     def _extend_back(self, k, s):
-        """Greedy backward extension into the held past, X-drop."""
+        """Greedy backward extension into the held past, X-drop. The move from
+        the earlier slot's state to `s` costs ``pen[:, s]`` (``[from, to]``
+        in time)."""
         st = self.settings
         rec, cum, best = [], 0.0, 0.0
         for _ in range(self.depth - 1):
@@ -940,7 +1068,7 @@ class StreamingRidge:
             row = self.rows[self._slot(k)]
             if not np.all(np.isfinite(row)):
                 break
-            v = row - st.drift - self.pen[s]
+            v = row - st.drift - self.pen[:, s]
             s = int(np.argmax(v))
             cum += float(v[s])
             rec.append((k, s, cum))

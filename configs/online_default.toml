@@ -8,6 +8,7 @@ run = "online"                  # output subfolder under outdir
 outdir = "./wdf_output/"        # output root; override per run
 ResamplingFactor = 2            # decimation factor: 4096 Hz GWOSC strain -> 2048 Hz (use 8 for 16384 Hz)
 len = 1.0                       # read block, s: the latency granularity of every output
+preWhite = 4                    # warm-up whitened and discarded before the search starts: online preWhite blocks of len (AnalysisStart = first model + preWhite * len), offline preWhite s
 
 # ---- band-pass: Butterworth, causal
 BandPassFilter = "butterworth"  # high-pass and low-pass Butterworth cascade, no zeros inside the band

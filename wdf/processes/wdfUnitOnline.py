@@ -65,6 +65,14 @@ The chain, block by block of `len` seconds:
    (``GlitchAtomsBlocks``). Its outputs depend on the input after their
    emission only through the atoms; unset (the default), nothing is
    subtracted.
+   **Warm-up:** the first `preWhite` blocks of `len` seconds the first
+   model whitens (`WarmupSeconds` = ``preWhite * len``, from `WarmupStart`)
+   are band-passed and whitened and then discarded, so that the band-pass
+   and the whitening have decayed before anything is searched; the search,
+   the census and the ridge start at ``AnalysisStart = WarmupStart +
+   WarmupSeconds``. The warm-up is in addition to the data the filters
+   read on each side of a sample. `preWhite` is required (0: no warm-up);
+   the samples discarded are recorded as `WarmupSamplesDiscarded`.
 3. **The search:** `wdf` at each window of the schedule, with `Bases`,
    `MinFrequency`, `ThresholdRule`, `BlockLength`, `BlockLambda` and
    `BlockRemainder` from the parameters. **No glitch subtraction and no
@@ -556,6 +564,14 @@ class wdfUnitOnline:
         if par.ARWarmup < par.ARorder:
             raise ValueError(f"ARWarmup {par.ARWarmup} samples is shorter than the model's order "
                              f"{par.ARorder}: the filter's state would not be set by real data")
+        pre = getattr(par, "preWhite", None)
+        if pre is None or float(pre) < 0 or float(pre) != int(float(pre)):
+            raise ValueError(f"preWhite is {pre!r}: give the warm-up as a whole number of blocks "
+                             f"of len seconds, band-passed, whitened and discarded before the "
+                             f"search starts (0: none)")
+        par.preWhite = int(float(pre))
+        #: The warm-up, s: `preWhite` blocks of `len` seconds.
+        par.WarmupSeconds = par.preWhite * float(par.len)
         self.now = None
         self.result = None
         #: The fixed read-ahead, s; None in the causal mode, which has none.
@@ -1177,6 +1193,7 @@ class wdfUnitOnline:
 
         par = self.par
         par.AnalysisStart = origin
+        self._searching = True
         par.sigma = sigma
         if self.census_settings is not None:
             from wdf.processes.causal_census import CausalCensus
@@ -1198,6 +1215,38 @@ class wdfUnitOnline:
                 st["ridge"] = StreamingRidge(rs, st["cells"].origin)
             if self._tracker is not None:
                 st["zrows"] = deque(maxlen=rs.max_slots)
+
+    def _begin_warmup(self, origin, sigma):
+        """The whitening starts at `origin`; the search starts `WarmupSeconds`
+        (`preWhite` blocks of `len`) later, at `AnalysisStart`. With no
+        warm-up it starts at `origin`."""
+        par = self.par
+        par.WarmupStart = float(origin)
+        self._search_from = float(origin) + par.WarmupSeconds
+        par.WarmupSamplesDiscarded = 0
+        if par.WarmupSeconds == 0:
+            self._start_search(origin, sigma)
+        else:
+            logging.info(f"online: warm-up of {par.preWhite} blocks of {par.len:g} s from "
+                         f"{origin:.3f}, whitened and discarded; the search starts at "
+                         f"{self._search_from:.3f}")
+
+    def _feed(self, w, w_start, sigma):
+        """Whitened samples from `w_start`: those of the warm-up (before
+        `AnalysisStart`) are discarded, the others searched (`_consume`). The
+        search starts, with scale `sigma`, at the first sample past the
+        warm-up."""
+        rate = float(self.par.resampling)
+        if not self._searching:
+            k = int(round((self._search_from - w_start) * rate))
+            if k >= w.size:
+                self.par.WarmupSamplesDiscarded += int(w.size)
+                return
+            k = max(k, 0)
+            self.par.WarmupSamplesDiscarded += k
+            w, w_start = w[k:], w_start + k / rate
+            self._start_search(w_start, sigma)
+        self._consume(w, w_start)
 
     def _consume(self, w, w_start):
         """Search a whitened chunk and run the ridge over it."""
@@ -1347,6 +1396,8 @@ class wdfUnitOnline:
         if self.mode == "zerophase":
             self._running["data_time"] = []
         past, past_start = np.zeros(0), None
+        self._search_from, self._searching = None, False
+        par.WarmupStart = None
         whitener = None
         filters, released, in_search = [], None, None
         next_refit = None
@@ -1375,11 +1426,11 @@ class wdfUnitOnline:
                     whitener = self._fit(past, past_start, self.now)
                     if whitener is None:
                         continue
-                    self._start_search(self.now, whitener.sigma)
+                    self._begin_warmup(self.now, whitener.sigma)
                     next_refit = self._next_switch(self.now)
                     continue
                 w = whitener.process(y)
-                self._consume(w, y_start)
+                self._feed(w, y_start, whitener.sigma)
                 if next_refit is not None and self.now >= next_refit:
                     refit = self._fit(past, past_start, self.now)
                     if refit is not None:
@@ -1403,7 +1454,7 @@ class wdfUnitOnline:
                     continue
                 filters.append(first)
                 released, in_search = clock, filters[0]
-                self._start_search(clock, filters[0].sigma)
+                self._begin_warmup(clock, filters[0].sigma)
                 next_refit = self._next_switch(clock)
                 continue
             ready = clock - par.WhiteningLookahead_s
@@ -1418,7 +1469,7 @@ class wdfUnitOnline:
                     for search in self._searches_on:
                         search.parameters.sigma = current.sigma
                     in_search = current
-                self._consume(current.apply(past, a, b), released)
+                self._feed(current.apply(past, a, b), released, current.sigma)
                 released = past_start + b / rate
             # keep only the filters still needed
             while len(filters) > 1 and filters[1].start <= released + 0.5 / rate:

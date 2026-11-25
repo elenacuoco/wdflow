@@ -3,6 +3,53 @@
 Versions follow [semantic versioning](https://semver.org). A release records
 what the software does differently, not how it came to.
 
+## Unreleased
+
+### Added
+
+#### Offline flavour: the noise model chosen before the search
+
+`wdf.processes.noise_model` chooses each detector's autoregressive models
+before the search and writes them in the format `ARModelsFrom` reads: the
+"quiet" rule (the latest `learn` s before the stretch with good GWOSC
+data-quality and injection masks and no transient second, within
+`NoiseLookback`), then the `NoiseModelFallback` rules "piecewise" (models
+fitted on the stretch's own pieces) and "spectral" (Welch spectrum to an
+autoregressive model by Levinson-Durbin); the first whose whitening passes
+the band-by-band check (`NoiseCheckRange`) is kept, otherwise the detector
+is marked "failed". `NoiseModel` defaults to "worker": the worker fits its
+own models, as before. Table `[noise_model]`.
+
+#### Offline flavour: network events
+
+`wdf.analysis.network_events`: every detector event whose reconstruction
+energy reaches `EventThreshold` is a reference; its reconstruction is the
+template of an analytic matched filter in the other detectors within the
+light travel time plus `NetworkEventsJitter`; references whose supports meet
+at the best lag form one node, of network energy
+`sqrt(rho_ref^2 + sum rho_B^2)`. `run_network` builds them with
+`NetworkEvents = true` (default false: no output changes) and the new
+`streams=` argument. Time shifts per detector (`PreparedNetwork.run`,
+`PreparedNetwork.slides`) redo only the matched filters and the nodes, for a
+background by time slides. `whitened_stream` rebuilds a run's whitened
+stream from its strain. Table `[network_events]`;
+`configs/offline_events.toml`.
+
+#### Ridge options
+
+`RidgeMaxDown` (unset by default: no limit) limits the moves down in
+frequency between consecutive slots; `RidgeCalibration = "path"` calibrates
+the drift with the local alignment itself (default "greedy", as before).
+
+`hrss.ModelHistory.sigma_at` gives the sigma of the model in force at given
+times.
+
+### Fixed
+
+The online worker whitens and discards `preWhite` blocks of `len` before the
+search starts (`AnalysisStart`), so that the band-pass and the whitening
+have decayed; `preWhite` is required (0: none).
+
 ## 1.4.0 --- 2026-10-10
 
 ### Added

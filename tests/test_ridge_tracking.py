@@ -170,3 +170,156 @@ def test_the_streaming_cells_are_the_batch_cells(alphas):
     assert len(rows) == len(X)
     starts, held, scales = cells.held(alphas[0] if alphas else 0.0)
     np.testing.assert_allclose(held[-1], coeffs[alphas[0] if alphas else 0.0][-1])
+
+
+# ================================================================ RidgeMaxDown
+def planted(slots, states, z=4.0, shape=(400, 24), seed=3):
+    """A quiet map (z about -1) with z on the given cells."""
+    Z = -1.0 + 0.1 * np.random.default_rng(seed).standard_normal(shape)
+    Z[np.asarray(slots), np.asarray(states)] = z
+    return Z
+
+
+def fixed(**kw):
+    s, par = settings(**kw)
+    return replace(s, drift=0.5, xdrop=4.0), par
+
+
+def test_max_down_unset_is_the_symmetric_penalty():
+    s, par = settings()
+    assert s.max_down is None and par.RidgeMaxDown is None
+    np.testing.assert_array_equal(s.penalty(), s.penalty().T)
+
+
+def test_max_down_forbids_only_the_larger_moves_down():
+    sym, _ = settings()
+    s, par = settings(RidgeMaxDown=1)
+    assert s.max_down == 1 and par.RidgeMaxDown == 1
+    P, Q = s.penalty(), sym.penalty()
+    frm, to = np.indices(P.shape)
+    allowed = frm - to <= 1
+    np.testing.assert_array_equal(P[allowed], Q[allowed])
+    assert np.all(np.isinf(P[~allowed]))
+    with pytest.raises(ValueError):
+        settings(RidgeMaxDown=-1)
+
+
+def test_a_rising_track_is_followed_unchanged_with_max_down():
+    slots = np.arange(100, 120)
+    states = np.arange(2, 22)
+    Z = planted(slots, states)
+    (a, _), (b, _) = (offline_ridge(Z, T0, fixed()[0]), offline_ridge(Z, T0, fixed(RidgeMaxDown=1)[0]))
+    np.testing.assert_array_equal(a[0].slots, b[0].slots)
+    np.testing.assert_array_equal(a[0].states, b[0].states)
+    assert a[0].score == b[0].score
+    assert set(zip(slots, states)) <= set(zip(b[0].slots.tolist(), b[0].states.tolist()))
+
+
+def test_a_falling_track_is_not_followed_more_than_max_down():
+    slots = np.arange(200, 210)
+    states = np.arange(22, 2, -2)        # down two states a slot
+    Z = planted(slots, states)
+    free, _ = offline_ridge(Z, T0, fixed()[0])
+    assert set(zip(slots, states)) <= set(zip(free[0].slots.tolist(), free[0].states.tolist()))
+    limited, _ = offline_ridge(Z, T0, fixed(RidgeMaxDown=1)[0])
+    for c in limited:
+        assert np.all(np.diff(c.states) >= -1)
+    best = max(len(set(zip(slots, states)) & set(zip(c.slots.tolist(), c.states.tolist())))
+               for c in limited)
+    assert best == 1
+
+
+def test_the_backward_extension_respects_max_down():
+    # A loud cell high in frequency the slot before a run at state 5: going
+    # back in time it is a move up, forward a move down by 10 states.
+    Z = planted(np.arange(10, 20), np.full(10, 5))
+    Z[9, 15] = 20.0
+    for max_down, taken in ((None, True), (1, False)):
+        s = fixed(**({} if max_down is None else dict(RidgeMaxDown=max_down)))[0]
+        ridge = StreamingRidge(s, T0)
+        for row in Z[:20]:
+            ridge.update(row)
+        ext = ridge._extend_back(10, 5)
+        assert ((9, 15) in [(k, st) for k, st, _ in ext]) is taken
+    # Mirrored: a loud cell low in frequency before the run is a move up, allowed.
+    Z = planted(np.arange(10, 20), np.full(10, 15))
+    Z[9, 5] = 20.0
+    ridge = StreamingRidge(fixed(RidgeMaxDown=1)[0], T0)
+    for row in Z[:20]:
+        ridge.update(row)
+    assert (9, 5) in [(k, st) for k, st, _ in ridge._extend_back(10, 15)]
+
+
+def test_the_calibration_and_the_boxes_run_with_max_down():
+    from wdf.analysis.ridge_tracking import _greedy_gains
+
+    Z = np.random.default_rng(4).standard_normal((2000, 24))
+    s, _ = settings(RidgeMaxDown=1)
+    b, x = calibrate_drift(Z, s)
+    assert np.isfinite(b) and np.isfinite(x)
+    boxes = box_scores(Z, [0.5], replace(s, drift=b, xdrop=x))
+    assert np.all(np.isfinite(boxes[0.5][1]))
+    # Backward greedy gains price the move earlier -> later.
+    Zs = np.full((4, 24), -5.0)
+    Zs[3, 2], Zs[2, 20] = 1.0, 10.0
+    G = _greedy_gains(Zs, np.array([3]), 1, s.penalty(), 0.0, direction=-1)
+    assert G[0, 0] < 10.0                # 20 -> 2 is forbidden
+    Zs[2, 2] = -4.0
+    assert _greedy_gains(Zs, np.array([3]), 1, s.penalty(), 0.0, direction=-1)[0, 0] == -4.0
+
+
+# ================================================================ RidgeCalibration
+@pytest.fixture(scope="module")
+def white_z():
+    """The z map of 128 s of white noise."""
+    s, _ = settings()
+    x = np.random.default_rng(0).standard_normal(int(SECONDS * FS))
+    return background_z(stream_cells(x, T0, FS, s)[0], s)
+
+
+def noise_paths(Z, s):
+    b, x = calibrate_drift(Z, s)
+    found, _ = offline_ridge(Z, T0, replace(s, drift=b, xdrop=x))
+    return b, x, np.array([c.slots.size for c in found])
+
+
+def test_the_calibration_defaults_to_the_greedy_extension(white_z):
+    from wdf.analysis.ridge_tracking import calibrate_with
+
+    s, par = settings()
+    assert s.calibration == "greedy" and par.RidgeCalibration == "greedy"
+    assert calibrate_drift(white_z, s) == calibrate_with(white_z, s, "greedy", s.calibration_seeds)
+    with pytest.raises(ValueError):
+        settings(RidgeCalibration="dp")
+
+
+def test_the_path_calibration_agrees_with_the_greedy_one_on_a_symmetric_penalty(white_z):
+    """On white noise, unset RidgeMaxDown: greedy b = 2.80, path b = 2.85."""
+    (greedy, _), (path, _) = (calibrate_drift(white_z, settings()[0]),
+                              calibrate_drift(white_z, settings(RidgeCalibration="path")[0]))
+    assert greedy == pytest.approx(2.80) and path == pytest.approx(2.85)
+
+
+def test_the_path_calibration_keeps_the_paths_short_with_max_down(white_z):
+    """RidgeMaxDown = 1 on white noise: the greedy calibration gives b = 1.75
+    and the alignment's paths run on for thousands of slots (median 1754);
+    the path calibration gives b = 2.10 and paths as short as the symmetric
+    ridge's (median 5 slots, against 4, longest 94)."""
+    s = settings(RidgeMaxDown=1)[0]
+    b_greedy, _, greedy = noise_paths(white_z, s)
+    b_path, _, path = noise_paths(white_z, replace(s, calibration="path"))
+    _, _, symmetric = noise_paths(white_z, settings()[0])
+    assert b_greedy == pytest.approx(1.75) and np.median(greedy) > 1000
+    assert b_path == pytest.approx(2.10)
+    assert np.median(path) <= np.median(symmetric) + 1 and path.max() <= 4 / s.slot_s
+
+
+def test_the_track_calibration_is_the_path_calibration_at_its_quantile(white_z):
+    from wdf.analysis.ridge_tracking import calibrate_with
+    from wdf.analysis.track_reconstruction import TrackSettings, calibrate_track_drift
+
+    ts = TrackSettings.from_parameters(SimpleNamespace(window=1024, overlap=256, MinFrequency=16.0),
+                                       FS)
+    rs = ts.ridge
+    assert calibrate_track_drift(white_z, rs) == calibrate_with(
+        white_z, rs, "path", rs.track_calibration_seeds, quantile=rs.kept_quantile)
