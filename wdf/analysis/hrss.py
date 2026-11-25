@@ -206,6 +206,12 @@ class ModelHistory:
         before it; the first one before every switch)."""
         return max(int(np.searchsorted(self.switch, float(gps), side="right")) - 1, 0)
 
+    def sigma_at(self, times):
+        """The sigma of the model in force at each of `times` (the scale the
+        worker divided its whitened stream by), as an array."""
+        k = np.clip(np.searchsorted(self.switch, np.asarray(times, dtype=float), side="right") - 1, 0, None)
+        return np.array([float(m["sigma"]) for m in self.models])[k]
+
     def taps(self, index, held=None):
         """The whitening taps of model `index` (`truncated_taps`)."""
         from wdf.processes.zero_phase_whitening import truncated_taps

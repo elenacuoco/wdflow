@@ -54,10 +54,11 @@ import pandas as pd
 
 from wdf.analysis.alerts import AlertSettings, alert_path, alert_table, provenance, write_alerts
 from wdf.analysis.hrss import HrssSettings, ModelHistory, add_hrss, network_hrss
+from wdf.analysis.network_events import NetworkEventsSettings, network_events_from_stage
 from wdf.analysis.pair_screen import RANK_STATISTIC, PairScreenSettings, ScreenedFinder
 from wdf.config.Parameters import (DEFAULT_COINCIDENCE, DEFAULT_RECONSTRUCTION, DEFAULT_SCORER,
                                    network_path)
-from wdf.config.defaults import defaults
+from wdf.config.defaults import defaults, parameter
 
 _D = defaults("network.driver")
 _WAVEGRAM = defaults("network.wavegram")
@@ -172,6 +173,8 @@ class NetworkResult:
     :param finder: the stage-3 finder, for further slides.
     :param settings: the settings used.
     :param alerts_path: the alert CSV written (`AlertCSV`), or None.
+    :param network_events: with `NetworkEvents`, the
+        `wdf.analysis.network_events.NetworkEventsResult` of the stretch.
     """
 
     candidates: pd.DataFrame
@@ -184,6 +187,7 @@ class NetworkResult:
     finder: object = None
     settings: NetworkSettings = None
     alerts_path: str = None
+    network_events: object = None
 
 
 def longest_travel(ifos):
@@ -377,7 +381,7 @@ def _with_hrss(events, graphs, labels, ar_models, settings):
 
 
 def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=None,
-                census=None, ar_models=None):
+                census=None, ar_models=None, streams=None):
     """Stages 2, 3 and 4 on the path `par` selects.
 
     :param par: run configuration (`Reconstruction`, `Coincidence`, `Scorer`,
@@ -402,6 +406,12 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
         `HrssEstimate` is true, which adds `wdf.analysis.hrss.HRSS_COLUMNS` to
         the events, ``hrss_<ifo>``, ``hrss_err_<ifo>``, ``hrss_noise_<ifo>``
         and `hrss_network_det` to the candidates.
+    :param streams: ``{ifo: [(t0, samples) or (t0, samples, (start, end))]}``
+        (wavegram path), the whitened stream over sigma of each run
+        (`network_events.whitened_stream`); read with `ar_models` when
+        `NetworkEvents` is true, which sets `NetworkResult.network_events`
+        (`network_events.network_events_from_stage`). Default false: nothing
+        is read and no output changes.
 
     With `AlertCSV` (`wdf.analysis.alerts`, default off) the candidates at or
     below `AlertFARThreshold` are also written to that file, in the
@@ -440,6 +450,14 @@ def run_network(par, triggers=None, tracks=None, waveforms=None, segment_bounds=
                           for i in ifos}
         result = NetworkResult(candidates=pd.DataFrame(), events=events, maps=maps,
                                comparison=comparison, graphs=graphs, settings=settings)
+        if parameter(par, "NetworkEvents", "network_events"):
+            network_settings = NetworkEventsSettings.from_parameters(par)
+            if ar_models is None or streams is None:
+                raise ValueError("NetworkEvents needs the workers' noise models and whitened streams "
+                                 "(run_network ar_models=, streams=)")
+            result.network_events = network_events_from_stage(
+                par, graphs, labels, events, ar_models, streams,
+                envelope_width=settings.envelope_width, settings=network_settings)
         if len(ifos) < 2:
             return result
         if settings.event_instant == "envelope":

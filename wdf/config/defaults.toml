@@ -280,6 +280,18 @@ match_wavegrams = true  # [bool] whether the renderings of a candidate pair are 
 match_gate = "admitted"  # [name] pairs the wavegram match is asked of: "admitted" (every admitted pair) or "instant" (instants within the tolerance)
 label_window_s = 0.5  # [s] how far outside its own extent an event still covers an injection, for the edge labels
 
+[network_events]
+NetworkEvents = false  # [bool] run_network also builds the network events (wdf.analysis.network_events); needs the noise models and the whitened streams
+EventThreshold = 0.0  # [-] least EnWDF of a detector event's stitched reconstruction for it to be a reference of the network events; 0: every event
+NetworkEventsJitter = 0.01  # [s] added to the light travel time of a pair for the lags of the matched filter and the search for the other detector's own event
+NetworkEventsLagStep = 1  # [samples] step between two lags of the matched filter
+NetworkEventsSupportFraction = 0.1  # [-] an event's support is where the analytic envelope of its reconstruction is at least this fraction of its peak
+NetworkEventsOnTrackOctaves = 1.0  # [octaves] a reference tile's band is widened by this on each side for on_track
+NetworkEventsTemplateShort = 0.05  # [s] a node whose reference template is shorter than this is marked template_short
+NetworkEventsStreamBlocks = 3  # [count] conditioning blocks of len read beyond the stream on each side when it is rebuilt from the strain
+NetworkEventsStreamPad = 4.0  # [s] read beyond those blocks when the stream is rebuilt from the strain
+NetworkEventsStreamMargin = 2.0  # [s] stream kept beyond the searched span and the largest lag
+
 [robust_events.cluster]
 max_missing_windows = 1  # [count] windows that may be missing between two triggers of one cluster
 minimum_frequency_overlap = 0.0  # [fraction] least shared fraction of two triggers' frequency intervals for them to join
