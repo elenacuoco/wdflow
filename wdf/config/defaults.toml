@@ -147,6 +147,26 @@ GlitchMaxAtoms = 100  # [count] most atoms fitted to one seed
 GlitchProtectCoincident = true  # [bool] leave seeds coincident in two or more detectors unsubtracted
 GlitchCoincidenceJitter = 0.01  # [s] added to the light travel time between two detectors within which their seeds are coincident
 
+[noise_model]
+NoiseModel = "worker"  # [name] noise model of each detector and stretch: "worker" (the worker fits its own), or the first rule of wdf.processes.noise_model ("quiet", "piecewise", "spectral"), given to the worker as ARModelsFrom
+NoiseModelFallback = ["piecewise", "spectral"]  # [name] rules tried in order after NoiseModel when it finds no stretch or its whitening fails the check
+NoiseLookback = 21600.0  # [s] how far before the stretch the "quiet" rule looks for its fit stretch
+NoiseDQChannel = "{ifo}:GWOSC-4KHZ_R1_DQMASK"  # [name] data-quality mask channel read by the "quiet" rule ({ifo} filled in)
+NoiseInjectionChannel = "{ifo}:GWOSC-4KHZ_R1_INJMASK"  # [name] hardware-injection mask channel read by the "quiet" rule ({ifo} filled in)
+NoiseDQBits = 511  # [-] bits of the data-quality mask that must all be set for a second to be good (GWOSC: DATA, CBC_CAT1-3, BURST_CAT1-3, STOCH_CAT1, CW_CAT1)
+NoiseInjectionBits = 7  # [-] bits of the injection mask that must all be set (GWOSC: NO_CBC_HW_INJ, NO_BURST_HW_INJ, NO_DETCHAR_HW_INJ)
+NoiseTransientRatio = 10.0  # [-] a second whose power in a band exceeds this times the band's median over the stretch is a transient
+NoiseTransientOrder = 4  # [count] order of the Butterworth band filters of the transient test
+NoiseTransientTopFraction = 0.9  # [fraction of Nyquist] the transient test's band filters stop below this
+NoiseBands = "<unset>"  # [Hz] bands of the transient test and of the whitening check, [[low, high], ...]; unset: octaves from LowFrequencyCut, the last ending at NoiseBandTopFraction
+NoiseBandTopFraction = 0.9765625  # [fraction of Nyquist] top of the last band when NoiseBands is unset (1000 Hz at 2048 Hz)
+NoiseCheckRange = [0.8, 1.25]  # [-] a band passes the whitening check when the ASD of the whitened stream over white lies in this range
+NoiseCheckSegment = 4.0  # [s] Welch segment of the whitening check
+NoiseCheckAverage = "mean"  # [name] how the whitening check combines the Welch periodograms, "mean" or "median"
+NoiseSpectralSegment = "<unset>"  # [s] Welch segment of the "spectral" rule; unset: [whitening.zero_phase] spectrum_segment_s
+NoiseSpectralAverage = "<unset>"  # [name] how the "spectral" rule combines the periodograms; unset: [whitening.zero_phase] spectrum_average
+NoiseSpectralHold = "<unset>"  # [Hz] band outside which the "spectral" rule holds the spectrum flat, [low, high]; unset: [LowFrequencyCut, Nyquist]
+
 [census]
 GlitchOctaveOrder = 8  # [count] order of the Butterworth filters that split the whitened stream into octaves
 
