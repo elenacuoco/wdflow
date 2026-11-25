@@ -910,6 +910,129 @@ and network, have no background and no false-alarm rate: `RidgeThreshold` is
 a floor on the score, not a calibrated cut. There is no stage that projects a
 track or a ridge candidate of one detector onto another detector's stream.
 
+## The offline flavour: noise model and network events
+
+`configs/offline_events.toml` runs the zero-phase online worker on each stretch
+with two inputs prepared before the search, then stages 2 to 4 with the network
+events. Three flavours share the library; each new key keeps the released
+behaviour by default:
+
+| | detector characterisation | online | offline |
+|---|---|---|---|
+| warm-up of `preWhite` blocks before the search | yes | yes | yes |
+| noise model | the worker's fit | the worker's fit, past only | chosen before the search (`NoiseModel`), given as `ARModelsFrom` |
+| glitches | labelled | labelled | M4 atoms fitted on the stretch, given as `GlitchAtomsFrom` |
+| detector events | clustered (stage 2) | clustered | clustered, `EnWDF` of the reconstruction |
+| network | -- | classical pairs, GNN | network events (`NetworkEvents`), classical pairs |
+
+### The noise model is chosen before the search
+
+`wdf.processes.noise_model` chooses, per detector and stretch, the
+autoregressive models the worker applies. `NoiseModel` names the first rule
+("worker", the default, leaves the fit to the worker); `NoiseModelFallback`
+the rules tried after it, in order. The first rule whose whitening passes the
+check is kept:
+
+1. **"quiet"** (`quiet_model`): one model fitted (Burg, `ARorder`) on the
+   latest `learn` s before the stretch, within `NoiseLookback` s, whose
+   seconds, with `ARFitContext` on each side, are good in the GWOSC masks
+   (every bit of `NoiseDQBits` in `NoiseDQChannel`, every bit of
+   `NoiseInjectionBits` in `NoiseInjectionChannel`), hold finite strain and no
+   transient second. A transient second has a power in one of `NoiseBands`
+   above `NoiseTransientRatio` times that band's median.
+2. **"piecewise"** (`piecewise_models`): one model per piece of `learn` s of
+   the stretch, fitted on the longest stretch free of transient seconds, at
+   least `ARFitMinimumLearn` s.
+3. **"spectral"** (`spectral_model`): the Welch spectrum of the stretch
+   (`NoiseSpectralSegment`, `NoiseSpectralAverage`), held flat outside
+   `NoiseSpectralHold` (default `LowFrequencyCut` to Nyquist), turned into an
+   autoregressive model by Levinson-Durbin; a reflection coefficient of
+   modulus 1 or more fails the rule.
+
+The check (`check_models`) whitens the stream the worker will whiten with
+each model's `TruncatedWhitening` and divides by its sigma, then reads the
+ASD over white (Welch, `NoiseCheckSegment`, `NoiseCheckAverage`) averaged in
+power over each of `NoiseBands` (default: octaves from `LowFrequencyCut`, the
+last ending at `NoiseBandTopFraction` of Nyquist). A rule passes when every
+piece of every run lies within `NoiseCheckRange` in every band. When none
+passes, the detector's method is "failed": it is searched with the models of
+the last stable rule tried, and it is left out of the network events.
+
+The order with M4: `quiet_model`; `initial_models` (the quiet model, or the
+first rule fitted on the stretch); the M4 census and fit through them
+(`wdf.processes.glitch_subtraction`); `choose_noise_model` on the stretch
+with the atoms subtracted; `save_noise_models` writes the file the worker
+reads as `ARModelsFrom`, and the atoms are written as its `GlitchAtomsFrom`.
+
+```python
+from wdf.processes import noise_model as nm
+
+s = nm.NoiseModelSettings.from_parameters(par)
+read = nm.gwosc_frame_reader("/data/O4b/{ifo}/*.gwf")
+quiet = nm.quiet_model(par, read, "H1", before=first_whitened_second, settings=s)
+run = nm.NoiseRun(conditioned=(y, y0, rate), start=first_whitened_second, end=end, bounds=(a, b))
+choice = nm.choose_noise_model([run], par, s, quiet=quiet)
+nm.save_noise_models("ARModels-H1-chosen.h5", choice.models[0], par)    # par.ARModelsFrom
+```
+
+### Network events
+
+`wdf.analysis.network_events` joins the detector events in the time domain.
+A detector event whose `EnWDF` (the norm of its stitched reconstruction, in
+noise units) is at least `EventThreshold` is a reference. Its
+reconstruction divided by the sigma of the model in force is a template,
+matched-filtered in every other detector searched at its time over the lags
+within the light travel time plus `NetworkEventsJitter`:
+
+```
+rho(tau) = |<h, s(t + tau)> - i <hilbert(h), s(t + tau)>| / ||h||
+```
+
+Two references of different detectors are one node when the louder one's
+support (where the analytic envelope of its reconstruction is at least
+`NetworkEventsSupportFraction` of its peak), shifted by its best `tau`, meets
+the other's support; nodes are joined loudest first, one event per detector.
+The node's reference is its loudest event, and
+
+```
+network_energy = sqrt(rho_ref^2 + sum over the other detectors of rho_B^2)
+```
+
+`kind` is "coincident" (references in two or more detectors) or "single+MF"
+(one). Per detector the table also gives `tau`, the fitted amplitudes, the
+extent and band, and, as checks that never cut, the detector's own event
+meeting the template (any `EnWDF`), its envelope lag against `tau` and
+`on_track` (the share of its tile energy along the reference's tiles shifted
+by `tau`, bands widened by `NetworkEventsOnTrackOctaves`). No significance is
+computed here.
+
+With `NetworkEvents = true`, `run_network(par, triggers=..., ar_models=...,
+streams=...)` sets `NetworkResult.network_events`; `streams` holds each
+detector's whitened stream over sigma per run, rebuilt from the strain by
+`whitened_stream` (the conditioning, the run's glitch atoms, the models it
+applied). The classical candidates are unchanged.
+
+### Background by time slides
+
+The network step accepts a time shift per detector, so that a background
+is drawn without redoing stage 1. `prepare_network_events` (or
+`network_events_from_stage(..., prepare_only=True)`) reads once the events,
+their supports, references and templates; `PreparedNetwork.run(shifts)`
+moves each detector's whitened stream, events and reconstructions by its
+shift (rounded to a sample, circular within each of its streams) and redoes
+only the matched filters and the nodes. The table carries `shift_<ifo>`;
+with every shift zero it is the unshifted table.
+
+```python
+from wdf.analysis.network_events import network_events_from_stage
+
+labels = {i: g.components() for i, g in result.graphs.items()}       # result = run_network(par, triggers=...)
+prepared = network_events_from_stage(par, result.graphs, labels, result.events, ar_models,
+                                     streams, prepare_only=True)
+zero_lag = prepared.run().nodes
+background = prepared.slides([{"L1": k * 7.0} for k in range(1, 101)])     # columns slide, shift_<ifo>
+```
+
 ## Units
 
 Some parameters are in samples of the decimated stream:
